@@ -1,0 +1,1000 @@
+apiVersion: v1alpha1
+name: "CKA: kubeadm Cluster Management"
+
+timing:
+  enabled: true
+
+introduction:
+  elements:
+    - type: context
+      text: |
+        kubeadm is the official tool for bootstrapping Kubernetes clusters. On the CKA exam,
+        kubeadm knowledge falls under the Cluster Architecture, Installation & Configuration
+        domain — worth approximately 25% of the total score.
+
+        This scenario set covers what the exam actually tests:
+          - Planning and executing a cluster upgrade (control plane and worker nodes)
+          - Joining new nodes to a cluster
+          - Generating bootstrap tokens
+          - Troubleshooting nodes stuck in NotReady
+          - Diagnosing and fixing kubelet configuration problems
+          - Understanding what kubeadm init and kubeadm phases do
+
+        Cluster upgrades are consistently reported as one of the hardest and most time-consuming
+        tasks on the exam. The procedure is long and sequential — skip one step and the upgrade
+        fails. Practice it until you can complete it from memory in under 15 minutes.
+    - type: break
+    - type: context
+      text: |
+        Difficulty: High — exam-realistic.
+        Hints are enabled. Each scenario mirrors a real task you may face on the CKA exam.
+    - type: references
+      links:
+        - url: https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/kubeadm-upgrade/
+          text: Upgrading kubeadm clusters — Kubernetes Documentation
+        - url: https://kubernetes.io/docs/reference/setup-tools/kubeadm/
+          text: kubeadm reference — Kubernetes Documentation
+
+scenarios:
+  - title: "kubeadm upgrade plan: Understanding What Can Be Upgraded"
+    category: Upgrade
+    hintsEnabled: true
+    elements:
+      - type: context
+        text: |
+          Before upgrading a cluster, you must check what versions are available and whether
+          the current cluster is in a state that can be upgraded. The `kubeadm upgrade plan`
+          command does exactly this: it reads the current cluster version, queries the available
+          versions, and prints a plan showing what each component would be upgraded to.
+
+          `kubeadm upgrade plan` must be run on a control-plane node with kubeadm installed.
+          It does not make any changes — it is a read-only diagnostic.
+      - type: question
+        question:
+          questionType: command
+          header: "Run kubeadm upgrade plan to see what versions are available."
+          hint: "The command is simply 'kubeadm upgrade plan' with no required arguments."
+          correctAnswerInfo: "kubeadm upgrade plan reads the current cluster version from kubeadm-config in kube-system, then checks the release API for the latest stable and latest patch versions."
+          command:
+            executable: kubeadm
+            subcommands:
+              - name: upgrade
+              - name: plan
+      - type: context
+        text: |
+          The output of `kubeadm upgrade plan` includes a table like this:
+
+            COMPONENT                 CURRENT   TARGET
+            kube-apiserver            v1.29.0   v1.30.0
+            kube-controller-manager   v1.29.0   v1.30.0
+            kube-scheduler            v1.29.0   v1.30.0
+            kube-proxy                v1.29.0   v1.30.0
+            CoreDNS                   v1.11.1   v1.11.3
+            etcd                      3.5.10-0  3.5.12-0
+
+          It also prints the exact `kubeadm upgrade apply` command you need to run.
+          Note: kubelet and kubectl are NOT listed here — they are upgraded separately
+          using your system package manager after kubeadm upgrade apply completes.
+      - type: question
+        question:
+          questionType: single-line
+          header: "Kubernetes supports upgrading how many minor versions at a time? (answer as a number)"
+          expectedAnswer: "1"
+          hint: "You cannot jump from 1.28 to 1.30 in a single upgrade operation."
+          correctAnswerInfo: "You must upgrade one minor version at a time: 1.28 → 1.29, then 1.29 → 1.30. Patch upgrades (1.29.0 → 1.29.5) can skip patch versions freely."
+      - type: question
+        question:
+          questionType: single-line
+          header: "Which two components are NOT upgraded by 'kubeadm upgrade apply' and must be updated separately using apt/yum?"
+          expectedAnswer: "kubelet and kubectl"
+          hint: "kubeadm upgrades the control-plane static Pod components and kube-proxy. The node-level binaries are managed by the OS package manager."
+          correctAnswerInfo: "kubelet and kubectl are installed as OS packages. After kubeadm upgrade apply completes, you must: apt-get install kubelet=<version> kubectl=<version>, then systemctl restart kubelet."
+    explanation:
+      elements:
+        - type: context
+          text: |
+            `kubeadm upgrade plan` checks three things:
+              1. The current cluster version (from the kubeadm-config ConfigMap in kube-system)
+              2. Available patch upgrades within the same minor version
+              3. The next minor version upgrade path
+
+            Components upgraded by `kubeadm upgrade apply`:
+              kube-apiserver, kube-controller-manager, kube-scheduler (as static Pods)
+              kube-proxy (as a DaemonSet)
+              CoreDNS (as a Deployment)
+              etcd (as a static Pod, in stacked topology)
+
+            Components NOT upgraded by kubeadm — you do this yourself:
+              kubelet  — OS package, requires apt/yum + systemctl restart
+              kubectl  — OS package, requires apt/yum
+
+            The version skew policy: kubelet can be at most one minor version behind the
+            API server. So if your API server is v1.30, kubelet can be v1.30 or v1.29
+            but not v1.28.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/kubeadm-upgrade/
+              text: Upgrading kubeadm clusters
+            - url: https://kubernetes.io/docs/setup/release/version-skew-policy/
+              text: Kubernetes Version Skew Policy
+
+  - title: "Upgrading kubeadm on the Control Plane Node"
+    category: Upgrade
+    hintsEnabled: true
+    elements:
+      - type: context
+        text: |
+          On Debian/Ubuntu systems, kubeadm, kubelet, and kubectl are installed as APT packages.
+          They are held by `apt-mark hold` to prevent accidental upgrades by `apt-get upgrade`.
+
+          Before upgrading the cluster, you must first upgrade the kubeadm binary itself on
+          the control-plane node. The kubeadm binary version must match the target Kubernetes
+          version — you cannot use kubeadm v1.29 to apply a v1.30 upgrade.
+
+          The package name format changed in Kubernetes 1.29. The version string is now:
+            <k8s-version>-1.1   (e.g. 1.30.0-1.1)
+
+          To discover exact available strings, run:
+            apt-cache madison kubeadm
+          This shows the exact installable versions from the configured apt repository.
+
+          You are upgrading to Kubernetes 1.30.0.
+      - type: question
+        question:
+          questionType: single-line
+          header: "What apt command lists all available versions of kubeadm in the configured repositories?"
+          expectedAnswer: "apt-cache madison kubeadm"
+          hint: "The 'madison' subcommand of apt-cache shows available versions for a package."
+          correctAnswerInfo: "apt-cache madison kubeadm prints a table of available versions with their repository source. This is how you find the exact version string to pass to apt-get install."
+      - type: question
+        question:
+          questionType: single-line
+          header: "Before installing a new version of kubeadm, what apt-mark command must you run to allow the package to be upgraded?"
+          expectedAnswer: "apt-mark unhold kubeadm"
+          hint: "kubeadm is held to prevent accidental upgrades. You must undo that hold first."
+          correctAnswerInfo: "apt-mark hold <pkg> pins a package version. apt-mark unhold <pkg> removes the pin. After upgrading, you should re-hold: apt-mark hold kubeadm"
+      - type: question
+        question:
+          questionType: multiline
+          header: "Write the complete sequence of commands to: unhold kubeadm, refresh apt, install kubeadm version 1.30.0-1.1, and re-hold it. Use a single line."
+          expectedAnswer: "apt-mark unhold kubeadm && apt-get update && apt-get install -y kubeadm=1.30.0-1.1 && apt-mark hold kubeadm"
+          hint: |
+            Chain four commands with &&:
+              1. apt-mark unhold kubeadm
+              2. apt-get update
+              3. apt-get install -y kubeadm=1.30.0-1.1
+              4. apt-mark hold kubeadm
+          correctAnswerInfo: "apt-get update is required before install to fetch the latest package list from the repo. Without it, the new version may not be found even if the repo contains it."
+      - type: question
+        question:
+          questionType: command
+          header: "After installing the new kubeadm binary, verify the version."
+          hint: "Use the kubeadm version subcommand."
+          correctAnswerInfo: "kubeadm version confirms the binary was updated correctly before you proceed with the actual upgrade."
+          command:
+            executable: kubeadm
+            subcommands:
+              - name: version
+    explanation:
+      elements:
+        - type: context
+          text: |
+            The kubeadm package upgrade sequence on Debian/Ubuntu is always:
+              apt-mark unhold kubeadm
+              apt-get update
+              apt-get install -y kubeadm=<target-version>
+              apt-mark hold kubeadm
+              kubeadm version   ← verify
+
+            On RHEL/CentOS/Fedora systems (dnf/yum), the equivalent is:
+              yum versionlock delete kubeadm
+              yum install -y kubeadm-<version>
+              yum versionlock add kubeadm
+
+            The CKA exam environment uses Ubuntu, so APT commands are what you need.
+
+            Note: the exact version string format matters. Pre-1.29 packages used
+            <version>-00 (e.g. 1.28.0-00). Post-1.29 packages from pkgs.k8s.io
+            use <version>-1.1 (e.g. 1.30.0-1.1). If the exam asks you to find the
+            correct string, use `apt-cache madison kubeadm`.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/kubeadm-upgrade/
+              text: Upgrading kubeadm clusters
+
+  - title: "Applying the Control Plane Upgrade"
+    category: Upgrade
+    hintsEnabled: true
+    elements:
+      - type: context
+        text: |
+          With the kubeadm binary upgraded to v1.30, you can now apply the upgrade to the
+          cluster control-plane components. The sequence is:
+
+            1. Drain the control-plane node (evict workloads so it can be safely upgraded)
+            2. Run kubeadm upgrade apply <version>
+            3. Upgrade kubelet and kubectl packages
+            4. Restart kubelet
+            5. Uncordon the node
+
+          You are on the control-plane node. The node is named 'controlplane'.
+          Target version: v1.30.0
+      - type: question
+        question:
+          questionType: command
+          header: "Drain the controlplane node, ignoring DaemonSet-managed pods."
+          hint: "Use kubectl drain with --ignore-daemonsets. The node name is 'controlplane'."
+          correctAnswerInfo: "Draining marks the node as unschedulable (cordon) and evicts all non-DaemonSet pods. DaemonSet pods are ignored because they are expected on every node and cannot be evicted."
+          command:
+            executable: kubectl
+            subcommands:
+              - name: drain
+            positionals:
+              - index: 0
+                required: true
+                value: controlplane
+                description: node name
+            flags:
+              - name: ignore-daemonsets
+                boolean: true
+                required: true
+      - type: question
+        question:
+          questionType: single-line
+          header: "What kubeadm subcommand applies the upgrade to the control-plane components? (include the version argument, e.g. 'upgrade apply v1.30.0')"
+          expectedAnswer: "upgrade apply v1.30.0"
+          hint: "The full binary command is: kubeadm upgrade apply v1.30.0"
+          correctAnswerInfo: "kubeadm upgrade apply upgrades the static Pod manifests for kube-apiserver, kube-controller-manager, and kube-scheduler, and also upgrades kube-proxy and CoreDNS. It does NOT touch kubelet."
+      - type: context
+        text: |
+          After `kubeadm upgrade apply v1.30.0` completes, you will see:
+
+            [upgrade/successful] SUCCESS! Your cluster was upgraded to "v1.30.0". Enjoy!
+            [upgrade/kubelet] Now that your control plane is upgraded, please proceed with
+            upgrading your kubelets if you haven't already done so.
+
+          Now upgrade kubelet and kubectl, then restart kubelet.
+      - type: question
+        question:
+          questionType: multiline
+          header: "Write the command sequence to: unhold kubelet and kubectl, install version 1.30.0-1.1 of both, re-hold them, reload systemd, and restart kubelet."
+          expectedAnswer: "apt-mark unhold kubelet kubectl && apt-get install -y kubelet=1.30.0-1.1 kubectl=1.30.0-1.1 && apt-mark hold kubelet kubectl && systemctl daemon-reload && systemctl restart kubelet"
+          hint: |
+            Chain five steps:
+              1. apt-mark unhold kubelet kubectl
+              2. apt-get install -y kubelet=1.30.0-1.1 kubectl=1.30.0-1.1
+              3. apt-mark hold kubelet kubectl
+              4. systemctl daemon-reload
+              5. systemctl restart kubelet
+          correctAnswerInfo: "systemctl daemon-reload is required to pick up any updated systemd unit files that the package installation may have written. Always daemon-reload before restarting kubelet."
+      - type: question
+        question:
+          questionType: command
+          header: "Uncordon the controlplane node to allow workloads to be scheduled on it again."
+          hint: "Use kubectl uncordon with the node name."
+          correctAnswerInfo: "kubectl drain set the node to SchedulingDisabled. kubectl uncordon removes that taint and makes the node schedulable again."
+          command:
+            executable: kubectl
+            subcommands:
+              - name: uncordon
+            positionals:
+              - index: 0
+                required: true
+                value: controlplane
+                description: node name
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Complete control-plane upgrade sequence (from the control-plane node):
+
+              # Step 1: Upgrade kubeadm binary (previous scenario)
+              apt-mark unhold kubeadm && apt-get update && \
+                apt-get install -y kubeadm=1.30.0-1.1 && apt-mark hold kubeadm
+
+              # Step 2: Check the plan
+              kubeadm upgrade plan
+
+              # Step 3: Drain the node
+              kubectl drain controlplane --ignore-daemonsets
+
+              # Step 4: Apply the upgrade
+              kubeadm upgrade apply v1.30.0
+
+              # Step 5: Upgrade kubelet + kubectl
+              apt-mark unhold kubelet kubectl
+              apt-get install -y kubelet=1.30.0-1.1 kubectl=1.30.0-1.1
+              apt-mark hold kubelet kubectl
+              systemctl daemon-reload && systemctl restart kubelet
+
+              # Step 6: Restore scheduling
+              kubectl uncordon controlplane
+
+              # Step 7: Verify
+              kubectl get nodes
+
+            Common exam mistakes:
+              - Running kubeadm upgrade apply on the worker (only run on first control plane)
+              - Forgetting systemctl daemon-reload before restart
+              - Forgetting to uncordon (node stays unschedulable)
+              - Not re-holding packages (they get unexpectedly upgraded later)
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/kubeadm-upgrade/
+              text: Upgrading kubeadm clusters — Kubernetes Documentation
+
+  - title: "Upgrading a Worker Node"
+    category: Upgrade
+    hintsEnabled: true
+    elements:
+      - type: context
+        text: |
+          After the control-plane upgrade, you upgrade each worker node individually.
+          The worker upgrade procedure differs from the control-plane in one critical way:
+
+            Control plane: kubeadm upgrade **apply** v1.30.0   ← upgrades cluster components
+            Worker node:   kubeadm upgrade **node**             ← no version argument
+
+          `kubeadm upgrade node` reads the new component configuration that kubeadm upgrade
+          apply already wrote to the cluster and applies only the kubelet configuration
+          update for this specific node.
+
+          The drain and uncordon commands are run from the control-plane node (where kubectl
+          is configured). The kubeadm and kubelet upgrade steps are run on the worker node
+          itself (via SSH).
+
+          Worker node name: worker01
+      - type: question
+        question:
+          questionType: command
+          header: "From the control-plane node, drain worker01. Include the flag to remove pods with local storage."
+          hint: "Use --ignore-daemonsets AND --delete-emptydir-data. Worker nodes often run pods with emptyDir volumes."
+          correctAnswerInfo: "Without --delete-emptydir-data, kubectl drain will refuse to evict pods that use emptyDir volumes. The exam grader expects the node to be fully drained."
+          command:
+            executable: kubectl
+            subcommands:
+              - name: drain
+            positionals:
+              - index: 0
+                required: true
+                value: worker01
+                description: node name
+            flags:
+              - name: ignore-daemonsets
+                boolean: true
+                required: true
+              - name: delete-emptydir-data
+                boolean: true
+                required: true
+      - type: question
+        question:
+          questionType: single-line
+          header: "After SSHing to worker01 and upgrading the kubeadm binary, what is the exact kubeadm command to upgrade this worker node? (do not include 'kubeadm' itself)"
+          expectedAnswer: "upgrade node"
+          hint: "Unlike the control plane, this subcommand takes no version argument. It fetches the configuration from the cluster automatically."
+          correctAnswerInfo: "Full command: kubeadm upgrade node — no version string needed. kubeadm reads the target version from the kubeadm-config ConfigMap that the control-plane upgrade wrote."
+      - type: question
+        question:
+          questionType: single-line
+          header: "What is the key difference between 'kubeadm upgrade apply' and 'kubeadm upgrade node'?"
+          expectedAnswer: "upgrade apply upgrades the control-plane components and requires a version argument; upgrade node only updates kubelet configuration on the current node and requires no version argument"
+          hint: "Think about what each command changes: apply upgrades kube-apiserver/scheduler/etc; node only touches the kubelet config on this one node."
+          cel: "answer.lowerAscii().contains('apply') && (answer.lowerAscii().contains('control') || answer.lowerAscii().contains('apiserver') || answer.lowerAscii().contains('version')) && answer.lowerAscii().contains('node')"
+          correctAnswerInfo: "apply is run exactly once on the first control-plane node and upgrades all control-plane component manifests cluster-wide. node is run on every other node (additional control planes and workers) to update their local kubelet configuration."
+      - type: question
+        question:
+          questionType: command
+          header: "Back on the control-plane node: after worker01's kubelet has been upgraded and restarted, uncordon it."
+          hint: "Use kubectl uncordon with the worker node name."
+          correctAnswerInfo: "Once uncordoned, the scheduler can place new Pods on worker01 again. Verify with: kubectl get nodes"
+          command:
+            executable: kubectl
+            subcommands:
+              - name: uncordon
+            positionals:
+              - index: 0
+                required: true
+                value: worker01
+                description: node name
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Complete worker node upgrade sequence:
+
+              # On the control-plane node:
+              kubectl drain worker01 --ignore-daemonsets --delete-emptydir-data
+
+              # SSH to worker01:
+              ssh worker01
+
+              # Upgrade kubeadm binary:
+              apt-mark unhold kubeadm && apt-get update && \
+                apt-get install -y kubeadm=1.30.0-1.1 && apt-mark hold kubeadm
+
+              # Apply the node configuration update:
+              kubeadm upgrade node
+
+              # Upgrade kubelet and kubectl:
+              apt-mark unhold kubelet kubectl
+              apt-get install -y kubelet=1.30.0-1.1 kubectl=1.30.0-1.1
+              apt-mark hold kubelet kubectl
+              systemctl daemon-reload && systemctl restart kubelet
+
+              # Exit back to control-plane:
+              exit
+
+              # Restore scheduling:
+              kubectl uncordon worker01
+
+              # Verify:
+              kubectl get nodes
+
+            The process repeats for each additional worker node.
+
+            Remember: kubectl is configured on the control-plane node, not the worker.
+            All kubectl commands run from the control-plane. All kubeadm upgrade node
+            and kubelet commands run on the worker node itself.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/kubeadm-upgrade/
+              text: Upgrading kubeadm clusters — Kubernetes Documentation
+
+  - title: "Joining a New Worker Node to the Cluster"
+    category: Cluster Management
+    hintsEnabled: true
+    elements:
+      - type: context
+        text: |
+          To add a new worker node to an existing cluster, the node must run `kubeadm join`
+          with a valid bootstrap token and the control-plane's CA certificate hash.
+
+          Bootstrap tokens expire after 24 hours by default. If the original `kubeadm init`
+          token has expired, you must generate a new one on the control-plane node.
+
+          The easiest way to get a complete join command is:
+            kubeadm token create --print-join-command
+
+          This generates a new token AND prints the full join command including the
+          --discovery-token-ca-cert-hash, ready to copy and paste on the worker node.
+      - type: question
+        question:
+          questionType: command
+          header: "Generate a new bootstrap token and print the complete join command."
+          hint: "Use kubeadm token create with a flag that prints the join command."
+          correctAnswerInfo: "The output will look like: kubeadm join <IP>:6443 --token <token> --discovery-token-ca-cert-hash sha256:<hash>"
+          command:
+            executable: kubeadm
+            subcommands:
+              - name: token
+              - name: create
+            flags:
+              - name: print-join-command
+                boolean: true
+                required: true
+      - type: context
+        text: |
+          A typical join command looks like:
+
+            kubeadm join 192.168.1.10:6443 \
+              --token abcdef.0123456789abcdef \
+              --discovery-token-ca-cert-hash sha256:abc123...
+
+          You copy this command and run it on the new worker node as root.
+          The token authenticates the node temporarily. The CA cert hash verifies
+          the control-plane's identity to prevent MITM attacks during bootstrap.
+      - type: question
+        question:
+          questionType: single-line
+          header: "What is the default Time-To-Live (TTL) for a kubeadm bootstrap token?"
+          expectedAnswer: "24h"
+          hint: "Think about how long you typically have after kubeadm init before the join token expires."
+          cel: "answer == '24h' || answer == '24 hours' || answer == '24 hours (24h)' || answer.lowerAscii().contains('24 hour') || answer == '24h0m0s'"
+          correctAnswerInfo: "Tokens expire after 24 hours. To create a non-expiring token (not recommended): kubeadm token create --ttl=0"
+      - type: question
+        question:
+          questionType: single-line
+          header: "What does the --discovery-token-ca-cert-hash flag verify during kubeadm join?"
+          expectedAnswer: "the SHA256 hash of the control-plane's CA certificate, ensuring the worker is joining the correct cluster"
+          hint: "It prevents a man-in-the-middle attack. The worker checks that the control-plane it is connecting to presents a certificate signed by the expected CA."
+          cel: "answer.lowerAscii().contains('ca') && (answer.lowerAscii().contains('hash') || answer.lowerAscii().contains('verify') || answer.lowerAscii().contains('certif'))"
+          correctAnswerInfo: "Without this check, an attacker could intercept the join request and send the worker node's credentials to a malicious cluster. The hash pins the expected CA and prevents this."
+      - type: question
+        question:
+          questionType: single-line
+          header: "If you need to compute the CA cert hash manually (without kubeadm token create), which file is hashed?"
+          expectedAnswer: "/etc/kubernetes/pki/ca.crt"
+          hint: "The cluster CA certificate is stored under the Kubernetes PKI directory."
+          correctAnswerInfo: "The hash is: openssl x509 -pubkey -in /etc/kubernetes/pki/ca.crt | openssl rsa -pubin -outform der 2>/dev/null | openssl dgst -sha256 -hex | sed 's/^.* //'"
+    explanation:
+      elements:
+        - type: context
+          text: |
+            kubeadm token management commands:
+
+              kubeadm token list                       — show all active tokens + expiry
+              kubeadm token create                     — create a new 24h token (prints just the token)
+              kubeadm token create --print-join-command — create token AND print full join command
+              kubeadm token create --ttl=0             — create non-expiring token (insecure)
+              kubeadm token delete <token>             — revoke a token
+
+            The join command for a control-plane node (HA setup) requires additional flags:
+              --control-plane
+              --certificate-key <key>
+            This is not typically tested on the CKA exam which uses single control-plane topologies.
+
+            After joining, verify the new node appears:
+              kubectl get nodes
+            It will initially show NotReady while the CNI plugin provisions the node's network.
+            After a few seconds it should transition to Ready.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/reference/setup-tools/kubeadm/kubeadm-token/
+              text: kubeadm token — Kubernetes Documentation
+            - url: https://kubernetes.io/docs/reference/setup-tools/kubeadm/kubeadm-join/
+              text: kubeadm join — Kubernetes Documentation
+
+  - title: "Troubleshooting a NotReady Node: kubelet Not Running"
+    category: Troubleshooting
+    hintsEnabled: true
+    elements:
+      - type: context
+        text: |
+          You notice that worker01 shows as NotReady in the cluster. This is one of the most
+          common troubleshooting tasks on the CKA exam.
+
+          When a node is NotReady, the root cause is almost always one of:
+            1. kubelet is stopped or crashing
+            2. The CNI plugin is broken or not installed
+            3. Disk pressure or memory pressure on the node
+            4. A certificate or kubeconfig problem
+
+          Your first step should always be: check kubelet on the affected node.
+          Since kubectl may not show detailed information for a broken node, you SSH in
+          and inspect the kubelet process directly.
+      - type: question
+        question:
+          questionType: command
+          header: "List all nodes and their status to confirm worker01 is NotReady."
+          hint: "Use kubectl get nodes."
+          correctAnswerInfo: "kubectl get nodes shows the STATUS column. NotReady means the node condition is failing — the kubelet has not sent a healthy heartbeat to the API server recently."
+          command:
+            executable: kubectl
+            subcommands:
+              - name: get
+              - name: nodes
+                aliases: [node, no]
+      - type: context
+        text: |
+          The output shows:
+
+            NAME           STATUS     ROLES           AGE   VERSION
+            controlplane   Ready      control-plane   12d   v1.30.0
+            worker01       NotReady   <none>          12d   v1.30.0
+
+          You SSH to worker01. Now investigate why it is NotReady.
+      - type: question
+        question:
+          questionType: single-line
+          header: "What systemctl command checks the current status of the kubelet service on worker01?"
+          expectedAnswer: "systemctl status kubelet"
+          hint: "kubelet runs as a systemd service. systemctl is used to inspect systemd services."
+          correctAnswerInfo: "systemctl status kubelet shows: whether it is Active (running) or inactive/failed, the last few log lines, and the exit code if it crashed."
+      - type: question
+        question:
+          questionType: single-line
+          header: "The kubelet service shows 'Active: inactive (dead)'. What command starts it?"
+          expectedAnswer: "systemctl start kubelet"
+          hint: "To start a stopped systemd service, use systemctl start."
+          correctAnswerInfo: "If kubelet stays down after start (i.e., it crashes immediately), use 'journalctl -u kubelet -n 50' to read the last 50 log lines and identify the error."
+      - type: question
+        question:
+          questionType: single-line
+          header: "What command shows the last 50 journal log lines for the kubelet service to diagnose why it is crashing?"
+          expectedAnswer: "journalctl -u kubelet -n 50"
+          hint: "journalctl reads the systemd journal. -u selects the unit, -n limits line count."
+          correctAnswerInfo: "journalctl -u kubelet outputs the kubelet log. Look for lines with 'error', 'failed', 'unable to'. Common errors: failed to load kubeconfig, certificate expired, CNI plugin not found."
+    explanation:
+      elements:
+        - type: context
+          text: |
+            NotReady troubleshooting decision tree:
+
+            1. kubectl get nodes → confirm which node is NotReady
+            2. kubectl describe node <name> → look at Conditions section and Events
+               (Works if the API server is reachable, but the node data may be stale)
+            3. SSH to the node
+            4. systemctl status kubelet → is it running?
+               - Not running → systemctl start kubelet, check if it stays up
+               - Running but node still NotReady → check logs
+            5. journalctl -u kubelet -n 100 → read kubelet logs
+            6. Check CNI: ls /etc/cni/net.d/ and ls /opt/cni/bin/
+            7. Check node resources: df -h (disk), free -m (memory)
+
+            If kubelet starts but immediately crashes, common causes:
+              - Wrong --config flag pointing to non-existent file
+              - Corrupt or missing /etc/kubernetes/kubelet.conf
+              - Expired TLS certificates
+              - Missing CRI socket (containerd/docker not running)
+
+            Always check CRI status too:
+              systemctl status containerd
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/tasks/debug/debug-cluster/
+              text: Troubleshooting Clusters — Kubernetes Documentation
+            - url: https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/troubleshooting-kubeadm/
+              text: Troubleshooting kubeadm
+
+  - title: "Troubleshooting kubelet Configuration Errors"
+    category: Troubleshooting
+    hintsEnabled: true
+    elements:
+      - type: context
+        text: |
+          You are investigating a worker node where kubelet starts but immediately exits.
+          The journal shows:
+
+            kubelet[1234]: F0612 10:15:02.123456    1234 server.go:199]
+              "failed to load Kubelet config file"
+              err="failed to load Kubelet config file /etc/kubernetes/kubelet-config.yaml,
+              error failed to read kubelet config file \"/etc/kubernetes/kubelet-config.yaml\":
+              open /etc/kubernetes/kubelet-config.yaml: no such file or directory"
+
+          The kubelet is looking for its configuration at a non-standard path.
+      - type: question
+        question:
+          questionType: single-line
+          header: "What is the standard path for the kubelet configuration file on a kubeadm-provisioned node?"
+          expectedAnswer: "/var/lib/kubelet/config.yaml"
+          hint: "kubeadm places the kubelet config under /var/lib/kubelet/, not /etc/kubernetes/."
+          correctAnswerInfo: "The kubelet reads its own configuration from /var/lib/kubelet/config.yaml. This file contains settings like staticPodPath, clusterDNS, clusterDomain, authentication, and authorization mode."
+      - type: question
+        question:
+          questionType: single-line
+          header: "The kubelet is launched with a --config flag pointing to the wrong path. Where is the kubelet's systemd drop-in configuration file that sets this flag?"
+          expectedAnswer: "/etc/systemd/system/kubelet.service.d/10-kubeadm.conf"
+          hint: "kubeadm writes a systemd drop-in (override) file for kubelet. Drop-in files are in /etc/systemd/system/<service>.service.d/."
+          correctAnswerInfo: "This file contains the KUBELET_CONFIG_ARGS environment variable, which is set to --config=/var/lib/kubelet/config.yaml. If the path is wrong here, kubelet will fail to find its config."
+      - type: question
+        question:
+          questionType: single-line
+          header: "After fixing the --config path in the drop-in file, what two commands must you run to apply the change and restart kubelet?"
+          expectedAnswer: "systemctl daemon-reload && systemctl restart kubelet"
+          hint: "When you modify a systemd unit or drop-in file, you must reload the daemon before the change takes effect."
+          correctAnswerInfo: "systemctl daemon-reload re-reads all unit files from disk. systemctl restart kubelet applies the new configuration. Without daemon-reload, systemd continues using the cached version."
+      - type: question
+        question:
+          questionType: single-line
+          header: "What is the path to the kubelet's kubeconfig file that allows it to authenticate to the API server?"
+          expectedAnswer: "/etc/kubernetes/kubelet.conf"
+          hint: "kubeadm places all Kubernetes kubeconfig files (admin, kubelet, scheduler, controller-manager) under /etc/kubernetes/."
+          correctAnswerInfo: "/etc/kubernetes/kubelet.conf contains the embedded client certificate and key that kubelet uses to identify itself to the API server. If this file is missing or corrupt, kubelet can join but will not be authorised."
+    explanation:
+      elements:
+        - type: context
+          text: |
+            kubelet configuration file locations on a kubeadm node:
+
+              /var/lib/kubelet/config.yaml
+                — kubelet's own runtime configuration (DNS, auth, staticPodPath, etc.)
+                — passed via --config flag in the systemd drop-in
+
+              /etc/kubernetes/kubelet.conf
+                — kubeconfig: how kubelet authenticates to the API server
+                — contains the client cert/key embedded as base64 or file paths
+
+              /etc/systemd/system/kubelet.service.d/10-kubeadm.conf
+                — systemd drop-in that sets KUBELET_KUBECONFIG_ARGS and KUBELET_CONFIG_ARGS
+                — this is where the --config and --kubeconfig flags are set
+
+              /var/lib/kubelet/kubeadm-flags.env
+                — additional flags set by kubeadm during init/join
+                — read by the systemd unit via EnvironmentFile
+
+            Troubleshooting sequence for kubelet config errors:
+              1. journalctl -u kubelet -n 50  → find the error message
+              2. Identify which file/path is wrong from the error
+              3. cat /etc/systemd/system/kubelet.service.d/10-kubeadm.conf  → check flags
+              4. Fix the path
+              5. systemctl daemon-reload && systemctl restart kubelet
+              6. systemctl status kubelet  → confirm it is now Active (running)
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/kubelet-integration/
+              text: Configuring each kubelet in your cluster using kubeadm
+
+  - title: "What kubeadm init Creates: Phases and Artefacts"
+    category: Cluster Management
+    hintsEnabled: true
+    elements:
+      - type: context
+        text: |
+          `kubeadm init` bootstraps a new control-plane node through a sequence of named
+          phases. Understanding what each phase produces is important for troubleshooting
+          and for questions about cluster architecture on the exam.
+
+          The main phases in order are:
+            preflight          — environment checks (swap, kernel modules, ports)
+            certs              — generates the PKI: CA, apiserver, etcd, front-proxy certs
+            kubeconfig         — generates admin.conf, controller-manager.conf, scheduler.conf, kubelet.conf
+            etcd               — creates the etcd static Pod manifest
+            control-plane      — creates static Pod manifests for kube-apiserver, controller-manager, scheduler
+            mark-control-plane — labels and taints the node as a control-plane
+            bootstrap-token    — creates the bootstrap token for workers to join
+            upload-config      — stores kubeadm and kubelet config in ConfigMaps in kube-system
+            upload-certs       — (optional) uploads certs for HA control-plane join
+            addon              — installs CoreDNS and kube-proxy
+      - type: question
+        question:
+          questionType: single-line
+          header: "Where does kubeadm store the cluster's Certificate Authority (CA) certificate after kubeadm init?"
+          expectedAnswer: "/etc/kubernetes/pki/ca.crt"
+          hint: "kubeadm puts all PKI material under /etc/kubernetes/pki/."
+          correctAnswerInfo: "The CA key pair (ca.crt + ca.key) is the root of trust for the entire cluster. kubeadm uses it to sign the API server certificate, the front-proxy certificate, and the admin kubeconfig."
+      - type: question
+        question:
+          questionType: single-line
+          header: "Which kubeconfig file does kubeadm init create for cluster administrators to use with kubectl?"
+          expectedAnswer: "/etc/kubernetes/admin.conf"
+          hint: "After kubeadm init, you are told to: cp /etc/kubernetes/_____.conf ~/.kube/config"
+          correctAnswerInfo: "admin.conf contains a client certificate with cluster-admin rights. The setup instructions after kubeadm init tell you to copy it to ~/.kube/config so kubectl picks it up."
+      - type: question
+        question:
+          questionType: single-line
+          header: "After kubeadm init, the cluster is not fully Ready because no CNI plugin is installed. What does kubectl get nodes show for the controlplane node's STATUS at this point?"
+          expectedAnswer: "NotReady"
+          hint: "Without a CNI plugin, the node cannot configure Pod networking. The kubelet reports the node as not ready."
+          correctAnswerInfo: "kubeadm deliberately does not install a CNI plugin — you choose your own (Calico, Flannel, Cilium, etc.) and install it with kubectl apply after init. Until then, the node is NotReady."
+      - type: question
+        question:
+          questionType: single-line
+          header: "Which kubeadm command lets you re-run a single phase of init without running the entire bootstrap process again? (format: 'kubeadm init phase <phase-name>')"
+          expectedAnswer: "kubeadm init phase certs"
+          hint: "The 'phase' subcommand lets you run individual phases. The certs phase regenerates certificates."
+          cel: "answer.startsWith('kubeadm init phase') && answer.lowerAscii().contains('phase')"
+          correctAnswerInfo: "Examples: 'kubeadm init phase certs all' (regenerate all certs), 'kubeadm init phase kubeconfig all' (regenerate all kubeconfigs). This is useful when certificates expire or need to be rotated."
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Key files and directories created by kubeadm init:
+
+              /etc/kubernetes/pki/
+                ca.crt / ca.key                — cluster CA
+                apiserver.crt / apiserver.key  — API server TLS cert
+                apiserver-kubelet-client.*     — used by API server to call kubelet
+                front-proxy-ca.*               — for aggregation layer
+                etcd/                          — etcd PKI (ca, server, peer, healthcheck-client)
+
+              /etc/kubernetes/
+                admin.conf                     — cluster-admin kubeconfig
+                kubelet.conf                   — kubelet's kubeconfig
+                controller-manager.conf        — controller-manager kubeconfig
+                scheduler.conf                 — scheduler kubeconfig
+                manifests/                     — static Pod manifests
+                  etcd.yaml
+                  kube-apiserver.yaml
+                  kube-controller-manager.yaml
+                  kube-scheduler.yaml
+
+              /var/lib/kubelet/
+                config.yaml                    — kubelet runtime config
+                kubeadm-flags.env              — kubeadm-set kubelet flags
+
+            Useful commands for post-init inspection:
+              kubeadm config view              — show the stored kubeadm config
+              kubeadm certs check-expiration   — show cert expiry dates
+              kubeadm certs renew all          — renew all certificates
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/reference/setup-tools/kubeadm/kubeadm-init/
+              text: kubeadm init — Kubernetes Documentation
+            - url: https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/kubeadm-certs/
+              text: Certificate Management with kubeadm
+
+  - title: "Certificate Expiry and Renewal with kubeadm"
+    category: Cluster Management
+    hintsEnabled: true
+    elements:
+      - type: context
+        text: |
+          By default, kubeadm generates certificates with a 1-year validity period.
+          When certificates expire, the cluster becomes inaccessible: kubectl commands fail
+          with "x509: certificate has expired" errors, and control-plane components crash.
+
+          The CKA exam may ask you to check certificate expiry or renew them.
+          kubeadm has built-in commands for both tasks.
+
+          Certificate renewal is also triggered automatically during a `kubeadm upgrade apply`
+          — running an upgrade is the easiest way to refresh certificates if you are upgrading
+          anyway.
+      - type: question
+        question:
+          questionType: command
+          header: "Check the expiry date of all kubeadm-managed certificates on the control-plane node."
+          hint: "Use the 'kubeadm certs' subcommand with 'check-expiration'."
+          correctAnswerInfo: "The output shows each certificate, its expiry date, and whether it is externally managed. Look for any entries marked 'RESIDUAL TIME' that are near zero or expired."
+          command:
+            executable: kubeadm
+            subcommands:
+              - name: certs
+              - name: check-expiration
+      - type: context
+        text: |
+          Example output of `kubeadm certs check-expiration`:
+
+            CERTIFICATE                EXPIRES                  RESIDUAL TIME   CERTIFICATE AUTHORITY   EXTERNALLY MANAGED
+            admin.conf                 Jun 01, 2026 10:00 UTC   364d            ca                      no
+            apiserver                  Jun 01, 2026 10:00 UTC   364d            ca                      no
+            apiserver-etcd-client      Jun 01, 2026 10:00 UTC   364d            etcd-ca                 no
+            apiserver-kubelet-client   Jun 01, 2026 10:00 UTC   364d            ca                      no
+            controller-manager.conf    Jun 01, 2026 10:00 UTC   364d            ca                      no
+            etcd-healthcheck-client    Jun 01, 2026 10:00 UTC   364d            etcd-ca                 no
+            etcd-peer                  Jun 01, 2026 10:00 UTC   364d            etcd-ca                 no
+            etcd-server                Jun 01, 2026 10:00 UTC   364d            etcd-ca                 no
+            front-proxy-client         Jun 01, 2026 10:00 UTC   364d            front-proxy-ca          no
+            scheduler.conf             Jun 01, 2026 10:00 UTC   364d            ca                      no
+
+          If any certificate shows a negative residual time, it has expired and must be renewed.
+      - type: question
+        question:
+          questionType: command
+          header: "Renew all kubeadm-managed certificates on the control-plane node."
+          hint: "Use 'kubeadm certs renew' with the 'all' argument."
+          correctAnswerInfo: "After renewal, you must restart the control-plane components so they pick up the new certificates: restart the static Pod containers or move the manifests out of and back into /etc/kubernetes/manifests/."
+          command:
+            executable: kubeadm
+            subcommands:
+              - name: certs
+              - name: renew
+            positionals:
+              - index: 0
+                required: true
+                value: all
+                description: which certs to renew
+      - type: question
+        question:
+          questionType: single-line
+          header: "After renewing certificates, what must you do to the control-plane components so they load the new certificates?"
+          expectedAnswer: "restart them"
+          hint: "The control-plane components (kube-apiserver, controller-manager, scheduler) load certificates at startup. They must be restarted to pick up renewed cert files."
+          cel: "answer.lowerAscii().contains('restart') || answer.lowerAscii().contains('restar') || answer.lowerAscii().contains('bounce')"
+          correctAnswerInfo: "For static Pods, the easiest approach is: move each manifest out of /etc/kubernetes/manifests/, wait for the Pod to stop, then move it back. Or: kill the container with crictl stopp. The kubelet will recreate it automatically."
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Certificate management commands:
+
+              kubeadm certs check-expiration   — list all certs with expiry dates
+              kubeadm certs renew all          — renew all certificates
+              kubeadm certs renew apiserver    — renew only the apiserver cert
+              kubeadm certs renew admin.conf   — renew the admin kubeconfig cert
+
+            After `kubeadm certs renew all`, restart control-plane components:
+
+              # Temporarily move manifests to trigger Pod restart:
+              cd /etc/kubernetes/manifests
+              mv kube-apiserver.yaml kube-controller-manager.yaml kube-scheduler.yaml /tmp/
+              # Wait a few seconds for Pods to stop
+              mv /tmp/kube-apiserver.yaml /tmp/kube-controller-manager.yaml /tmp/kube-scheduler.yaml .
+
+            Also copy the renewed admin.conf to your kubectl config:
+              cp /etc/kubernetes/admin.conf ~/.kube/config
+
+            Certificate auto-renewal during upgrade:
+              kubeadm upgrade apply automatically renews certificates that are within
+              180 days of expiry. This is the recommended certificate renewal strategy
+              — keep your cluster upgraded and certificates stay fresh.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/kubeadm-certs/
+              text: Certificate Management with kubeadm
+
+  - title: "Verifying Cluster Health After an Upgrade"
+    category: Upgrade
+    hintsEnabled: true
+    elements:
+      - type: context
+        text: |
+          After completing the full upgrade (control plane + all workers + kubelet on each node),
+          you must verify that the cluster is healthy and all components are running the
+          expected version.
+
+          A complete verification checks:
+            - Node versions and readiness
+            - Control-plane component versions (API server, etc.)
+            - Workload health (DaemonSets, Deployments)
+      - type: question
+        question:
+          questionType: command
+          header: "List all nodes and display their Kubernetes version and status."
+          hint: "kubectl get nodes shows NAME, STATUS, ROLES, AGE, and VERSION."
+          correctAnswerInfo: "VERSION shows the kubelet version on each node. After a full upgrade to v1.30.0, all nodes should show v1.30.0."
+          command:
+            executable: kubectl
+            subcommands:
+              - name: get
+              - name: nodes
+                aliases: [node, no]
+      - type: context
+        text: |
+          Expected output after a successful upgrade to v1.30.0:
+
+            NAME           STATUS   ROLES           AGE   VERSION
+            controlplane   Ready    control-plane   12d   v1.30.0
+            worker01       Ready    <none>          12d   v1.30.0
+
+          If a node still shows the old version (e.g. v1.29.0), the kubelet on that node
+          was not upgraded. Repeat the kubelet upgrade steps for that node.
+      - type: question
+        question:
+          questionType: single-line
+          header: "What kubectl command shows the server-side Kubernetes version (the API server version)?"
+          expectedAnswer: "kubectl version"
+          hint: "There is a kubectl subcommand specifically for showing client and server versions."
+          cel: "answer == 'kubectl version' || answer == 'kubectl version --short' || answer.startsWith('kubectl version')"
+          correctAnswerInfo: "kubectl version shows both the Client Version (your kubectl binary) and the Server Version (the kube-apiserver). After upgrading, the Server Version should match your target version."
+      - type: question
+        question:
+          questionType: command
+          header: "List all Pods in all namespaces to confirm system components are Running after the upgrade."
+          hint: "Use kubectl get pods with the flag for all namespaces."
+          correctAnswerInfo: "Look for all kube-system pods to be Running (etcd, kube-apiserver, kube-controller-manager, kube-scheduler, kube-proxy, CoreDNS). Any pod in CrashLoopBackOff or Error needs investigation."
+          command:
+            executable: kubectl
+            subcommands:
+              - name: get
+              - name: pods
+                aliases: [pod, po]
+            flags:
+              - name: all-namespaces
+                short: "A"
+                boolean: true
+                required: true
+      - type: question
+        question:
+          questionType: single-line
+          header: "After the upgrade, what should you do with the apt package hold on kubeadm, kubelet, and kubectl to prevent accidental future upgrades?"
+          expectedAnswer: "keep them on hold"
+          hint: "The hold was re-applied after each package install. Its purpose is to prevent unintended upgrades."
+          cel: "answer.lowerAscii().contains('hold') || answer.lowerAscii().contains('keep') || answer.lowerAscii().contains('leave')"
+          correctAnswerInfo: "apt-mark hold ensures that apt-get upgrade never automatically upgrades these packages. This is correct and expected — Kubernetes upgrades must always be deliberate and sequential, never automatic."
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Post-upgrade verification checklist:
+
+              kubectl get nodes
+                → All nodes Ready, all nodes show new version
+
+              kubectl version
+                → Server Version matches target version
+
+              kubectl get pods -A
+                → All kube-system pods Running
+                → No CrashLoopBackOff or Error
+
+              kubectl get daemonsets -n kube-system
+                → kube-proxy DaemonSet desired == ready
+
+              kubectl get deployments -n kube-system
+                → CoreDNS deployment available == desired
+
+            If a worker node still shows the old kubelet version:
+              1. SSH to the worker
+              2. apt-mark unhold kubelet && apt-get install -y kubelet=<version> && apt-mark hold kubelet
+              3. systemctl daemon-reload && systemctl restart kubelet
+              4. Exit, run kubectl get nodes again
+
+            Remember: the node VERSION column reflects the kubelet version, not the
+            API server version. You can have a node showing an older version if its
+            kubelet was not upgraded — the API server may be newer.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/kubeadm-upgrade/
+              text: Upgrading kubeadm clusters — Kubernetes Documentation
+            - url: https://kubernetes.io/docs/setup/release/version-skew-policy/
+              text: Kubernetes Version Skew Policy

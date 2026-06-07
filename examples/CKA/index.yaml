@@ -1,0 +1,20 @@
+apiVersion: v1alpha1
+name: CKA
+subdirs: []
+sets:
+  - name: "CKA: etcd Backup and Recovery"
+    filename: etcd-backup-and-recovery.yaml
+    description: "Covers all etcd knowledge required for the CKA exam: taking snapshots, verifying integrity, restoring from backup, fixing broken etcd installations, health checks, and understanding quorum."
+    tags:
+      - Architecture
+      - Backup
+      - Restore
+      - Verification
+      - Troubleshooting
+  - name: "CKA: kubeadm Cluster Management"
+    filename: kubeadm-cluster-management.yaml
+    description: "Covers all kubeadm knowledge required for the CKA exam: planning and executing cluster upgrades, upgrading control-plane and worker nodes, joining new nodes, managing bootstrap tokens, and troubleshooting NotReady nodes and kubelet configuration errors."
+    tags:
+      - Upgrade
+      - Cluster Management
+      - Troubleshooting
