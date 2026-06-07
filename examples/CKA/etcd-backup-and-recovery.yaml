@@ -1,0 +1,904 @@
+apiVersion: v1alpha1
+name: "CKA: etcd Backup and Recovery"
+
+timing:
+  enabled: true
+
+introduction:
+  elements:
+    - type: context
+      text: |
+        etcd is the distributed key-value store that Kubernetes uses as its single source of truth.
+        Every object in your cluster — Pods, ConfigMaps, Secrets, RBAC rules — lives in etcd.
+        If etcd data is lost or corrupted, your entire cluster state is gone.
+
+        This scenario set covers everything you need to know about etcd for the Certified Kubernetes
+        Administrator (CKA) exam: how to take backups, how to verify them, how to restore from a
+        snapshot, and how to diagnose and fix a broken etcd installation.
+
+        You will work with etcdctl (v3 API), the etcd static pod manifest, and the certificate paths
+        used in a kubeadm-provisioned cluster.
+    - type: break
+    - type: context
+      text: |
+        Difficulty: High — mirroring the depth required on the CKA exam.
+        Hints are enabled. Read each context block carefully before answering.
+    - type: references
+      links:
+        - url: https://kubernetes.io/docs/tasks/administer-cluster/configure-upgrade-etcd/
+          text: Operating etcd clusters for Kubernetes
+        - url: https://etcd.io/docs/v3.5/op-guide/recovery/
+          text: etcd Disaster Recovery
+
+scenarios:
+  - title: "etcd Architecture: Stacked vs. External"
+    category: Architecture
+    hintsEnabled: true
+    elements:
+      - type: context
+        text: |
+          In a kubeadm-provisioned cluster, etcd runs as a **stacked** control-plane component.
+          This means etcd runs as a static Pod on the same node as the API server, scheduler,
+          and controller manager. The kubelet reads static Pod manifests from a specific directory
+          and ensures those Pods are always running — without needing the Kubernetes API.
+
+          In larger production setups, etcd is deployed **externally** on dedicated nodes
+          to reduce blast radius. The exam may ask you about both topologies.
+      - type: question
+        question:
+          questionType: single-line
+          header: "In a kubeadm cluster, etcd is deployed as a ___. (two words, e.g. 'foo bar')"
+          expectedAnswer: "static pod"
+          hint: "The kubelet manages this type of Pod directly by reading manifest files from disk — no Deployment or ReplicaSet involved."
+          correctAnswerInfo: "Static Pods are defined in /etc/kubernetes/manifests/ and are managed entirely by the local kubelet. They appear in kubectl output but cannot be deleted via the API."
+      - type: question
+        question:
+          questionType: single-line
+          header: "In which namespace does the etcd static Pod run?"
+          expectedAnswer: "kube-system"
+          hint: "All control-plane components run in this namespace."
+          correctAnswerInfo: "kube-system is reserved for Kubernetes system components. You can inspect etcd with: kubectl get pod -n kube-system"
+      - type: question
+        question:
+          questionType: single-line
+          header: "What is the full path to the etcd static Pod manifest on a kubeadm control-plane node?"
+          expectedAnswer: "/etc/kubernetes/manifests/etcd.yaml"
+          hint: "All kubeadm static Pod manifests live under /etc/kubernetes/manifests/."
+          correctAnswerInfo: "Editing this file triggers an automatic Pod restart — the kubelet detects the change and recreates the Pod. This is how you apply configuration changes to etcd."
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Static Pods are a kubelet-level feature. The kubelet watches a directory (by default
+            /etc/kubernetes/manifests/) and reconciles the Pods it finds there. These Pods are
+            visible through kubectl but their lifecycle is controlled by the kubelet, not by
+            a higher-level controller.
+
+            In a stacked topology, etcd, kube-apiserver, kube-scheduler, and
+            kube-controller-manager all run as static Pods on the control-plane node.
+
+            In an external topology, etcd runs as a systemd service on separate nodes.
+            The path to inspect would then be /etc/etcd/etcd.conf or similar, and you would
+            use `systemctl status etcd` rather than `kubectl get pod`.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/tasks/configure-pod-container/static-pod/
+              text: Static Pods — Kubernetes Documentation
+            - url: https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/ha-topology/
+              text: Options for Highly Available Topology
+
+  - title: "Locating etcd Certificates and Endpoints"
+    category: Backup
+    hintsEnabled: true
+    elements:
+      - type: context
+        text: |
+          Before you can interact with etcd using etcdctl, you need three things:
+            1. The etcd endpoint (the URL the client connects to)
+            2. The CA certificate to verify the server's TLS certificate
+            3. A client certificate and key to authenticate yourself
+
+          In kubeadm clusters these are stored under /etc/kubernetes/pki/etcd/.
+          The exact values are visible in the etcd static Pod manifest.
+      - type: manifest
+        header: "Excerpt from /etc/kubernetes/manifests/etcd.yaml (command section)"
+        content: |
+          spec:
+            containers:
+            - command:
+              - etcd
+              - --advertise-client-urls=https://192.168.1.10:2379
+              - --cacert=/etc/kubernetes/pki/etcd/ca.crt
+              - --cert-file=/etc/kubernetes/pki/etcd/server.crt
+              - --client-cert-auth=true
+              - --data-dir=/var/lib/etcd
+              - --initial-advertise-peer-urls=https://192.168.1.10:2380
+              - --initial-cluster=controlplane=https://192.168.1.10:2380
+              - --key-file=/etc/kubernetes/pki/etcd/server.key
+              - --listen-client-urls=https://127.0.0.1:2379,https://192.168.1.10:2379
+              - --listen-metrics-urls=http://127.0.0.1:2381
+              - --listen-peer-urls=https://192.168.1.10:2380
+              - --name=controlplane
+              - --peer-cacert=/etc/kubernetes/pki/etcd/ca.crt
+              - --peer-cert-file=/etc/kubernetes/pki/etcd/peer.crt
+              - --peer-key-file=/etc/kubernetes/pki/etcd/peer.key
+              - --peer-client-cert-auth=true
+              - --snapshot-count=10000
+              - --trusted-ca-file=/etc/kubernetes/pki/etcd/ca.crt
+        footer: "Read the --cacert, --cert-file, and --key-file flags carefully — these are what you will pass to etcdctl."
+      - type: question
+        question:
+          questionType: single-line
+          header: "What is the local loopback endpoint that etcd listens on for client connections?"
+          expectedAnswer: "https://127.0.0.1:2379"
+          hint: "Look at --listen-client-urls in the manifest above. The loopback address is always used."
+          correctAnswerInfo: "2379 is the standard etcd client port. 2380 is used for peer-to-peer communication between etcd members."
+      - type: question
+        question:
+          questionType: single-line
+          header: "What is the path to the etcd CA certificate in a kubeadm cluster?"
+          expectedAnswer: "/etc/kubernetes/pki/etcd/ca.crt"
+          hint: "Look at the --cacert flag in the manifest shown above."
+          correctAnswerInfo: "This CA cert is used to verify the etcd server's TLS certificate. Without it, etcdctl will refuse to connect (or you would need --insecure-skip-tls-verify, which is never correct for the exam)."
+      - type: question
+        question:
+          questionType: single-line
+          header: "Which environment variable must be set (and to what value) to use the etcd v3 API with etcdctl? (format: VAR=value)"
+          expectedAnswer: "ETCDCTL_API=3"
+          hint: "Without this variable, etcdctl defaults to the v2 API, which cannot read v3 data."
+          correctAnswerInfo: "The CKA exam environment may or may not have this pre-set. Always prefix your etcdctl commands with ETCDCTL_API=3 or export it first to be safe."
+    explanation:
+      elements:
+        - type: context
+          text: |
+            The certificate layout under /etc/kubernetes/pki/etcd/ is:
+
+              ca.crt       — CA certificate (used as --cacert / --trusted-ca-file)
+              server.crt   — etcd server certificate (used as --cert-file)
+              server.key   — etcd server private key (used as --key-file)
+              peer.crt     — peer certificate for intra-cluster communication
+              peer.key     — peer private key
+              healthcheck-client.crt / .key — used by liveness probes
+
+            When running etcdctl as a client, you pass the CA cert plus the server cert+key.
+            This is because etcd uses mutual TLS (mTLS) — both sides present certificates.
+
+            A quick way to discover these paths without memorising them is:
+              kubectl describe pod etcd-controlplane -n kube-system | grep -A5 "Command"
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/tasks/administer-cluster/configure-upgrade-etcd/#securing-etcd-clusters
+              text: Securing etcd Clusters — Kubernetes Documentation
+
+  - title: "Taking an etcd Snapshot Backup"
+    category: Backup
+    hintsEnabled: true
+    elements:
+      - type: context
+        text: |
+          To back up etcd, you use the `etcdctl snapshot save` subcommand.
+          You must supply four flags: the endpoint, the CA cert, the client cert, and the client key.
+
+          The standard certificate paths for a kubeadm cluster are:
+            --cacert=/etc/kubernetes/pki/etcd/ca.crt
+            --cert=/etc/kubernetes/pki/etcd/server.crt
+            --key=/etc/kubernetes/pki/etcd/server.key
+
+          Note: when using etcdctl as a *client* the flags are --cacert, --cert, and --key
+          (shorter forms), not --cacert-file / --cert-file as used by the etcd *server* process itself.
+
+          Save the snapshot to /opt/etcd-backup.db.
+      - type: question
+        question:
+          questionType: multiline
+          header: "Write the complete command to take an etcd snapshot and save it to /opt/etcd-backup.db. Include the ETCDCTL_API prefix and all required certificate flags."
+          expectedAnswer: "ETCDCTL_API=3 etcdctl snapshot save /opt/etcd-backup.db --endpoints=https://127.0.0.1:2379 --cacert=/etc/kubernetes/pki/etcd/ca.crt --cert=/etc/kubernetes/pki/etcd/server.crt --key=/etc/kubernetes/pki/etcd/server.key"
+          hint: |
+            The command structure is:
+              ETCDCTL_API=3 etcdctl snapshot save <path> --endpoints=... --cacert=... --cert=... --key=...
+            Use the loopback endpoint https://127.0.0.1:2379 and the paths under /etc/kubernetes/pki/etcd/.
+          correctAnswerInfo: "Flag order does not matter. On success, etcdctl prints: Snapshot saved at /opt/etcd-backup.db"
+      - type: context
+        text: |
+          After running the command above, you should see output like:
+
+            {"level":"info","ts":...,"msg":"wrote and verified file","path":"/opt/etcd-backup.db"}
+            Snapshot saved at /opt/etcd-backup.db
+
+          The snapshot file is a binary file. To inspect it, use `etcdctl snapshot status`.
+      - type: question
+        question:
+          questionType: single-line
+          header: "What is the name of the etcd client certificate file (not the CA) in a kubeadm cluster?"
+          expectedAnswer: "server.crt"
+          hint: "Look at the --cert-file flag in the etcd server manifest. The etcdctl client flag is --cert."
+          correctAnswerInfo: "The naming can be confusing: the 'server.crt' is the etcd server's own certificate, but you also use it as your client certificate when connecting with etcdctl because the same keypair is used for both server TLS and client authentication in the default kubeadm setup."
+    explanation:
+      elements:
+        - type: context
+          text: |
+            The full backup command with line continuations for readability:
+
+              ETCDCTL_API=3 etcdctl snapshot save /opt/etcd-backup.db \
+                --endpoints=https://127.0.0.1:2379 \
+                --cacert=/etc/kubernetes/pki/etcd/ca.crt \
+                --cert=/etc/kubernetes/pki/etcd/server.crt \
+                --key=/etc/kubernetes/pki/etcd/server.key
+
+            Common mistakes:
+              - Forgetting ETCDCTL_API=3 (uses v2 API, command fails or produces wrong data)
+              - Using --cert-file / --key-file instead of --cert / --key (server flags, not client flags)
+              - Using port 2380 (peer port) instead of 2379 (client port)
+              - Not running as root — the PKI files are root-only readable
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/tasks/administer-cluster/configure-upgrade-etcd/#backing-up-an-etcd-cluster
+              text: Backing up an etcd cluster — Kubernetes Documentation
+
+  - title: "Verifying a Snapshot with etcdctl snapshot status"
+    category: Backup
+    hintsEnabled: true
+    elements:
+      - type: context
+        text: |
+          Before you rely on a backup for a restore, you should verify it is intact.
+          `etcdctl snapshot status` reads the snapshot file and reports:
+            - Hash         — a CRC32 checksum of the file
+            - Revision     — the etcd revision at the time of the snapshot
+            - Total Keys   — number of keys stored
+            - Total Size   — size of the snapshot in bytes
+
+          Unlike `snapshot save`, `snapshot status` does not need TLS flags because it reads
+          the local file directly — it does not connect to a running etcd instance.
+
+          Add `--write-out=table` for a human-readable tabular output.
+      - type: question
+        question:
+          questionType: multiline
+          header: "Write the command to display the status of the snapshot at /opt/etcd-backup.db in table format."
+          expectedAnswer: "ETCDCTL_API=3 etcdctl snapshot status /opt/etcd-backup.db --write-out=table"
+          hint: "You do not need cert flags for snapshot status. The subcommand is 'snapshot status' and the flag for table output is --write-out=table."
+          correctAnswerInfo: "No TLS flags needed — snapshot status reads the local file. The output columns are: hash, revision, totalKey, totalSize."
+      - type: context
+        text: |
+          Example output of `etcdctl snapshot status --write-out=table`:
+
+            +----------+----------+------------+------------+
+            |   HASH   | REVISION | TOTAL KEYS | TOTAL SIZE |
+            +----------+----------+------------+------------+
+            | 4b4f054f |    97282 |       1237 |     5.0 MB |
+            +----------+----------+------------+------------+
+
+          If the snapshot file is corrupt or truncated, this command will error.
+          A successful status output is a good confidence check before attempting a restore.
+      - type: question
+        question:
+          questionType: single-line
+          header: "What does the 'Revision' value in snapshot status represent?"
+          expectedAnswer: "the etcd revision at the time the snapshot was taken"
+          hint: "etcd uses a monotonically increasing revision counter. Every write increments it."
+          cel: "answer.lowerAscii().contains('revision') || answer.lowerAscii().contains('point in time') || answer.lowerAscii().contains('when the snapshot')"
+          correctAnswerInfo: "The revision tells you 'how old' the backup is in terms of cluster writes. If you compare revisions from two snapshots, the higher one is more recent."
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Key points about snapshot verification:
+
+            1. `snapshot status` only reads the local .db file — no running etcd needed.
+            2. A successful status check does NOT guarantee the data inside is logically consistent
+               with your cluster — it only guarantees the file is structurally valid.
+            3. The hash is a CRC32 checksum. If the file was partially written or corrupted
+               during transfer, the hash check will catch it.
+            4. `--write-out` accepts: table, json, fields, simple. The default (simple) is
+               harder to read during an exam — use table.
+
+            Shortcut for the exam: you can run snapshot status without ETCDCTL_API=3 since
+            it only reads a local file, but including it is a good habit.
+        - type: references
+          links:
+            - url: https://etcd.io/docs/v3.5/op-guide/recovery/
+              text: etcd Disaster Recovery Documentation
+
+  - title: "Restoring etcd from a Snapshot"
+    category: Restore
+    hintsEnabled: true
+    elements:
+      - type: context
+        text: |
+          Restoring etcd from a snapshot is a two-phase operation:
+
+          Phase 1 — Use `etcdctl snapshot restore` to populate a new data directory.
+            This does NOT connect to a live etcd instance — it writes directly to disk.
+            You must specify a --data-dir that does not already exist, or etcdctl will error.
+
+          Phase 2 — Update the etcd static Pod manifest (/etc/kubernetes/manifests/etcd.yaml)
+            to point to the new data directory. The kubelet will then recreate the etcd Pod
+            reading from the restored data.
+
+          Important: the restore command creates a new data directory and initialises a fresh
+          etcd cluster from the snapshot. The cluster identity flags (--initial-cluster,
+          --initial-cluster-token) must match your node's configuration if you have a
+          multi-node etcd cluster.
+
+          For a single-node kubeadm setup, the minimal restore command is:
+            ETCDCTL_API=3 etcdctl snapshot restore <snapshot-file> --data-dir=<new-dir>
+      - type: question
+        question:
+          questionType: multiline
+          header: "Write the etcdctl command to restore the snapshot at /opt/etcd-backup.db into a new data directory at /var/lib/etcd-restore."
+          expectedAnswer: "ETCDCTL_API=3 etcdctl snapshot restore /opt/etcd-backup.db --data-dir=/var/lib/etcd-restore"
+          hint: "The subcommand is 'snapshot restore'. The snapshot path is a positional argument. Use --data-dir to specify where to write the restored data."
+          correctAnswerInfo: "After this command runs, /var/lib/etcd-restore is populated with the restored etcd member data. etcd has NOT restarted yet — that happens in the next step."
+      - type: context
+        text: |
+          After `etcdctl snapshot restore` completes successfully, you will see output like:
+
+            {"level":"info","ts":...,"msg":"restored snapshot","path":"/opt/etcd-backup.db","wal-dir":"/var/lib/etcd-restore/member/wal","data-dir":"/var/lib/etcd-restore","snap-dir":"/var/lib/etcd-restore/member/snap"}
+
+          The data directory now exists on disk. Next you need to tell etcd to use it.
+      - type: question
+        question:
+          questionType: single-line
+          header: "After restoring the snapshot data to /var/lib/etcd-restore, which file must you edit to make etcd use the new directory?"
+          expectedAnswer: "/etc/kubernetes/manifests/etcd.yaml"
+          hint: "etcd is a static Pod on a kubeadm cluster. Static Pod manifests live in one specific directory."
+          correctAnswerInfo: "Saving a change to this file causes the kubelet to immediately delete and recreate the etcd Pod. No kubectl apply or systemctl restart needed."
+      - type: question
+        question:
+          questionType: single-line
+          header: "In /etc/kubernetes/manifests/etcd.yaml, what is the etcd startup flag you must update to point at the new data directory?"
+          expectedAnswer: "--data-dir"
+          hint: "This flag appears in the spec.containers[0].command list. It tells etcd where its WAL and snapshot data lives."
+          correctAnswerInfo: "--data-dir is the only flag you need to change in the command section. But there is a second place in the manifest that must also be updated — see the next question."
+      - type: question
+        question:
+          questionType: single-line
+          header: "Besides the --data-dir flag in the command section, which other part of the etcd manifest must be updated to match the new data directory path?"
+          expectedAnswer: "hostPath volume"
+          hint: "etcd mounts its data directory from the host into the Pod using a volume. Both the mount path and the host source must be consistent."
+          cel: "answer.lowerAscii().contains('hostpath') || answer.lowerAscii().contains('host path') || answer.lowerAscii().contains('volume') || answer.lowerAscii().contains('volumes')"
+          correctAnswerInfo: "In the volumes section of the manifest, the etcd-data volume has a hostPath.path field. This must match --data-dir exactly, or the Pod will start reading from the wrong (or non-existent) directory."
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Complete restore procedure summary:
+
+            Step 1 — Take note of the current etcd endpoint and certificates (from the manifest).
+
+            Step 2 — Restore the snapshot:
+              ETCDCTL_API=3 etcdctl snapshot restore /opt/etcd-backup.db \
+                --data-dir=/var/lib/etcd-restore
+
+            Step 3 — Edit /etc/kubernetes/manifests/etcd.yaml. Change two places:
+              a) In spec.containers[0].command, change:
+                   - --data-dir=/var/lib/etcd
+                 to:
+                   - --data-dir=/var/lib/etcd-restore
+
+              b) In spec.volumes, find the volume named 'etcd-data' and change:
+                   hostPath:
+                     path: /var/lib/etcd
+                 to:
+                   hostPath:
+                     path: /var/lib/etcd-restore
+
+            Step 4 — Wait for the etcd Pod to restart (10–30 seconds typically):
+              watch kubectl get pod -n kube-system etcd-controlplane
+
+            Step 5 — Verify the cluster is healthy:
+              kubectl get nodes
+              kubectl get pods -A
+
+            Common mistake: updating --data-dir but forgetting the hostPath. The Pod starts
+            but etcd reads from the old directory because the host path wasn't changed.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/tasks/administer-cluster/configure-upgrade-etcd/#restoring-an-etcd-cluster
+              text: Restoring an etcd cluster — Kubernetes Documentation
+
+  - title: "Updating the etcd Manifest After a Restore"
+    category: Restore
+    hintsEnabled: true
+    elements:
+      - type: context
+        text: |
+          You have already restored a snapshot to /var/lib/etcd-from-backup.
+          Now you need to update the etcd static Pod manifest.
+
+          Below is the current (pre-update) etcd manifest. Study it carefully — there are
+          two distinct places where /var/lib/etcd appears and must be changed.
+      - type: manifest
+        header: "Current /etc/kubernetes/manifests/etcd.yaml (abbreviated)"
+        content: |
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: etcd
+            namespace: kube-system
+          spec:
+            containers:
+            - command:
+              - etcd
+              - --data-dir=/var/lib/etcd
+              - --cert-file=/etc/kubernetes/pki/etcd/server.crt
+              - --key-file=/etc/kubernetes/pki/etcd/server.key
+              - --trusted-ca-file=/etc/kubernetes/pki/etcd/ca.crt
+              - --listen-client-urls=https://127.0.0.1:2379
+              - --advertise-client-urls=https://127.0.0.1:2379
+              image: registry.k8s.io/etcd:3.5.9-0
+              name: etcd
+              volumeMounts:
+              - mountPath: /var/lib/etcd
+                name: etcd-data
+              - mountPath: /etc/kubernetes/pki/etcd
+                name: etcd-certs
+            volumes:
+            - hostPath:
+                path: /var/lib/etcd
+                type: DirectoryOrCreate
+              name: etcd-data
+            - hostPath:
+                path: /etc/kubernetes/pki/etcd
+                type: DirectoryOrCreate
+              name: etcd-certs
+        footer: "The restore target directory is /var/lib/etcd-from-backup."
+      - type: question
+        question:
+          questionType: single-line
+          header: "In the command section, what is the new value the --data-dir flag must be set to?"
+          expectedAnswer: "/var/lib/etcd-from-backup"
+          hint: "It must match the --data-dir you passed to etcdctl snapshot restore."
+          correctAnswerInfo: "The command entry will become: - --data-dir=/var/lib/etcd-from-backup"
+      - type: question
+        question:
+          questionType: single-line
+          header: "In the volumes section, under the 'etcd-data' hostPath, what must the 'path' field be changed to?"
+          expectedAnswer: "/var/lib/etcd-from-backup"
+          hint: "The hostPath.path tells the kubelet which directory on the host node to mount into the container. It must equal --data-dir."
+          correctAnswerInfo: "Both the hostPath.path and the --data-dir flag must be identical. If they differ, etcd will try to open WAL files in a directory that is bind-mounted to somewhere else, causing a startup failure."
+      - type: question
+        question:
+          questionType: single-line
+          header: "The volumeMount entry for 'etcd-data' has mountPath: /var/lib/etcd. Does this also need to be changed? (yes/no)"
+          expectedAnswer: "no"
+          hint: "The mountPath is the path *inside* the container. The --data-dir flag also refers to the path inside the container. They are already consistent."
+          correctAnswerInfo: "The mountPath is where the volume appears inside the container. --data-dir is also read inside the container. If mountPath and --data-dir agree, etcd is happy regardless of what hostPath.path is — but hostPath.path determines which host directory is bind-mounted, so it must match the restored data location."
+    explanation:
+      elements:
+        - type: context
+          text: |
+            The relationship between the three path values in the manifest:
+
+              hostPath.path          → the directory on the *host node* that gets bind-mounted
+              volumeMount.mountPath  → where that bind-mount appears *inside the container*
+              --data-dir             → where etcd *inside the container* expects its data
+
+            For everything to work, --data-dir must equal volumeMount.mountPath (both inside
+            the container), AND hostPath.path must point to the restored data directory on
+            the host.
+
+            In the default kubeadm setup all three are /var/lib/etcd. After a restore to
+            /var/lib/etcd-from-backup on the host, you change:
+              - hostPath.path         → /var/lib/etcd-from-backup
+            The other two (/var/lib/etcd inside the container) can stay as-is, OR you can
+            change all three to the same value. Either works. The exam usually expects you
+            to change both --data-dir and hostPath.path to keep them aligned, which is the
+            cleaner and more common approach.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/tasks/administer-cluster/configure-upgrade-etcd/#restoring-an-etcd-cluster
+              text: Restoring an etcd cluster — Kubernetes Documentation
+
+  - title: "Checking etcd Cluster Health"
+    category: Verification
+    hintsEnabled: true
+    elements:
+      - type: context
+        text: |
+          After a restore — or any time you suspect etcd issues — you should verify that
+          the etcd cluster is healthy and reachable.
+
+          `etcdctl endpoint health` checks whether the specified endpoint is responding
+          and whether it can commit a write (linearizability check).
+
+          `etcdctl endpoint status` goes further: it shows the node ID, DB size, whether
+          the member is the leader, the raft term, and the raft index. This is useful
+          for diagnosing leader election issues in multi-node setups.
+
+          Both commands require the same TLS flags as `snapshot save`.
+      - type: question
+        question:
+          questionType: multiline
+          header: "Write the command to check the health of the etcd endpoint at https://127.0.0.1:2379. Include ETCDCTL_API=3 and all required certificate flags."
+          expectedAnswer: "ETCDCTL_API=3 etcdctl endpoint health --endpoints=https://127.0.0.1:2379 --cacert=/etc/kubernetes/pki/etcd/ca.crt --cert=/etc/kubernetes/pki/etcd/server.crt --key=/etc/kubernetes/pki/etcd/server.key"
+          hint: "The subcommand is 'endpoint health'. The flags are identical to those used for snapshot save."
+          correctAnswerInfo: "A healthy response looks like: https://127.0.0.1:2379 is healthy: successfully committed proposal: took = 3.456ms"
+      - type: context
+        text: |
+          Example healthy output:
+
+            https://127.0.0.1:2379 is healthy: successfully committed proposal: took = 2.849ms
+
+          Example unhealthy output:
+
+            https://127.0.0.1:2379 is unhealthy: failed to commit proposal: context deadline exceeded
+            Error: unhealthy cluster
+
+          The health check attempts a linearizable write to the cluster — if etcd cannot
+          achieve quorum (enough members agree), the write will fail and the endpoint is
+          reported as unhealthy.
+      - type: question
+        question:
+          questionType: single-line
+          header: "What etcdctl subcommand shows the current leader, DB size, raft term, and raft index for each member?"
+          expectedAnswer: "endpoint status"
+          hint: "It is similar to 'endpoint health' but returns detailed per-member information."
+          correctAnswerInfo: "Use: ETCDCTL_API=3 etcdctl endpoint status --write-out=table ... This is very useful when troubleshooting a multi-node etcd cluster to see who the current leader is."
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Summary of diagnostic commands:
+
+              etcdctl endpoint health   — checks if the cluster can commit a proposal
+              etcdctl endpoint status   — shows leader, revision, DB size, raft state
+
+            For the CKA exam, knowing `endpoint health` is sufficient for single-node clusters.
+            In multi-node setups, `endpoint status --endpoints=<all-members>` lets you confirm
+            all members are live and who holds the leader role.
+
+            When etcd is unreachable, the Kubernetes API server will also become unavailable —
+            kubectl commands will hang or return errors like "etcd cluster is unavailable".
+            This is your signal to investigate etcd first before looking at the API server.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/tasks/administer-cluster/configure-upgrade-etcd/#setting-up-etcd-ha-clusters
+              text: Setting up etcd HA clusters
+            - url: https://etcd.io/docs/v3.5/op-guide/monitoring/
+              text: etcd Monitoring
+
+  - title: "Fixing Broken etcd: Wrong Data Directory"
+    category: Troubleshooting
+    hintsEnabled: true
+    elements:
+      - type: context
+        text: |
+          You have just restored an etcd snapshot to /var/lib/etcd-restored and edited
+          the etcd manifest, but the etcd Pod is not coming back up.
+          The API server is also unresponsive (because etcd is down).
+
+          When the Kubernetes API is unavailable, you cannot use kubectl to read Pod logs.
+          You must investigate directly on the node.
+
+          Use: crictl ps -a   to see container state (bypasses the API server)
+          Use: crictl logs <container-id>   to read logs without kubectl
+          Use: journalctl -u kubelet   to see kubelet errors about static Pods
+
+          Alternatively, since etcd is a static Pod managed by the kubelet, you can also
+          check /var/log/pods/ on the node.
+      - type: manifest
+        header: "The current /etc/kubernetes/manifests/etcd.yaml (abbreviated)"
+        content: |
+          spec:
+            containers:
+            - command:
+              - etcd
+              - --data-dir=/var/lib/etcd-restored
+              - --listen-client-urls=https://127.0.0.1:2379
+              - --cert-file=/etc/kubernetes/pki/etcd/server.crt
+              - --key-file=/etc/kubernetes/pki/etcd/server.key
+              - --trusted-ca-file=/etc/kubernetes/pki/etcd/ca.crt
+              name: etcd
+              volumeMounts:
+              - mountPath: /var/lib/etcd
+                name: etcd-data
+            volumes:
+            - hostPath:
+                path: /var/lib/etcd
+                type: DirectoryOrCreate
+              name: etcd-data
+        footer: "The snapshot was restored to /var/lib/etcd-restored on the host. Look carefully for the inconsistency."
+      - type: question
+        question:
+          questionType: single-line
+          header: "The etcd Pod is failing to start. Identify the root cause: what is inconsistent in the manifest above?"
+          expectedAnswer: "The --data-dir flag points to /var/lib/etcd-restored but the hostPath volume still points to /var/lib/etcd, so the restored data is not mounted into the container."
+          hint: "Compare --data-dir with hostPath.path. One points to the restored directory, the other does not."
+          cel: "answer.lowerAscii().contains('hostpath') || answer.lowerAscii().contains('host path') || (answer.lowerAscii().contains('volume') && answer.lowerAscii().contains('etcd'))"
+          correctAnswerInfo: "etcd is looking for its data at /var/lib/etcd-restored inside the container. But the host directory /var/lib/etcd is mounted there — which contains the old (pre-restore) data or nothing."
+      - type: question
+        question:
+          questionType: single-line
+          header: "To fix the manifest, what value must hostPath.path be changed to under the 'etcd-data' volume?"
+          expectedAnswer: "/var/lib/etcd-restored"
+          hint: "It must match --data-dir and the location where the snapshot was restored on the host."
+          correctAnswerInfo: "After saving the manifest, the kubelet will recreate the etcd Pod. The container will now have /var/lib/etcd-restored on the host bind-mounted to /var/lib/etcd inside the container, and --data-dir=/var/lib/etcd-restored will correctly find the restored WAL and snapshot files."
+      - type: question
+        question:
+          questionType: single-line
+          header: "After fixing and saving the manifest, how long should you typically wait for etcd to recover before investigating further?"
+          expectedAnswer: "30 seconds"
+          hint: "Static Pod recreation is not instantaneous — the kubelet must stop the old container and start a new one."
+          cel: "answer.lowerAscii().contains('second') || answer.lowerAscii().contains('30') || answer.lowerAscii().contains('minute')"
+          correctAnswerInfo: "Give it at least 30 seconds. Use 'watch crictl ps' or 'watch kubectl get pod -n kube-system' to observe the etcd Pod state. If it is still crashing after 60 seconds, check logs again."
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Diagnosis workflow when etcd won't start after a restore:
+
+            1. Check the kubelet for errors:
+                 journalctl -u kubelet | tail -50
+
+            2. Find the etcd container ID (even if it exited):
+                 crictl ps -a | grep etcd
+
+            3. Read the container logs:
+                 crictl logs <container-id>
+
+            4. Common error messages and their meanings:
+                 "open /var/lib/etcd/member/snap/db: no such file or directory"
+                 → --data-dir points to a directory with no restored data
+
+                 "database file (/var/lib/etcd/member/snap/db) could not be opened"
+                 → permission issue (chown the directory to etcd user) or corrupt file
+
+                 "data-dir '/var/lib/etcd' was created with --initial-cluster flag"
+                 → the restore created a new cluster identity; old WAL is incompatible
+
+            5. After fixing the manifest, force a re-evaluation:
+                 mv /etc/kubernetes/manifests/etcd.yaml /tmp/
+                 mv /tmp/etcd.yaml /etc/kubernetes/manifests/
+               This causes the kubelet to delete and recreate the Pod even if the file
+               content appears unchanged.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/tasks/administer-cluster/configure-upgrade-etcd/#restoring-an-etcd-cluster
+              text: Restoring an etcd cluster — Kubernetes Documentation
+
+  - title: "Fixing Broken etcd: Certificate Path Errors"
+    category: Troubleshooting
+    hintsEnabled: true
+    elements:
+      - type: context
+        text: |
+          etcd fails to start after a node was re-imaged and PKI certificates were regenerated
+          using `kubeadm init phase certs etcd-all`. The certificate files are back in place,
+          but the etcd Pod is in a CrashLoopBackOff with TLS errors in the logs.
+
+          You check the etcd manifest and see the following certificate flags:
+      - type: manifest
+        header: "Broken etcd command section in /etc/kubernetes/manifests/etcd.yaml"
+        content: |
+          - command:
+            - etcd
+            - --data-dir=/var/lib/etcd
+            - --cert-file=/etc/etcd/pki/server.crt
+            - --key-file=/etc/etcd/pki/server.key
+            - --trusted-ca-file=/etc/etcd/pki/ca.crt
+            - --peer-cert-file=/etc/etcd/pki/peer.crt
+            - --peer-key-file=/etc/etcd/pki/peer.key
+            - --peer-trusted-ca-file=/etc/etcd/pki/ca.crt
+            - --listen-client-urls=https://127.0.0.1:2379
+            - --advertise-client-urls=https://127.0.0.1:2379
+        footer: "The actual certificate files are located under /etc/kubernetes/pki/etcd/ — not /etc/etcd/pki/."
+      - type: question
+        question:
+          questionType: single-line
+          header: "What is the correct directory for etcd PKI certificates in a kubeadm cluster?"
+          expectedAnswer: "/etc/kubernetes/pki/etcd"
+          hint: "kubeadm places all Kubernetes PKI material under /etc/kubernetes/pki/. etcd certificates are in a subdirectory."
+          correctAnswerInfo: "All six certificate flags (--cert-file, --key-file, --trusted-ca-file, --peer-cert-file, --peer-key-file, --peer-trusted-ca-file) must reference files under /etc/kubernetes/pki/etcd/."
+      - type: question
+        question:
+          questionType: single-line
+          header: "How many certificate/key flags in the manifest above need to be corrected? (count only the ones with the wrong path)"
+          expectedAnswer: "6"
+          hint: "Count every flag that references /etc/etcd/pki/ — all of them point to the wrong directory."
+          correctAnswerInfo: "All six flags (--cert-file, --key-file, --trusted-ca-file, --peer-cert-file, --peer-key-file, --peer-trusted-ca-file) reference the wrong base path. In the volumeMounts section there is likely also a hostPath pointing to /etc/etcd/pki that needs fixing."
+      - type: question
+        question:
+          questionType: single-line
+          header: "Besides fixing the command flags, what else in the manifest must reference /etc/kubernetes/pki/etcd to ensure the certificate files are accessible inside the container?"
+          expectedAnswer: "the hostPath volume for etcd certs"
+          hint: "The cert files are on the host. They get into the container via a volume mount. Both the hostPath source and the volumeMount path must be correct."
+          cel: "answer.lowerAscii().contains('hostpath') || answer.lowerAscii().contains('volume') || answer.lowerAscii().contains('mount')"
+          correctAnswerInfo: "The etcd-certs volume in the manifest has a hostPath.path pointing to the PKI directory on the host. If that also says /etc/etcd/pki, fix it to /etc/kubernetes/pki/etcd."
+      - type: question
+        question:
+          questionType: multiline
+          header: "Write the etcdctl command you would run AFTER fixing the manifest to confirm etcd is now accepting TLS connections correctly."
+          expectedAnswer: "ETCDCTL_API=3 etcdctl endpoint health --endpoints=https://127.0.0.1:2379 --cacert=/etc/kubernetes/pki/etcd/ca.crt --cert=/etc/kubernetes/pki/etcd/server.crt --key=/etc/kubernetes/pki/etcd/server.key"
+          hint: "Use endpoint health with the correct certificate paths to confirm the TLS handshake succeeds."
+          correctAnswerInfo: "A successful TLS handshake proves that the certificates are in place, readable, and trusted. If this command succeeds, etcd is healthy."
+    explanation:
+      elements:
+        - type: context
+          text: |
+            When diagnosing certificate errors, the etcd log messages are explicit:
+
+              "remote error: tls: bad certificate"
+              → peer presented a certificate not signed by the expected CA
+
+              "open /etc/etcd/pki/server.crt: no such file or directory"
+              → the file path in the flag is wrong
+
+              "tls: failed to find any PEM data in certificate input"
+              → the file exists but is empty or malformed
+
+            Checklist for cert issues:
+              1. Confirm the files exist:  ls -la /etc/kubernetes/pki/etcd/
+              2. Confirm they are readable by root
+              3. Confirm the manifest flags reference the correct paths
+              4. Confirm the hostPath volume in the manifest points to the right directory
+              5. After fixing, re-check with: etcdctl endpoint health
+
+            Note: kubeadm stores etcd certs at /etc/kubernetes/pki/etcd/.
+            A manually installed etcd might use /etc/etcd/ or /var/lib/etcd/cert/
+            depending on how it was deployed. Always check the actual manifest.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/setup/best-practices/certificates/
+              text: PKI certificates and requirements — Kubernetes Documentation
+
+  - title: "etcd Quorum and the Impact of Member Loss"
+    category: Architecture
+    hintsEnabled: true
+    elements:
+      - type: context
+        text: |
+          etcd is a distributed consensus system based on the Raft protocol.
+          For the cluster to accept writes, a majority of members (a **quorum**) must agree.
+
+          The quorum formula is:  quorum = floor(n / 2) + 1
+          Where n is the total number of etcd members.
+
+          Common cluster sizes:
+            1 member  → quorum = 1  (tolerate 0 failures)
+            3 members → quorum = 2  (tolerate 1 failure)
+            5 members → quorum = 3  (tolerate 2 failures)
+
+          This is why etcd clusters always use odd numbers of members.
+          An even-numbered cluster (e.g. 4 members) offers no additional fault tolerance
+          over the equivalent odd number (3 members) but adds operational complexity.
+      - type: question
+        question:
+          questionType: single-line
+          header: "In a 3-member etcd cluster, how many members must be available for the cluster to accept write operations?"
+          expectedAnswer: "2"
+          hint: "Apply the quorum formula: floor(3/2) + 1 = ?"
+          correctAnswerInfo: "With 3 members and quorum = 2, you can lose 1 member and the cluster continues to function. Losing 2 members means no quorum — etcd becomes read-only and Kubernetes cannot schedule new Pods or accept API changes."
+      - type: question
+        question:
+          questionType: single-line
+          header: "What is the maximum number of member failures a 5-member etcd cluster can tolerate while remaining operational?"
+          expectedAnswer: "2"
+          hint: "Calculate the quorum first: floor(5/2) + 1. Then subtract from 5."
+          correctAnswerInfo: "Quorum for 5 members = 3. So 5 - 3 = 2 members can fail. This is why production HA clusters use 5 etcd members."
+      - type: question
+        question:
+          questionType: single-line
+          header: "When etcd loses quorum, what happens to the Kubernetes API server?"
+          expectedAnswer: "It becomes unavailable and cannot process write requests"
+          hint: "The API server stores all state in etcd. If etcd cannot accept writes, neither can the API server."
+          cel: "answer.lowerAscii().contains('unavailable') || answer.lowerAscii().contains('unresponsive') || answer.lowerAscii().contains('cannot') || answer.lowerAscii().contains('stops')"
+          correctAnswerInfo: "Without etcd quorum, kubectl apply, kubectl create, and any state-changing operations will fail. kubectl get may still work briefly from the API server cache, but no changes can be persisted."
+      - type: question
+        question:
+          questionType: single-line
+          header: "Why should etcd clusters always have an odd number of members?"
+          expectedAnswer: "Adding an even member does not increase fault tolerance but doubles the chance of a split-brain scenario"
+          hint: "Compare a 2-member and a 3-member cluster. With 2 members and quorum=2, you cannot tolerate any failure. With 3 members and quorum=2, you tolerate 1 failure."
+          cel: "answer.lowerAscii().contains('odd') || answer.lowerAscii().contains('fault tolerance') || answer.lowerAscii().contains('no additional') || answer.lowerAscii().contains('quorum') || answer.lowerAscii().contains('split')"
+          correctAnswerInfo: "A 4-member cluster requires quorum=3, tolerating only 1 failure — the same as a 3-member cluster, but with more complexity and more members to maintain. Going from 3 to 5 members is meaningful (tolerance increases from 1 to 2). Going from 3 to 4 is not."
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Raft quorum rules summarised:
+
+              Members | Quorum | Max failures tolerated
+              --------|--------|------------------------
+                1     |   1    |   0
+                3     |   2    |   1
+                5     |   3    |   2
+                7     |   4    |   3
+
+            For the CKA exam, the single-node (1-member) etcd topology is the exam environment.
+            You are unlikely to need to configure quorum, but understanding the impact of
+            etcd failure on the rest of the cluster is testable knowledge.
+
+            Key fact: when etcd is down, the Kubernetes API server returns 503 Service Unavailable.
+            Existing Pods continue to run (kubelet does not need etcd for that), but no new
+            scheduling, no scaling, no config changes are possible.
+        - type: references
+          links:
+            - url: https://etcd.io/docs/v3.5/faq/
+              text: etcd FAQ — including quorum and cluster sizing
+            - url: https://kubernetes.io/docs/tasks/administer-cluster/configure-upgrade-etcd/#multi-node-etcd-cluster
+              text: Multi-node etcd Cluster
+
+  - title: "External etcd: Backup When etcd Runs Off-Cluster"
+    category: Architecture
+    hintsEnabled: true
+    elements:
+      - type: context
+        text: |
+          In production environments and some CKA exam scenarios, etcd runs as a **systemd
+          service** on a dedicated node rather than as a static Pod on the control plane.
+          This is called the external etcd topology.
+
+          When etcd is external, the workflow changes:
+            - There is no etcd Pod in kube-system
+            - The etcd configuration lives in a file such as /etc/etcd/etcd.conf or is
+              passed as systemd unit flags in /etc/systemd/system/etcd.service
+            - Certificate paths may differ (e.g. /etc/etcd/pki/ instead of /etc/kubernetes/pki/etcd/)
+            - After a restore, you restart with: systemctl restart etcd (not by editing a manifest)
+
+          The CKA exam may present a broken cluster and ask you to first identify whether
+          etcd is stacked or external before proceeding.
+      - type: question
+        question:
+          questionType: command
+          header: "Write the kubectl command to list all Pods in the kube-system namespace and check whether an etcd Pod is present."
+          hint: "Use kubectl get pods with the namespace flag set to kube-system."
+          correctAnswerInfo: "If no 'etcd-*' Pod appears, etcd is external. If etcd-controlplane (or similar) is listed, it is stacked."
+          command:
+            executable: kubectl
+            subcommands:
+              - name: get
+              - name: pods
+                aliases: [pod, po]
+            flags:
+              - name: namespace
+                short: "n"
+                required: true
+                value: kube-system
+      - type: question
+        question:
+          questionType: single-line
+          header: "If no etcd Pod is found in kube-system, what systemd command would you run on the etcd node to confirm etcd is running as a service?"
+          expectedAnswer: "systemctl status etcd"
+          hint: "systemd services are inspected with systemctl. The service name is etcd."
+          correctAnswerInfo: "On a node running external etcd, 'systemctl status etcd' shows the service state, the unit file path, and recent journal output. You can also use: journalctl -u etcd -n 50"
+      - type: question
+        question:
+          questionType: single-line
+          header: "After restoring an etcd snapshot on an external etcd node, what command restarts the etcd service to pick up the new data directory?"
+          expectedAnswer: "systemctl restart etcd"
+          hint: "There is no static Pod manifest to edit. You restart the systemd service directly."
+          correctAnswerInfo: "On external etcd, the data-dir is specified in the etcd configuration file or unit file, not in a Kubernetes manifest. Edit the config/unit file to point --data-dir at the restored directory, then restart the service."
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Comparison: stacked vs. external etcd restore procedures
+
+            STACKED etcd (kubeadm default):
+              1. etcdctl snapshot restore --data-dir=/var/lib/etcd-new
+              2. Edit /etc/kubernetes/manifests/etcd.yaml
+                 → --data-dir=/var/lib/etcd-new
+                 → volumes[etcd-data].hostPath.path=/var/lib/etcd-new
+              3. Wait for kubelet to restart the static Pod
+
+            EXTERNAL etcd:
+              1. Stop the etcd service: systemctl stop etcd
+              2. etcdctl snapshot restore --data-dir=/var/lib/etcd-new
+              3. Edit the etcd config file (e.g. /etc/etcd/etcd.conf)
+                 → DATA_DIRECTORY=/var/lib/etcd-new
+                 Or edit the systemd unit: /etc/systemd/system/etcd.service
+                 → --data-dir=/var/lib/etcd-new
+              4. systemctl daemon-reload
+              5. systemctl start etcd
+
+            The key difference: stacked uses a Kubernetes manifest; external uses a
+            systemd service + configuration file. Both ultimately write to a data directory
+            and then restart the etcd process.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/ha-topology/
+              text: Options for Highly Available Topology (stacked vs external)
+            - url: https://kubernetes.io/docs/tasks/administer-cluster/configure-upgrade-etcd/
+              text: Operating etcd clusters for Kubernetes
