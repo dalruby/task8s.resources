@@ -26,7 +26,9 @@ This repository contains resources to help you get the most out of task8s:
 
 | Folder | Contents |
 |---|---|
+| `examples` | Contains example schema sets that you can use to explore the tool |
 | `prompts/` | AI prompts for generating scenario set YAML files with tools like ChatGPT, Claude, or Codex |
+| `schemas`  | Contains the schemas used for scenario sets |
 
 More resources (scenario sets, guides, examples) will be added here over time.
 

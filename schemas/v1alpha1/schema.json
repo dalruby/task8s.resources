@@ -1,0 +1,463 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://task8s.io/schema/scenario-set.schema.json",
+  "title": "task8s Scenario Set",
+  "description": "Schema for task8s scenario set YAML files",
+  "type": "object",
+  "required": ["apiVersion", "name", "introduction", "scenarios"],
+  "additionalProperties": false,
+  "properties": {
+    "apiVersion": {
+      "type": "string",
+      "const": "v1alpha1",
+      "description": "Schema version of this scenario set file. Must be 'v1alpha1'."
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Display name of the scenario set"
+    },
+    "k8sVersion": {
+      "type": "string",
+      "description": "Kubernetes version used to auto-load manifest schemas (e.g. '1.29.0'). Required when any manifestDefinition uses autoLoad: true."
+    },
+    "introduction": { "$ref": "#/$defs/Introduction" },
+    "timing": { "$ref": "#/$defs/Timing" },
+    "manifestDefinitions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/ManifestDefinition" }
+    },
+    "scenarios": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/Scenario" }
+    }
+  },
+  "$defs": {
+    "ExternalLink": {
+      "type": "object",
+      "required": ["url", "text"],
+      "additionalProperties": false,
+      "properties": {
+        "url": { "type": "string", "format": "uri" },
+        "text": { "type": "string", "minLength": 1 }
+      }
+    },
+    "Introduction": {
+      "type": "object",
+      "required": ["elements"],
+      "additionalProperties": false,
+      "properties": {
+        "elements": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/IntroductionElement" }
+        }
+      }
+    },
+    "IntroductionElement": {
+      "oneOf": [
+        { "$ref": "#/$defs/IntroContextElement" },
+        { "$ref": "#/$defs/IntroImageElement" },
+        { "$ref": "#/$defs/IntroReferencesElement" },
+        { "$ref": "#/$defs/IntroBreakElement" }
+      ]
+    },
+    "IntroContextElement": {
+      "type": "object",
+      "required": ["type", "text"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "context" },
+        "text": { "type": "string" }
+      }
+    },
+    "IntroImageElement": {
+      "type": "object",
+      "required": ["type", "data"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "image" },
+        "data": { "type": "string", "description": "Base64-encoded image data URI" },
+        "alt": { "type": "string" }
+      }
+    },
+    "IntroReferencesElement": {
+      "type": "object",
+      "required": ["type", "links"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "references" },
+        "links": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/ExternalLink" }
+        }
+      }
+    },
+    "IntroBreakElement": {
+      "type": "object",
+      "required": ["type"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "break" }
+      }
+    },
+    "Timing": {
+      "type": "object",
+      "required": ["enabled"],
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "limitSeconds": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "ManifestDefinition": {
+      "type": "object",
+      "required": ["id", "kind", "apiVersion"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "kind": { "type": "string", "minLength": 1 },
+        "apiVersion": { "type": "string", "minLength": 1 },
+        "schema": { "type": "object", "description": "Inline JSON Schema definition for this manifest kind. Omit when using autoLoad." },
+        "autoLoad": { "type": "boolean", "description": "When true, the schema is fetched from the kubernetes-json-schema repository using the scenario set's k8sVersion." }
+      }
+    },
+    "SubcommandToken": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "description": "Canonical subcommand name (e.g. 'pods')." },
+        "aliases": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Accepted alternatives (e.g. ['pod', 'po'])."
+        }
+      }
+    },
+    "PositionalSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "index": { "type": "integer", "minimum": 0, "description": "0-based position among positional tokens. Defaults to 0 when omitted. Specify explicitly for each positional when validating multiple arguments." },
+        "required": { "type": "boolean", "description": "Whether this argument is required. Default: true." },
+        "value": { "type": "string", "description": "Exact expected value." },
+        "oneOf": { "type": "array", "items": { "type": "string" }, "description": "Value must be one of these strings." },
+        "regex": { "type": "string", "description": "Value must match this partial regex." },
+        "description": { "type": "string", "description": "Human-readable label used in validation error messages." }
+      }
+    },
+    "FlagSpec": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "description": "Canonical long-form flag name without dashes (e.g. 'namespace')." },
+        "short": { "type": "string", "minLength": 1, "maxLength": 1, "description": "Single-character short form without dash (e.g. 'n')." },
+        "aliases": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Additional accepted long-form names without dashes."
+        },
+        "required": { "type": "boolean", "description": "Whether the flag must appear. Default: false." },
+        "boolean": { "type": "boolean", "description": "Flag takes no value (e.g. --all-namespaces). Default: false." },
+        "value": { "type": "string", "description": "Exact value required when the flag is present." },
+        "oneOf": { "type": "array", "items": { "type": "string" }, "description": "Value must be one of these strings." },
+        "regex": { "type": "string", "description": "Value must match this partial regex." },
+        "repeatable": { "type": "boolean", "description": "Allow the flag to appear multiple times. Default: false." },
+        "minCount": { "type": "integer", "minimum": 1, "description": "Minimum number of occurrences." },
+        "maxCount": { "type": "integer", "minimum": 1, "description": "Maximum number of occurrences." },
+        "forbidden": { "type": "boolean", "description": "Flag must not appear at all." }
+      }
+    },
+    "CommandSpec": {
+      "type": "object",
+      "required": ["executable"],
+      "additionalProperties": false,
+      "properties": {
+        "executable": { "type": "string", "minLength": 1, "description": "The base command (e.g. 'kubectl')." },
+        "strictness": {
+          "type": "string",
+          "enum": ["strict", "permissive"],
+          "description": "'strict' (default) rejects unknown flags and extra positionals. 'permissive' allows them."
+        },
+        "subcommands": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/SubcommandToken" },
+          "description": "Expected subcommand chain in order."
+        },
+        "positionals": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/PositionalSpec" },
+          "description": "Constraints on positional (non-flag) arguments."
+        },
+        "flags": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/FlagSpec" },
+          "description": "Flag constraints."
+        }
+      }
+    },
+    "ManifestFieldSpec": {
+      "type": "object",
+      "required": ["path", "expectedValue"],
+      "additionalProperties": false,
+      "properties": {
+        "path": { "type": "string", "minLength": 1, "description": "Dot-notation path e.g. metadata.name" },
+        "expectedValue": { "description": "Expected value at this path" }
+      }
+    },
+    "BaseQuestion": {
+      "type": "object",
+      "properties": {
+        "header": { "type": "string" },
+        "hint": { "type": "string" },
+        "correctAnswerInfo": { "type": "string" },
+        "cel": { "type": "string", "description": "CEL expression for custom validation. Bound variables depend on question type." }
+      }
+    },
+    "SingleLineQuestion": {
+      "allOf": [
+        { "$ref": "#/$defs/BaseQuestion" },
+        {
+          "type": "object",
+          "required": ["questionType", "expectedAnswer"],
+          "additionalProperties": false,
+          "properties": {
+            "questionType": { "const": "single-line" },
+            "expectedAnswer": { "type": "string" },
+            "header": { "type": "string" },
+            "hint": { "type": "string" },
+            "correctAnswerInfo": { "type": "string" },
+            "cel": { "type": "string" }
+          }
+        }
+      ]
+    },
+    "MultilineQuestion": {
+      "allOf": [
+        { "$ref": "#/$defs/BaseQuestion" },
+        {
+          "type": "object",
+          "required": ["questionType", "expectedAnswer"],
+          "additionalProperties": false,
+          "properties": {
+            "questionType": { "const": "multiline" },
+            "expectedAnswer": { "type": "string" },
+            "header": { "type": "string" },
+            "hint": { "type": "string" },
+            "correctAnswerInfo": { "type": "string" },
+            "cel": { "type": "string" }
+          }
+        }
+      ]
+    },
+    "CommandQuestion": {
+      "allOf": [
+        { "$ref": "#/$defs/BaseQuestion" },
+        {
+          "type": "object",
+          "required": ["questionType", "command"],
+          "additionalProperties": false,
+          "properties": {
+            "questionType": { "const": "command" },
+            "command": { "$ref": "#/$defs/CommandSpec" },
+            "header": { "type": "string" },
+            "hint": { "type": "string" },
+            "correctAnswerInfo": { "type": "string" },
+            "cel": { "type": "string" }
+          }
+        }
+      ]
+    },
+    "ManifestQuestion": {
+      "allOf": [
+        { "$ref": "#/$defs/BaseQuestion" },
+        {
+          "type": "object",
+          "required": ["questionType", "manifestDefinitionId"],
+          "additionalProperties": false,
+          "properties": {
+            "questionType": { "const": "manifest" },
+            "manifestDefinitionId": { "type": "string" },
+            "initialContent": { "type": "string" },
+            "expectedFields": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/ManifestFieldSpec" }
+            },
+            "header": { "type": "string" },
+            "hint": { "type": "string" },
+            "correctAnswerInfo": { "type": "string" },
+            "cel": { "type": "string" }
+          }
+        }
+      ]
+    },
+    "SequenceChildQuestion": {
+      "oneOf": [
+        { "$ref": "#/$defs/SingleLineQuestion" },
+        { "$ref": "#/$defs/MultilineQuestion" },
+        { "$ref": "#/$defs/CommandQuestion" }
+      ]
+    },
+    "SequenceQuestion": {
+      "type": "object",
+      "required": ["questionType", "steps"],
+      "additionalProperties": false,
+      "properties": {
+        "questionType": { "const": "sequence" },
+        "steps": {
+          "type": "array",
+          "minItems": 2,
+          "items": { "$ref": "#/$defs/SequenceChildQuestion" }
+        },
+        "header": { "type": "string" },
+        "hint": { "type": "string" },
+        "correctAnswerInfo": { "type": "string" }
+      }
+    },
+    "Question": {
+      "oneOf": [
+        { "$ref": "#/$defs/SingleLineQuestion" },
+        { "$ref": "#/$defs/MultilineQuestion" },
+        { "$ref": "#/$defs/CommandQuestion" },
+        { "$ref": "#/$defs/ManifestQuestion" },
+        { "$ref": "#/$defs/SequenceQuestion" }
+      ]
+    },
+    "ContextScenarioElement": {
+      "type": "object",
+      "required": ["type", "text"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "context" },
+        "text": { "type": "string" }
+      }
+    },
+    "QuestionScenarioElement": {
+      "type": "object",
+      "required": ["type", "question"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "question" },
+        "question": { "$ref": "#/$defs/Question" }
+      }
+    },
+    "ManifestScenarioElement": {
+      "type": "object",
+      "required": ["type", "content"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "manifest" },
+        "content": { "type": "string", "minLength": 1, "description": "The YAML content to display in the read-only editor." },
+        "header": { "type": "string", "description": "Optional heading displayed above the editor." },
+        "footer": { "type": "string", "description": "Optional caption displayed below the editor." }
+      }
+    },
+    "TableScenarioElement": {
+      "type": "object",
+      "required": ["type", "columns", "rows"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "table" },
+        "style": {
+          "type": "string",
+          "enum": ["default", "terminal"],
+          "description": "Rendering style. 'default' renders a styled HTML table. 'terminal' renders kubectl-style output with a monospace font. Defaults to 'default'."
+        },
+        "columns": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string" },
+          "description": "Column header names."
+        },
+        "rows": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Each inner array is one row. Must contain one entry per column; use an empty string for empty cells."
+          },
+          "description": "Table data rows."
+        }
+      }
+    },
+    "ScenarioElement": {
+      "oneOf": [
+        { "$ref": "#/$defs/ContextScenarioElement" },
+        { "$ref": "#/$defs/QuestionScenarioElement" },
+        { "$ref": "#/$defs/ManifestScenarioElement" },
+        { "$ref": "#/$defs/TableScenarioElement" }
+      ]
+    },
+    "ExplanationElement": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["type", "text"],
+          "additionalProperties": false,
+          "properties": {
+            "type": { "const": "context" },
+            "text": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["type", "data"],
+          "additionalProperties": false,
+          "properties": {
+            "type": { "const": "image" },
+            "data": { "type": "string" },
+            "alt": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["type", "links"],
+          "additionalProperties": false,
+          "properties": {
+            "type": { "const": "references" },
+            "links": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "$ref": "#/$defs/ExternalLink" }
+            }
+          }
+        }
+      ]
+    },
+    "Explanation": {
+      "type": "object",
+      "required": ["elements"],
+      "additionalProperties": false,
+      "properties": {
+        "elements": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ExplanationElement" }
+        }
+      }
+    },
+    "Scenario": {
+      "type": "object",
+      "required": ["title", "category", "elements", "explanation"],
+      "additionalProperties": false,
+      "properties": {
+        "title": { "type": "string", "minLength": 1 },
+        "category": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[^<>]+$",
+          "description": "Category label. Must not contain < or >."
+        },
+        "hintsEnabled": { "type": "boolean" },
+        "elements": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/ScenarioElement" }
+        },
+        "explanation": { "$ref": "#/$defs/Explanation" }
+      }
+    }
+  }
+}

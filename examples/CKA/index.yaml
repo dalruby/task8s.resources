@@ -2,6 +2,14 @@ apiVersion: v1alpha1
 name: CKA
 subdirs: []
 sets:
+  - name: "CKA: HPA Workload Autoscaling"
+    filename: hpa-workload-autoscaling.yaml
+    description: "Focused CKA autoscaling practice for 2026: full-manifest HPA and Deployment authoring, autoscaling/v2 metrics and behavior tuning, and prerequisite troubleshooting."
+    tags:
+      - Workloads & Scheduling
+      - Autoscaling
+      - HPA
+      - Troubleshooting
   - name: "CKA: etcd Backup and Recovery"
     filename: etcd-backup-and-recovery.yaml
     description: "Covers all etcd knowledge required for the CKA exam: taking snapshots, verifying integrity, restoring from backup, fixing broken etcd installations, health checks, and understanding quorum."

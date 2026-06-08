@@ -1,0 +1,486 @@
+apiVersion: v1alpha1
+name: "CKA: HPA Workload Autoscaling"
+k8sVersion: "1.34.0"
+
+timing:
+  enabled: true
+  limitSeconds: 5400
+
+introduction:
+  elements:
+    - type: context
+      text: |
+        This scenario set targets the CKA 2026 exam objective "Configure workload autoscaling"
+        in the Workloads & Scheduling domain.
+
+        In the current CKA blueprint, this objective expects you to be able to:
+          - create and validate HorizontalPodAutoscaler resources
+          - connect an HPA to the correct scale target
+          - configure CPU and memory resource metrics
+          - tune autoscaling behavior for scale-up and scale-down stability
+          - diagnose why an HPA cannot compute desired replicas
+
+        The exam is performance-based. These scenarios are intentionally built around full-manifest
+        typing so you practice writing resources from memory under time pressure.
+    - type: break
+    - type: context
+      text: |
+        Rules for this set:
+          - no scaffolded YAML is provided for manifest questions
+          - you must type complete manifests, including metadata
+          - validate carefully against apiVersion, kind, selector/labels, and metric targets
+    - type: references
+      links:
+        - url: https://training.linuxfoundation.org/certification/certified-kubernetes-administrator-cka/
+          text: CKA Certification Page (domains and competencies)
+        - url: https://github.com/cncf/curriculum/blob/master/CKA_Curriculum_v1.35.pdf
+          text: CKA Curriculum v1.35
+        - url: https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/
+          text: Horizontal Pod Autoscaling Walkthrough
+
+manifestDefinitions:
+  - id: deployment-apps-v1
+    kind: Deployment
+    apiVersion: apps/v1
+    autoLoad: true
+  - id: hpa-autoscaling-v2
+    kind: HorizontalPodAutoscaler
+    apiVersion: autoscaling/v2
+    autoLoad: true
+
+scenarios:
+  - title: "Build CPU-Based Autoscaling from Scratch"
+    category: "Workloads & Scheduling"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          You are preparing a deployment for autoscaling in namespace `autoscale`.
+          Create both the workload and the HPA using full manifests.
+
+          Requirements:
+            - Deployment name: checkout
+            - Container image: registry.k8s.io/hpa-example
+            - Container name: app
+            - Initial replicas: 2
+            - CPU request: 200m
+            - Memory request: 256Mi
+            - Label key/value for selector and pod template: app=checkout
+
+          Then create an HPA:
+            - name: checkout-hpa
+            - minReplicas: 2
+            - maxReplicas: 10
+            - scale target: Deployment checkout
+            - metric: average CPU utilization target 65
+      - type: question
+        question:
+          questionType: manifest
+          header: "Write the complete Deployment manifest exactly as specified."
+          manifestDefinitionId: deployment-apps-v1
+          expectedFields:
+            - path: apiVersion
+              expectedValue: apps/v1
+            - path: kind
+              expectedValue: Deployment
+            - path: metadata.name
+              expectedValue: checkout
+            - path: metadata.namespace
+              expectedValue: autoscale
+            - path: spec.replicas
+              expectedValue: 2
+            - path: spec.selector.matchLabels.app
+              expectedValue: checkout
+            - path: spec.template.metadata.labels.app
+              expectedValue: checkout
+            - path: spec.template.spec.containers.0.name
+              expectedValue: app
+            - path: spec.template.spec.containers.0.image
+              expectedValue: registry.k8s.io/hpa-example
+            - path: spec.template.spec.containers.0.resources.requests.cpu
+              expectedValue: 200m
+            - path: spec.template.spec.containers.0.resources.requests.memory
+              expectedValue: 256Mi
+      - type: question
+        question:
+          questionType: manifest
+          header: "Write the complete HorizontalPodAutoscaler manifest exactly as specified."
+          manifestDefinitionId: hpa-autoscaling-v2
+          expectedFields:
+            - path: apiVersion
+              expectedValue: autoscaling/v2
+            - path: kind
+              expectedValue: HorizontalPodAutoscaler
+            - path: metadata.name
+              expectedValue: checkout-hpa
+            - path: metadata.namespace
+              expectedValue: autoscale
+            - path: spec.scaleTargetRef.apiVersion
+              expectedValue: apps/v1
+            - path: spec.scaleTargetRef.kind
+              expectedValue: Deployment
+            - path: spec.scaleTargetRef.name
+              expectedValue: checkout
+            - path: spec.minReplicas
+              expectedValue: 2
+            - path: spec.maxReplicas
+              expectedValue: 10
+            - path: spec.metrics.0.type
+              expectedValue: Resource
+            - path: spec.metrics.0.resource.name
+              expectedValue: cpu
+            - path: spec.metrics.0.resource.target.type
+              expectedValue: Utilization
+            - path: spec.metrics.0.resource.target.averageUtilization
+              expectedValue: 65
+      - type: manifest
+        header: "Reference solution (HPA)"
+        content: |
+          apiVersion: autoscaling/v2
+          kind: HorizontalPodAutoscaler
+          metadata:
+            name: checkout-hpa
+            namespace: autoscale
+          spec:
+            scaleTargetRef:
+              apiVersion: apps/v1
+              kind: Deployment
+              name: checkout
+            minReplicas: 2
+            maxReplicas: 10
+            metrics:
+              - type: Resource
+                resource:
+                  name: cpu
+                  target:
+                    type: Utilization
+                    averageUtilization: 65
+        footer: "If CPU requests are missing on target pods, utilization-based autoscaling cannot be computed correctly."
+    explanation:
+      elements:
+        - type: context
+          text: |
+            For CPU utilization autoscaling, resource requests are critical because utilization is
+            computed relative to requests, not limits.
+
+            In practice, this exam objective usually combines two skills:
+              1. writing a valid autoscaling/v2 HPA
+              2. ensuring the workload has the resource requests needed for metric calculation
+
+            The scaleTargetRef must exactly match the target workload identity.
+            Any mismatch in apiVersion/kind/name prevents scaling.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/
+              text: Horizontal Pod Autoscaling
+            - url: https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale-walkthrough/
+              text: HPA Walkthrough
+
+  - title: "Tune Scale Behavior for Burst and Cooldown"
+    category: "Workloads & Scheduling"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          You already have a Deployment named `payments` in namespace `autoscale`.
+          Create a full HPA manifest that is intentionally aggressive on scale-up
+          and conservative on scale-down.
+
+          Requirements:
+            - HPA name: payments-hpa
+            - scale target: Deployment payments in apps/v1
+            - minReplicas: 3
+            - maxReplicas: 20
+            - metric: average CPU utilization target 60
+
+          Behavior tuning:
+            - scaleUp stabilizationWindowSeconds: 0
+            - scaleUp policy: allow up to 100 percent increase every 60 seconds
+            - scaleDown stabilizationWindowSeconds: 300
+            - scaleDown policy: allow up to 50 percent decrease every 60 seconds
+      - type: question
+        question:
+          questionType: manifest
+          header: "Write the complete HPA manifest with behavior policies exactly as specified."
+          manifestDefinitionId: hpa-autoscaling-v2
+          expectedFields:
+            - path: apiVersion
+              expectedValue: autoscaling/v2
+            - path: kind
+              expectedValue: HorizontalPodAutoscaler
+            - path: metadata.name
+              expectedValue: payments-hpa
+            - path: metadata.namespace
+              expectedValue: autoscale
+            - path: spec.scaleTargetRef.apiVersion
+              expectedValue: apps/v1
+            - path: spec.scaleTargetRef.kind
+              expectedValue: Deployment
+            - path: spec.scaleTargetRef.name
+              expectedValue: payments
+            - path: spec.minReplicas
+              expectedValue: 3
+            - path: spec.maxReplicas
+              expectedValue: 20
+            - path: spec.metrics.0.resource.name
+              expectedValue: cpu
+            - path: spec.metrics.0.resource.target.averageUtilization
+              expectedValue: 60
+            - path: spec.behavior.scaleUp.stabilizationWindowSeconds
+              expectedValue: 0
+            - path: spec.behavior.scaleUp.policies.0.type
+              expectedValue: Percent
+            - path: spec.behavior.scaleUp.policies.0.value
+              expectedValue: 100
+            - path: spec.behavior.scaleUp.policies.0.periodSeconds
+              expectedValue: 60
+            - path: spec.behavior.scaleDown.stabilizationWindowSeconds
+              expectedValue: 300
+            - path: spec.behavior.scaleDown.policies.0.type
+              expectedValue: Percent
+            - path: spec.behavior.scaleDown.policies.0.value
+              expectedValue: 50
+            - path: spec.behavior.scaleDown.policies.0.periodSeconds
+              expectedValue: 60
+      - type: manifest
+        header: "Reference solution (behavior section)"
+        content: |
+          behavior:
+            scaleUp:
+              stabilizationWindowSeconds: 0
+              policies:
+                - type: Percent
+                  value: 100
+                  periodSeconds: 60
+            scaleDown:
+              stabilizationWindowSeconds: 300
+              policies:
+                - type: Percent
+                  value: 50
+                  periodSeconds: 60
+        footer: "Scale behavior is part of autoscaling/v2 and is frequently used to reduce flapping during traffic drops."
+    explanation:
+      elements:
+        - type: context
+          text: |
+            HPA behavior tuning controls how quickly replicas can change, independent of the
+            selected metric targets.
+
+            A common production pattern is:
+              - fast scale-up to absorb spikes
+              - slower scale-down to avoid oscillation
+
+            This pattern maps directly to cluster administration responsibilities because poor
+            autoscaling behavior can destabilize workloads even when metrics are configured correctly.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/#configurable-scaling-behavior
+              text: Configurable Scaling Behavior
+
+  - title: "Create a Multi-Metric HPA"
+    category: "Workloads & Scheduling"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          You are scaling a Deployment named `recommendation` in namespace `autoscale`.
+          Build a complete autoscaling/v2 HPA manifest that uses two resource metrics.
+
+          Requirements:
+            - HPA name: recommendation-hpa
+            - scale target: Deployment recommendation
+            - minReplicas: 2
+            - maxReplicas: 12
+            - CPU average utilization target: 70
+            - Memory average utilization target: 75
+
+          Use Resource metric entries for both CPU and memory.
+      - type: question
+        question:
+          questionType: manifest
+          header: "Write the complete multi-metric HPA manifest exactly as specified."
+          manifestDefinitionId: hpa-autoscaling-v2
+          expectedFields:
+            - path: apiVersion
+              expectedValue: autoscaling/v2
+            - path: kind
+              expectedValue: HorizontalPodAutoscaler
+            - path: metadata.name
+              expectedValue: recommendation-hpa
+            - path: metadata.namespace
+              expectedValue: autoscale
+            - path: spec.scaleTargetRef.apiVersion
+              expectedValue: apps/v1
+            - path: spec.scaleTargetRef.kind
+              expectedValue: Deployment
+            - path: spec.scaleTargetRef.name
+              expectedValue: recommendation
+            - path: spec.minReplicas
+              expectedValue: 2
+            - path: spec.maxReplicas
+              expectedValue: 12
+            - path: spec.metrics.0.type
+              expectedValue: Resource
+            - path: spec.metrics.0.resource.name
+              expectedValue: cpu
+            - path: spec.metrics.0.resource.target.type
+              expectedValue: Utilization
+            - path: spec.metrics.0.resource.target.averageUtilization
+              expectedValue: 70
+            - path: spec.metrics.1.type
+              expectedValue: Resource
+            - path: spec.metrics.1.resource.name
+              expectedValue: memory
+            - path: spec.metrics.1.resource.target.type
+              expectedValue: Utilization
+            - path: spec.metrics.1.resource.target.averageUtilization
+              expectedValue: 75
+      - type: manifest
+        header: "Reference solution (metrics section)"
+        content: |
+          metrics:
+            - type: Resource
+              resource:
+                name: cpu
+                target:
+                  type: Utilization
+                  averageUtilization: 70
+            - type: Resource
+              resource:
+                name: memory
+                target:
+                  type: Utilization
+                  averageUtilization: 75
+        footer: "With multiple metrics, HPA computes desired replicas per metric and chooses the largest result."
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Multi-metric HPA is useful when a single signal is insufficient.
+            For example, CPU may be low while memory pressure remains high.
+
+            When more than one metric is configured, the controller calculates a desired replica
+            count for each metric and applies the highest recommendation. This protects against
+            under-scaling when one resource becomes a bottleneck.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale-walkthrough/#autoscaling-on-more-specific-metrics
+              text: Autoscaling on Multiple Metrics
+
+  - title: "Fix an HPA Prerequisite Failure"
+    category: "Workloads & Scheduling"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          A Deployment named `inventory` in namespace `autoscale` exists and receives traffic,
+          but autoscaling does not work because CPU utilization cannot be computed from pods that
+          have no CPU request.
+
+          Recreate both resources from scratch using full manifests.
+
+          Deployment requirements:
+            - name: inventory
+            - namespace: autoscale
+            - replicas: 1
+            - selector/label: app=inventory
+            - container name: app
+            - image: nginx:1.25
+            - CPU request: 100m
+            - Memory request: 128Mi
+
+          HPA requirements:
+            - name: inventory-hpa
+            - namespace: autoscale
+            - scale target: Deployment inventory
+            - minReplicas: 1
+            - maxReplicas: 6
+            - CPU average utilization target: 50
+      - type: question
+        question:
+          questionType: manifest
+          header: "Write the complete Deployment manifest exactly as specified."
+          manifestDefinitionId: deployment-apps-v1
+          expectedFields:
+            - path: apiVersion
+              expectedValue: apps/v1
+            - path: kind
+              expectedValue: Deployment
+            - path: metadata.name
+              expectedValue: inventory
+            - path: metadata.namespace
+              expectedValue: autoscale
+            - path: spec.replicas
+              expectedValue: 1
+            - path: spec.selector.matchLabels.app
+              expectedValue: inventory
+            - path: spec.template.metadata.labels.app
+              expectedValue: inventory
+            - path: spec.template.spec.containers.0.name
+              expectedValue: app
+            - path: spec.template.spec.containers.0.image
+              expectedValue: nginx:1.25
+            - path: spec.template.spec.containers.0.resources.requests.cpu
+              expectedValue: 100m
+            - path: spec.template.spec.containers.0.resources.requests.memory
+              expectedValue: 128Mi
+      - type: question
+        question:
+          questionType: manifest
+          header: "Write the complete HPA manifest exactly as specified."
+          manifestDefinitionId: hpa-autoscaling-v2
+          expectedFields:
+            - path: apiVersion
+              expectedValue: autoscaling/v2
+            - path: kind
+              expectedValue: HorizontalPodAutoscaler
+            - path: metadata.name
+              expectedValue: inventory-hpa
+            - path: metadata.namespace
+              expectedValue: autoscale
+            - path: spec.scaleTargetRef.apiVersion
+              expectedValue: apps/v1
+            - path: spec.scaleTargetRef.kind
+              expectedValue: Deployment
+            - path: spec.scaleTargetRef.name
+              expectedValue: inventory
+            - path: spec.minReplicas
+              expectedValue: 1
+            - path: spec.maxReplicas
+              expectedValue: 6
+            - path: spec.metrics.0.type
+              expectedValue: Resource
+            - path: spec.metrics.0.resource.name
+              expectedValue: cpu
+            - path: spec.metrics.0.resource.target.type
+              expectedValue: Utilization
+            - path: spec.metrics.0.resource.target.averageUtilization
+              expectedValue: 50
+      - type: context
+        text: |
+          In a live cluster, if requests are missing you would typically see HPA status conditions
+          indicating inability to fetch or compute utilization for one or more pods.
+
+          This is a high-frequency exam troubleshooting pattern: fix workload resource requests first,
+          then validate HPA behavior.
+    explanation:
+      elements:
+        - type: context
+          text: |
+            HPA is not just a standalone object. It depends on valid inputs:
+              - metrics pipeline (metrics-server)
+              - correct scaleTargetRef
+              - workload resource requests for utilization-based scaling
+
+            In troubleshooting tasks, the shortest path is usually:
+              1. inspect the HPA target and metric type
+              2. inspect pod resource requests on the target workload
+              3. correct workload manifest if requests are missing
+
+            Practicing this flow improves both speed and accuracy under exam time limits.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/#support-for-resource-metrics
+              text: HPA Resource Metrics Requirements
+            - url: https://kubernetes.io/docs/tasks/debug/debug-cluster/resource-metrics-pipeline/
+              text: Resource Metrics Pipeline
