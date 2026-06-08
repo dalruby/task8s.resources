@@ -272,6 +272,12 @@ Displays tabular data inline in the scenario. Use it to simulate the kind of out
 
 ## Question Types
 
+Available question types: `single-line`, `multiline`, `command`, `manifest`, `sequence`, `multiple-choice`.
+
+**Preferred types** (use by default): `single-line`, `multiline`, `command`, `manifest`.  
+**Use with care**: `sequence` (only when steps are tightly coupled with no intermediate feedback).  
+**Not recommended** (available but discouraged): `multiple-choice` (tests recognition, not recall).
+
 ### `single-line`
 
 A plain text input. The user's answer must exactly match `expectedAnswer` (or pass the optional CEL expression).
@@ -592,6 +598,82 @@ Use a sequence only when the steps are tightly coupled and there is no meaningfu
 
 ---
 
+### `multiple-choice`
+
+> **Not recommended as a primary question type.** Multiple-choice questions test recognition rather than recall. For Kubernetes practice, typed answers (commands, manifests, single-line) are almost always a better choice because they mirror real-world usage. Use `multiple-choice` sparingly — for example, to test conceptual understanding where there is no single typed answer, or as a quick knowledge check at the end of a scenario.
+
+A question where the user selects from a list of options. Three modes are supported, controlled by the `answerType` on each choice:
+
+| Mode | How to configure | Behaviour |
+|---|---|---|
+| **Single correct answer** | Exactly one choice has `answerType: Solution` | Selecting that choice immediately succeeds. Selecting any other choice immediately fails. |
+| **Any of several correct** | Multiple choices have `answerType: Solution` | Selecting any one Solution succeeds immediately. Selecting an Invalid fails immediately. |
+| **Combined correct answer** | Two or more choices have `answerType: PartOfSolution`, rest are `Invalid` | User selects multiple options then submits. All PartOfSolution options must be selected with no Invalid options. |
+
+> `PartOfSolution` and `Solution` must not be mixed in the same question.
+
+**Fields:**
+
+| Field | Required | Description |
+|---|---|---|
+| `questionType` | yes | Must be `multiple-choice`. |
+| `choices` | yes | Array of at least 2 choice objects. |
+| `header` | no | Question text shown above the choices. |
+| `hint` | no | Shown after the first wrong attempt (if `hintsEnabled`). |
+| `correctAnswerInfo` | no | Shown after a correct selection. |
+
+**Choice fields:**
+
+| Field | Required | Description |
+|---|---|---|
+| `text` | yes | The label shown on the option button. |
+| `description` | no | Optional sub-text shown below the label. |
+| `answerType` | yes | `Solution`, `PartOfSolution`, or `Invalid`. |
+
+**Examples:**
+
+Single correct answer:
+```yaml
+- type: question
+  question:
+    questionType: multiple-choice
+    header: "Which kubectl flag outputs in YAML format?"
+    hint: "Think about how you'd inspect a resource in full detail."
+    correctAnswerInfo: "'-o yaml' outputs the resource as YAML. '-o json' outputs JSON."
+    choices:
+      - text: "-o yaml"
+        answerType: Solution
+      - text: "-o wide"
+        answerType: Invalid
+      - text: "--format yaml"
+        answerType: Invalid
+      - text: "-o json"
+        answerType: Invalid
+```
+
+Combined answer (all must be selected):
+```yaml
+- type: question
+  question:
+    questionType: multiple-choice
+    header: "Which two flags are required to safely drain a node?"
+    hint: "You need to handle both DaemonSets and local storage."
+    choices:
+      - text: "--ignore-daemonsets"
+        description: "Skips pods managed by DaemonSets."
+        answerType: PartOfSolution
+      - text: "--delete-emptydir-data"
+        description: "Allows deletion of pods using emptyDir volumes."
+        answerType: PartOfSolution
+      - text: "--force"
+        description: "Forces deletion of unmanaged pods."
+        answerType: Invalid
+      - text: "--grace-period=0"
+        answerType: Invalid
+```
+
+---
+
 ## Explanation
 
 Every scenario requires an `explanation` block. It is displayed after all questions in the scenario are answered correctly. Use it to explain why the answers were correct, provide deeper context, and link to official documentation.
@@ -835,6 +917,7 @@ Before producing the final YAML, verify:
 - [ ] Every `command` question has `executable`; `subcommands` are `SubcommandToken` objects (with `name`, not bare strings); no `subcommandAliases` or `shortForm` fields (use `aliases` and `short` respectively)
 - [ ] Every `manifest` question has `manifestDefinitionId`
 - [ ] Every `sequence` has at least 2 `steps`
+- [ ] Every `multiple-choice` question has at least 2 `choices`; each choice has `text` and `answerType`; `PartOfSolution` and `Solution` are not mixed in the same question
 - [ ] Every `manifest` element (display type) has `content`
 - [ ] Every `table` element has `columns` and `rows`; each row has the same number of entries as `columns`
 - [ ] No unknown/extra properties are present (the schema uses `additionalProperties: false` everywhere)

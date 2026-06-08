@@ -294,6 +294,43 @@
         }
       ]
     },
+    "ChoiceAnswerType": {
+      "type": "string",
+      "enum": ["Solution", "PartOfSolution", "Invalid"],
+      "description": "'Solution' — this option is a complete correct answer. 'PartOfSolution' — this option is one required part of a combined correct answer (all PartOfSolution entries must be selected; cannot be mixed with Solution). 'Invalid' — incorrect option."
+    },
+    "Choice": {
+      "type": "object",
+      "required": ["text", "answerType"],
+      "additionalProperties": false,
+      "properties": {
+        "text": { "type": "string", "minLength": 1 },
+        "description": { "type": "string", "description": "Optional sub-text shown below the choice label." },
+        "answerType": { "$ref": "#/$defs/ChoiceAnswerType" }
+      }
+    },
+    "MultipleChoiceQuestion": {
+      "allOf": [
+        { "$ref": "#/$defs/BaseQuestion" },
+        {
+          "type": "object",
+          "required": ["questionType", "choices"],
+          "additionalProperties": false,
+          "properties": {
+            "questionType": { "const": "multiple-choice" },
+            "choices": {
+              "type": "array",
+              "minItems": 2,
+              "items": { "$ref": "#/$defs/Choice" },
+              "description": "List of answer options. Must contain at least one Solution or at least two PartOfSolution entries. PartOfSolution and Solution must not be mixed."
+            },
+            "header": { "type": "string" },
+            "hint": { "type": "string" },
+            "correctAnswerInfo": { "type": "string" }
+          }
+        }
+      ]
+    },
     "SequenceChildQuestion": {
       "oneOf": [
         { "$ref": "#/$defs/SingleLineQuestion" },
@@ -323,7 +360,8 @@
         { "$ref": "#/$defs/MultilineQuestion" },
         { "$ref": "#/$defs/CommandQuestion" },
         { "$ref": "#/$defs/ManifestQuestion" },
-        { "$ref": "#/$defs/SequenceQuestion" }
+        { "$ref": "#/$defs/SequenceQuestion" },
+        { "$ref": "#/$defs/MultipleChoiceQuestion" }
       ]
     },
     "ContextScenarioElement": {
