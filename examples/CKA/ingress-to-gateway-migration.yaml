@@ -1,0 +1,1556 @@
+apiVersion: v1alpha1
+name: "CKA: Ingress to Gateway API Migration"
+k8sVersion: "1.34.0"
+
+timing:
+  enabled: true
+  limitSeconds: 7200
+
+introduction:
+  elements:
+    - type: context
+      text: |
+        This scenario set targets the CKA Services & Networking domain objective to use
+        Gateway API for managing ingress traffic.
+
+        Scope covered:
+          - translating Ingress resources into Gateway + HTTPRoute resources
+          - modeling TLS termination on Gateway listeners
+          - implementing HTTP-to-HTTPS redirects without Ingress annotations
+          - handling cross-namespace Route attachment and reference permissions
+          - applying path rewrites during migration from annotation-based Ingress behavior
+          - validating hostname/listener intersections so routes are actually attached
+
+        The exam is hands-on and time-bound. All manifest questions in this set require full
+        manifests from memory, including metadata.
+    - type: break
+    - type: context
+      text: |
+        Important assumptions:
+          - Gateway API CRDs and a Gateway controller are already installed
+          - at least one usable GatewayClass already exists in the cluster
+
+        You should still know how to verify prerequisites quickly in an exam shell.
+    - type: references
+      links:
+        - url: https://training.linuxfoundation.org/certification/certified-kubernetes-administrator-cka/
+          text: CKA Domains and Competencies
+        - url: https://kubernetes.io/docs/concepts/services-networking/ingress/
+          text: Ingress (Frozen) - Kubernetes Docs
+        - url: https://kubernetes.io/docs/concepts/services-networking/gateway/
+          text: Gateway API - Kubernetes Docs
+        - url: https://gateway-api.sigs.k8s.io/guides/getting-started/migrating-from-ingress/
+          text: Migrating from Ingress - Gateway API Guide
+
+manifestDefinitions:
+  - id: ingress-v1
+    kind: Ingress
+    apiVersion: networking.k8s.io/v1
+    autoLoad: true
+  - id: gateway-v1
+    kind: Gateway
+    apiVersion: gateway.networking.k8s.io/v1
+    schema:
+      type: object
+  - id: httproute-v1
+    kind: HTTPRoute
+    apiVersion: gateway.networking.k8s.io/v1
+    schema:
+      type: object
+  - id: referencegrant-v1
+    kind: ReferenceGrant
+    apiVersion: gateway.networking.k8s.io/v1
+    schema:
+      type: object
+  - id: secret-v1
+    kind: Secret
+    apiVersion: v1
+    autoLoad: true
+
+scenarios:
+  - title: "Translate a Production Ingress to Gateway + HTTPRoutes"
+    category: "Services & Networking"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          Existing Ingress in namespace `shop`:
+            - ingressClassName: prod
+            - TLS hostnames: shop.example.com, admin.example.com
+            - TLS secret: shop-example-tls
+            - host shop.example.com routes:
+                /           -> web-svc:80
+                /orders     -> orders-svc:8080
+            - host admin.example.com routes:
+                /           -> admin-svc:8080
+
+          Migration target (Gateway API):
+            1. Create one Gateway named `shop-gw` in namespace `shop`.
+               - gatewayClassName: prod
+               - listener http:  port 80,  protocol HTTP,  hostname "*.example.com"
+               - listener https: port 443, protocol HTTPS, hostname "*.example.com"
+               - https listener TLS terminate with Secret shop-example-tls
+            2. Create one HTTPRoute for shop.example.com attached to https listener.
+            3. Create one HTTPRoute for admin.example.com attached to https listener.
+      - type: manifest
+        header: "Current Ingress configuration"
+        content: |
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: shop-ingress
+            namespace: shop
+          spec:
+            ingressClassName: prod
+            tls:
+              - hosts:
+                  - shop.example.com
+                  - admin.example.com
+                secretName: shop-example-tls
+            rules:
+              - host: shop.example.com
+                http:
+                  paths:
+                    - path: /
+                      pathType: Prefix
+                      backend:
+                        service:
+                          name: web-svc
+                          port:
+                            number: 80
+                    - path: /orders
+                      pathType: Prefix
+                      backend:
+                        service:
+                          name: orders-svc
+                          port:
+                            number: 8080
+              - host: admin.example.com
+                http:
+                  paths:
+                    - path: /
+                      pathType: Prefix
+                      backend:
+                        service:
+                          name: admin-svc
+                          port:
+                            number: 8080
+      - type: question
+        question:
+          questionType: manifest
+          header: "Write the full Gateway manifest for shop-gw exactly as specified."
+          manifestDefinitionId: gateway-v1
+          expectedFields:
+            - path: apiVersion
+              expectedValue: gateway.networking.k8s.io/v1
+            - path: kind
+              expectedValue: Gateway
+            - path: metadata.name
+              expectedValue: shop-gw
+            - path: metadata.namespace
+              expectedValue: shop
+            - path: spec.gatewayClassName
+              expectedValue: prod
+            - path: spec.listeners.0.name
+              expectedValue: http
+            - path: spec.listeners.0.protocol
+              expectedValue: HTTP
+            - path: spec.listeners.0.port
+              expectedValue: 80
+            - path: spec.listeners.0.hostname
+              expectedValue: "*.example.com"
+            - path: spec.listeners.1.name
+              expectedValue: https
+            - path: spec.listeners.1.protocol
+              expectedValue: HTTPS
+            - path: spec.listeners.1.port
+              expectedValue: 443
+            - path: spec.listeners.1.hostname
+              expectedValue: "*.example.com"
+            - path: spec.listeners.1.tls.mode
+              expectedValue: Terminate
+            - path: spec.listeners.1.tls.certificateRefs.0.kind
+              expectedValue: Secret
+            - path: spec.listeners.1.tls.certificateRefs.0.name
+              expectedValue: shop-example-tls
+      - type: question
+        question:
+          questionType: manifest
+          header: "Write the full HTTPRoute for host shop.example.com attached to the https listener."
+          manifestDefinitionId: httproute-v1
+          expectedFields:
+            - path: apiVersion
+              expectedValue: gateway.networking.k8s.io/v1
+            - path: kind
+              expectedValue: HTTPRoute
+            - path: metadata.name
+              expectedValue: shop-route
+            - path: metadata.namespace
+              expectedValue: shop
+            - path: spec.parentRefs.0.name
+              expectedValue: shop-gw
+            - path: spec.parentRefs.0.sectionName
+              expectedValue: https
+            - path: spec.hostnames.0
+              expectedValue: shop.example.com
+            - path: spec.rules.0.matches.0.path.type
+              expectedValue: PathPrefix
+            - path: spec.rules.0.matches.0.path.value
+              expectedValue: /
+            - path: spec.rules.0.backendRefs.0.name
+              expectedValue: web-svc
+            - path: spec.rules.0.backendRefs.0.port
+              expectedValue: 80
+            - path: spec.rules.1.matches.0.path.type
+              expectedValue: PathPrefix
+            - path: spec.rules.1.matches.0.path.value
+              expectedValue: /orders
+            - path: spec.rules.1.backendRefs.0.name
+              expectedValue: orders-svc
+            - path: spec.rules.1.backendRefs.0.port
+              expectedValue: 8080
+      - type: question
+        question:
+          questionType: manifest
+          header: "Write the full HTTPRoute for host admin.example.com attached to the https listener."
+          manifestDefinitionId: httproute-v1
+          expectedFields:
+            - path: apiVersion
+              expectedValue: gateway.networking.k8s.io/v1
+            - path: kind
+              expectedValue: HTTPRoute
+            - path: metadata.name
+              expectedValue: admin-route
+            - path: metadata.namespace
+              expectedValue: shop
+            - path: spec.parentRefs.0.name
+              expectedValue: shop-gw
+            - path: spec.parentRefs.0.sectionName
+              expectedValue: https
+            - path: spec.hostnames.0
+              expectedValue: admin.example.com
+            - path: spec.rules.0.matches.0.path.type
+              expectedValue: PathPrefix
+            - path: spec.rules.0.matches.0.path.value
+              expectedValue: /
+            - path: spec.rules.0.backendRefs.0.name
+              expectedValue: admin-svc
+            - path: spec.rules.0.backendRefs.0.port
+              expectedValue: 8080
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Migration mapping used here:
+              - Ingress entry point -> Gateway listeners
+              - Ingress TLS section -> HTTPS listener tls.certificateRefs
+              - Ingress host/path rules -> HTTPRoute hostnames + rules.matches + backendRefs
+
+            Key CKA-relevant behavior:
+              - Ingress is frozen; Gateway API is the forward-looking model
+              - HTTPRoutes only attach when parentRefs and listener hostnames are compatible
+              - TLS termination ownership shifts to Gateway (operator/admin concern)
+        - type: references
+          links:
+            - url: https://gateway-api.sigs.k8s.io/guides/getting-started/migrating-from-ingress/
+              text: Mapping Ingress to Gateway API
+            - url: https://gateway-api.sigs.k8s.io/reference/api-types/gateway/
+              text: Gateway API Type Reference - Gateway
+            - url: https://gateway-api.sigs.k8s.io/reference/api-types/httproute/
+              text: Gateway API Type Reference - HTTPRoute
+
+  - title: "Implement HTTP to HTTPS Redirect During Migration"
+    category: "Services & Networking"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          Your previous Ingress used an implementation-specific annotation to force TLS redirect.
+          In Gateway API, model this explicitly with an HTTPRoute RequestRedirect filter.
+
+          Requirements in namespace `shop`:
+            - Route name: tls-redirect
+            - attach to Gateway shop-gw, listener sectionName http
+            - hostnames: shop.example.com, admin.example.com
+            - requestRedirect: scheme https, port 443, statusCode 308
+      - type: question
+        question:
+          questionType: manifest
+          header: "Write the full HTTPRoute manifest for the redirect policy."
+          manifestDefinitionId: httproute-v1
+          expectedFields:
+            - path: apiVersion
+              expectedValue: gateway.networking.k8s.io/v1
+            - path: kind
+              expectedValue: HTTPRoute
+            - path: metadata.name
+              expectedValue: tls-redirect
+            - path: metadata.namespace
+              expectedValue: shop
+            - path: spec.parentRefs.0.name
+              expectedValue: shop-gw
+            - path: spec.parentRefs.0.sectionName
+              expectedValue: http
+            - path: spec.hostnames.0
+              expectedValue: shop.example.com
+            - path: spec.hostnames.1
+              expectedValue: admin.example.com
+            - path: spec.rules.0.filters.0.type
+              expectedValue: RequestRedirect
+            - path: spec.rules.0.filters.0.requestRedirect.scheme
+              expectedValue: https
+            - path: spec.rules.0.filters.0.requestRedirect.port
+              expectedValue: 443
+            - path: spec.rules.0.filters.0.requestRedirect.statusCode
+              expectedValue: 308
+      - type: table
+        style: terminal
+        columns: [INGRESS STYLE, GATEWAY API STYLE]
+        rows:
+          - ["annotation-based redirect", "HTTPRoute filter: RequestRedirect"]
+          - ["controller-specific behavior", "portable API shape"]
+    explanation:
+      elements:
+        - type: context
+          text: |
+            A common migration miss is forgetting to recreate TLS redirects after moving away from
+            Ingress annotations. In Gateway API this is explicit and portable in route filters.
+
+            Using status code 308 preserves method and request body semantics better than legacy
+            temporary redirects in many write-heavy APIs.
+        - type: references
+          links:
+            - url: https://gateway-api.sigs.k8s.io/guides/getting-started/migrating-from-ingress/
+              text: TLS Redirect Migration Example
+            - url: https://gateway-api.sigs.k8s.io/reference/api-types/httproute/
+              text: HTTPRoute Filters Reference
+
+  - title: "Migrate Annotation Rewrite Target to URLRewrite"
+    category: "Services & Networking"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          Existing Ingress in namespace `shop` used rewrite-target behavior for API traffic:
+            - host: api.example.com
+            - path prefix /v1
+            - backend: api-svc:9000
+            - annotation equivalent intent: rewrite /v1/<rest> to /<rest>
+
+          In Gateway API, represent this using URLRewrite with ReplacePrefixMatch.
+
+          Requirements:
+            - HTTPRoute name: api-route
+            - attach to shop-gw https listener
+            - hostname: api.example.com
+            - match path prefix /v1
+            - urlRewrite path ReplacePrefixMatch -> /
+            - backend api-svc:9000
+      - type: manifest
+        header: "Original Ingress snippet"
+        content: |
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: api-ingress
+            namespace: shop
+            annotations:
+              nginx.ingress.kubernetes.io/rewrite-target: /
+          spec:
+            ingressClassName: prod
+            rules:
+              - host: api.example.com
+                http:
+                  paths:
+                    - path: /v1
+                      pathType: Prefix
+                      backend:
+                        service:
+                          name: api-svc
+                          port:
+                            number: 9000
+      - type: question
+        question:
+          questionType: manifest
+          header: "Write the full HTTPRoute manifest with URLRewrite for this migration."
+          manifestDefinitionId: httproute-v1
+          expectedFields:
+            - path: apiVersion
+              expectedValue: gateway.networking.k8s.io/v1
+            - path: kind
+              expectedValue: HTTPRoute
+            - path: metadata.name
+              expectedValue: api-route
+            - path: metadata.namespace
+              expectedValue: shop
+            - path: spec.parentRefs.0.name
+              expectedValue: shop-gw
+            - path: spec.parentRefs.0.sectionName
+              expectedValue: https
+            - path: spec.hostnames.0
+              expectedValue: api.example.com
+            - path: spec.rules.0.matches.0.path.type
+              expectedValue: PathPrefix
+            - path: spec.rules.0.matches.0.path.value
+              expectedValue: /v1
+            - path: spec.rules.0.filters.0.type
+              expectedValue: URLRewrite
+            - path: spec.rules.0.filters.0.urlRewrite.path.type
+              expectedValue: ReplacePrefixMatch
+            - path: spec.rules.0.filters.0.urlRewrite.path.replacePrefixMatch
+              expectedValue: /
+            - path: spec.rules.0.backendRefs.0.name
+              expectedValue: api-svc
+            - path: spec.rules.0.backendRefs.0.port
+              expectedValue: 9000
+    explanation:
+      elements:
+        - type: context
+          text: |
+            RequestRedirect and URLRewrite are mutually exclusive on the same rule.
+            Redirect tells the client to go elsewhere; rewrite mutates the upstream request path.
+
+            This distinction appears frequently in migration work because many Ingress rewrites were
+            previously hidden behind controller annotations.
+        - type: references
+          links:
+            - url: https://gateway-api.sigs.k8s.io/guides/user-guides/http-redirect-rewrite/
+              text: HTTP Redirect and Rewrite Guide
+            - url: https://gateway-api.sigs.k8s.io/reference/api-types/httproute/
+              text: HTTPRoute URLRewrite Filter
+
+  - title: "Cross-Namespace Route Attachment with AllowedRoutes"
+    category: "Services & Networking"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          You are introducing a shared edge Gateway in namespace `edge` while app teams keep
+          routes in their own namespaces.
+
+          Build resources so that namespace `payments` can attach HTTPRoutes to the Gateway:
+            1. Gateway `shared-gw` in namespace edge
+               - class prod
+               - listener https on 443, hostname "*.corp.example.com"
+               - terminate TLS using Secret edge-wildcard-tls
+               - allow routes from ALL namespaces on this listener
+            2. HTTPRoute `payments-route` in namespace payments
+               - parentRefs -> shared-gw in namespace edge, sectionName https
+               - hostname pay.corp.example.com
+               - path prefix / -> backend payments-svc:8443
+      - type: question
+        question:
+          questionType: manifest
+          header: "Write the full shared Gateway manifest in namespace edge."
+          manifestDefinitionId: gateway-v1
+          expectedFields:
+            - path: apiVersion
+              expectedValue: gateway.networking.k8s.io/v1
+            - path: kind
+              expectedValue: Gateway
+            - path: metadata.name
+              expectedValue: shared-gw
+            - path: metadata.namespace
+              expectedValue: edge
+            - path: spec.gatewayClassName
+              expectedValue: prod
+            - path: spec.listeners.0.name
+              expectedValue: https
+            - path: spec.listeners.0.protocol
+              expectedValue: HTTPS
+            - path: spec.listeners.0.port
+              expectedValue: 443
+            - path: spec.listeners.0.hostname
+              expectedValue: "*.corp.example.com"
+            - path: spec.listeners.0.tls.mode
+              expectedValue: Terminate
+            - path: spec.listeners.0.tls.certificateRefs.0.kind
+              expectedValue: Secret
+            - path: spec.listeners.0.tls.certificateRefs.0.name
+              expectedValue: edge-wildcard-tls
+            - path: spec.listeners.0.allowedRoutes.namespaces.from
+              expectedValue: All
+      - type: question
+        question:
+          questionType: manifest
+          header: "Write the full cross-namespace HTTPRoute in namespace payments."
+          manifestDefinitionId: httproute-v1
+          expectedFields:
+            - path: apiVersion
+              expectedValue: gateway.networking.k8s.io/v1
+            - path: kind
+              expectedValue: HTTPRoute
+            - path: metadata.name
+              expectedValue: payments-route
+            - path: metadata.namespace
+              expectedValue: payments
+            - path: spec.parentRefs.0.name
+              expectedValue: shared-gw
+            - path: spec.parentRefs.0.namespace
+              expectedValue: edge
+            - path: spec.parentRefs.0.sectionName
+              expectedValue: https
+            - path: spec.hostnames.0
+              expectedValue: pay.corp.example.com
+            - path: spec.rules.0.matches.0.path.type
+              expectedValue: PathPrefix
+            - path: spec.rules.0.matches.0.path.value
+              expectedValue: /
+            - path: spec.rules.0.backendRefs.0.name
+              expectedValue: payments-svc
+            - path: spec.rules.0.backendRefs.0.port
+              expectedValue: 8443
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Route attachment across namespaces is governed by the Gateway listener's allowedRoutes
+            policy, not by ReferenceGrant.
+
+            Quick rule for exam tasks:
+              - Route attaching to Gateway in another namespace -> allowedRoutes decides
+              - Route referencing backend Service in another namespace or Gateway referencing Secret
+                in another namespace -> ReferenceGrant decides
+        - type: references
+          links:
+            - url: https://gateway-api.sigs.k8s.io/reference/api-types/gateway/
+              text: Gateway AllowedRoutes
+            - url: https://gateway-api.sigs.k8s.io/guides/user-guides/multiple-ns/
+              text: Gateway API Cross-Namespace Routing Guide
+
+  - title: "Cross-Namespace TLS Certificate Reference with ReferenceGrant"
+    category: "Services & Networking"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          Security team stores TLS secrets in namespace `certs`.
+          You need a Gateway in namespace `edge` to terminate TLS using secret `wildcard-corp-tls`
+          that lives in namespace `certs`.
+
+          Create both resources:
+            1. Gateway edge/corp-gw with HTTPS listener and certificateRefs namespace certs
+            2. ReferenceGrant in namespace certs allowing Gateway from namespace edge to reference Secret
+      - type: question
+        question:
+          questionType: manifest
+          header: "Write the full Gateway manifest with cross-namespace certificateRef."
+          manifestDefinitionId: gateway-v1
+          expectedFields:
+            - path: apiVersion
+              expectedValue: gateway.networking.k8s.io/v1
+            - path: kind
+              expectedValue: Gateway
+            - path: metadata.name
+              expectedValue: corp-gw
+            - path: metadata.namespace
+              expectedValue: edge
+            - path: spec.gatewayClassName
+              expectedValue: prod
+            - path: spec.listeners.0.name
+              expectedValue: https
+            - path: spec.listeners.0.protocol
+              expectedValue: HTTPS
+            - path: spec.listeners.0.port
+              expectedValue: 443
+            - path: spec.listeners.0.hostname
+              expectedValue: "*.corp.example.com"
+            - path: spec.listeners.0.tls.mode
+              expectedValue: Terminate
+            - path: spec.listeners.0.tls.certificateRefs.0.kind
+              expectedValue: Secret
+            - path: spec.listeners.0.tls.certificateRefs.0.name
+              expectedValue: wildcard-corp-tls
+            - path: spec.listeners.0.tls.certificateRefs.0.namespace
+              expectedValue: certs
+      - type: question
+        question:
+          questionType: manifest
+          header: "Write the full ReferenceGrant manifest required in namespace certs."
+          manifestDefinitionId: referencegrant-v1
+          expectedFields:
+            - path: apiVersion
+              expectedValue: gateway.networking.k8s.io/v1
+            - path: kind
+              expectedValue: ReferenceGrant
+            - path: metadata.name
+              expectedValue: allow-edge-gateway-secret-ref
+            - path: metadata.namespace
+              expectedValue: certs
+            - path: spec.from.0.group
+              expectedValue: gateway.networking.k8s.io
+            - path: spec.from.0.kind
+              expectedValue: Gateway
+            - path: spec.from.0.namespace
+              expectedValue: edge
+            - path: spec.to.0.group
+              expectedValue: ""
+            - path: spec.to.0.kind
+              expectedValue: Secret
+            - path: spec.to.0.name
+              expectedValue: wildcard-corp-tls
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Gateway certificateRefs are local-namespace by default.
+            When pointing to another namespace, a ReferenceGrant in the target namespace is mandatory.
+
+            Without this grant, the listener's ResolvedRefs condition becomes false and TLS will not be
+            configured as intended.
+        - type: references
+          links:
+            - url: https://gateway-api.sigs.k8s.io/guides/user-guides/tls/
+              text: Gateway API TLS Guide
+            - url: https://gateway-api.sigs.k8s.io/reference/api-types/referencegrant/
+              text: ReferenceGrant API Type
+
+  - title: "Listener and Hostname Intersection Troubleshooting"
+    category: "Troubleshooting"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          A route is accepted by schema but not attached to traffic because listener and route hostnames
+          do not intersect.
+
+          Existing Gateway in namespace edge:
+            - listener https hostname: "*.corp.example.com"
+
+          Write a correct HTTPRoute in namespace edge for service `reports-svc:8080` that:
+            - attaches to parent shared-gw sectionName https
+            - uses hostname reports.corp.example.com
+            - routes /reports prefix to reports-svc:8080
+      - type: table
+        style: terminal
+        columns: [BAD HOSTNAME, WHY IT FAILS]
+        rows:
+          - ["reports.internal.example.com", "Does not intersect *.corp.example.com"]
+          - ["corp.example.com", "Wildcard listener does not match apex"]
+          - ["reports.corp.example.com", "Valid intersection"]
+      - type: question
+        question:
+          questionType: manifest
+          header: "Write the full corrected HTTPRoute manifest."
+          manifestDefinitionId: httproute-v1
+          expectedFields:
+            - path: apiVersion
+              expectedValue: gateway.networking.k8s.io/v1
+            - path: kind
+              expectedValue: HTTPRoute
+            - path: metadata.name
+              expectedValue: reports-route
+            - path: metadata.namespace
+              expectedValue: edge
+            - path: spec.parentRefs.0.name
+              expectedValue: shared-gw
+            - path: spec.parentRefs.0.sectionName
+              expectedValue: https
+            - path: spec.hostnames.0
+              expectedValue: reports.corp.example.com
+            - path: spec.rules.0.matches.0.path.type
+              expectedValue: PathPrefix
+            - path: spec.rules.0.matches.0.path.value
+              expectedValue: /reports
+            - path: spec.rules.0.backendRefs.0.name
+              expectedValue: reports-svc
+            - path: spec.rules.0.backendRefs.0.port
+              expectedValue: 8080
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Gateway attachment is a two-sided contract:
+              - Route references a parent listener (parentRefs)
+              - Listener permits that Route and has compatible hostname scope
+
+            During exam troubleshooting, check this order first:
+              1. parentRefs name/namespace/sectionName
+              2. listener allowedRoutes policy
+              3. hostname intersection between listener and route
+              4. backendRefs validity
+        - type: references
+          links:
+            - url: https://gateway-api.sigs.k8s.io/reference/api-types/httproute/
+              text: HTTPRoute Hostname Rules
+            - url: https://gateway-api.sigs.k8s.io/reference/api-types/gateway/
+              text: Gateway Listener Semantics
+apiVersion: v1alpha1
+name: "CKA: Ingress to Gateway API Migration"
+k8sVersion: "1.34.0"
+
+timing:
+  enabled: true
+  limitSeconds: 7200
+
+introduction:
+  elements:
+    - type: context
+      text: |
+        This set targets the CKA 2026 Services & Networking objective: use the Gateway API
+        to manage Ingress traffic.
+
+        It is designed as migration practice from existing Ingress resources to Gateway API
+        resources. You will repeatedly convert real-looking Ingress definitions into:
+          - Gateway (entry points and TLS termination)
+          - HTTPRoute (host/path routing)
+          - HTTPRoute redirect rules (HTTP -> HTTPS)
+          - ReferenceGrant (cross-namespace trust where required)
+
+        This is a typing-first set. Manifest questions intentionally provide no scaffold.
+        You must write complete manifests by memory, including metadata and spec.
+    - type: break
+    - type: context
+      text: |
+        What was additionally included from current upstream docs:
+          - Ingress is frozen and Gateway API is the recommended successor
+          - Default Route attachment is same-namespace unless allowedRoutes expands scope
+          - Listener hostnames and HTTPRoute hostnames must intersect
+          - Ingress default backend has no direct Gateway API field; model it as an explicit / rule
+          - Cross-namespace certificate and backend references require ReferenceGrant
+          - Redirect and rewrite logic should be expressed as structured HTTPRoute filters
+    - type: references
+      links:
+        - url: https://training.linuxfoundation.org/certification/certified-kubernetes-administrator-cka/
+          text: CKA Certification Page (Services & Networking includes Gateway API)
+        - url: https://github.com/cncf/curriculum/blob/master/CKA_Curriculum_v1.35.pdf
+          text: CKA Curriculum v1.35
+        - url: https://kubernetes.io/docs/concepts/services-networking/ingress/
+          text: Ingress (frozen) documentation
+        - url: https://kubernetes.io/docs/concepts/services-networking/gateway/
+          text: Gateway API concepts
+        - url: https://gateway-api.sigs.k8s.io/guides/getting-started/migrating-from-ingress/
+          text: Migrating from Ingress to Gateway API
+
+manifestDefinitions:
+  - id: gateway-v1
+    kind: Gateway
+    apiVersion: gateway.networking.k8s.io/v1
+    schema:
+      type: object
+      required: [apiVersion, kind, metadata, spec]
+      properties:
+        apiVersion:
+          type: string
+        kind:
+          type: string
+        metadata:
+          type: object
+        spec:
+          type: object
+  - id: httproute-v1
+    kind: HTTPRoute
+    apiVersion: gateway.networking.k8s.io/v1
+    schema:
+      type: object
+      required: [apiVersion, kind, metadata, spec]
+      properties:
+        apiVersion:
+          type: string
+        kind:
+          type: string
+        metadata:
+          type: object
+        spec:
+          type: object
+  - id: referencegrant-v1
+    kind: ReferenceGrant
+    apiVersion: gateway.networking.k8s.io/v1
+    schema:
+      type: object
+      required: [apiVersion, kind, metadata, spec]
+      properties:
+        apiVersion:
+          type: string
+        kind:
+          type: string
+        metadata:
+          type: object
+        spec:
+          type: object
+
+scenarios:
+  - title: "Migrate a Multi-Host TLS Ingress to Gateway + HTTPRoutes"
+    category: "Services & Networking"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          Existing ingress configuration:
+      - type: manifest
+        content: |
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: shop-ingress
+            namespace: web
+            annotations:
+              example-ingress-controller.example.org/tls-redirect: "True"
+          spec:
+            ingressClassName: prod
+            tls:
+              - hosts:
+                  - shop.example.com
+                  - admin.example.com
+                secretName: example-com-tls
+            rules:
+              - host: shop.example.com
+                http:
+                  paths:
+                    - path: /api
+                      pathType: Prefix
+                      backend:
+                        service:
+                          name: shop-api
+                          port:
+                            number: 80
+                    - path: /
+                      pathType: Prefix
+                      backend:
+                        service:
+                          name: shop-web
+                          port:
+                            number: 80
+              - host: admin.example.com
+                http:
+                  paths:
+                    - path: /
+                      pathType: Prefix
+                      backend:
+                        service:
+                          name: admin-web
+                          port:
+                            number: 8080
+        header: "Current Ingress"
+        footer: "Convert this into explicit Gateway API resources."
+      - type: context
+        text: |
+          Conversion requirements:
+            - Gateway name: web-gw, namespace: web, class: prod
+            - HTTP listener: name http, port 80, protocol HTTP, hostname *.example.com
+            - HTTPS listener: name https, port 443, protocol HTTPS, hostname *.example.com
+            - HTTPS listener must terminate TLS using Secret example-com-tls
+      - type: question
+        question:
+          questionType: manifest
+          header: "Write the complete Gateway manifest that provides both HTTP and HTTPS entry points with TLS termination."
+          manifestDefinitionId: gateway-v1
+          expectedFields:
+            - path: apiVersion
+              expectedValue: gateway.networking.k8s.io/v1
+            - path: kind
+              expectedValue: Gateway
+            - path: metadata.name
+              expectedValue: web-gw
+            - path: metadata.namespace
+              expectedValue: web
+            - path: spec.gatewayClassName
+              expectedValue: prod
+            - path: spec.listeners.0.name
+              expectedValue: http
+            - path: spec.listeners.0.protocol
+              expectedValue: HTTP
+            - path: spec.listeners.0.port
+              expectedValue: 80
+            - path: spec.listeners.0.hostname
+              expectedValue: "*.example.com"
+            - path: spec.listeners.1.name
+              expectedValue: https
+            - path: spec.listeners.1.protocol
+              expectedValue: HTTPS
+            - path: spec.listeners.1.port
+              expectedValue: 443
+            - path: spec.listeners.1.hostname
+              expectedValue: "*.example.com"
+            - path: spec.listeners.1.tls.mode
+              expectedValue: Terminate
+            - path: spec.listeners.1.tls.certificateRefs.0.kind
+              expectedValue: Secret
+            - path: spec.listeners.1.tls.certificateRefs.0.name
+              expectedValue: example-com-tls
+      - type: question
+        question:
+          questionType: manifest
+          header: "Write the complete HTTPRoute for host shop.example.com attached to the https listener."
+          manifestDefinitionId: httproute-v1
+          expectedFields:
+            - path: apiVersion
+              expectedValue: gateway.networking.k8s.io/v1
+            - path: kind
+              expectedValue: HTTPRoute
+            - path: metadata.name
+              expectedValue: shop-route
+            - path: metadata.namespace
+              expectedValue: web
+            - path: spec.parentRefs.0.name
+              expectedValue: web-gw
+            - path: spec.parentRefs.0.sectionName
+              expectedValue: https
+            - path: spec.hostnames.0
+              expectedValue: shop.example.com
+            - path: spec.rules.0.matches.0.path.type
+              expectedValue: PathPrefix
+            - path: spec.rules.0.matches.0.path.value
+              expectedValue: /api
+            - path: spec.rules.0.backendRefs.0.name
+              expectedValue: shop-api
+            - path: spec.rules.0.backendRefs.0.port
+              expectedValue: 80
+            - path: spec.rules.1.matches.0.path.type
+              expectedValue: PathPrefix
+            - path: spec.rules.1.matches.0.path.value
+              expectedValue: /
+            - path: spec.rules.1.backendRefs.0.name
+              expectedValue: shop-web
+            - path: spec.rules.1.backendRefs.0.port
+              expectedValue: 80
+      - type: question
+        question:
+          questionType: manifest
+          header: "Write the complete HTTPRoute for host admin.example.com attached to the https listener."
+          manifestDefinitionId: httproute-v1
+          expectedFields:
+            - path: metadata.name
+              expectedValue: admin-route
+            - path: metadata.namespace
+              expectedValue: web
+            - path: spec.parentRefs.0.name
+              expectedValue: web-gw
+            - path: spec.parentRefs.0.sectionName
+              expectedValue: https
+            - path: spec.hostnames.0
+              expectedValue: admin.example.com
+            - path: spec.rules.0.matches.0.path.type
+              expectedValue: PathPrefix
+            - path: spec.rules.0.matches.0.path.value
+              expectedValue: /
+            - path: spec.rules.0.backendRefs.0.name
+              expectedValue: admin-web
+            - path: spec.rules.0.backendRefs.0.port
+              expectedValue: 8080
+      - type: question
+        question:
+          questionType: manifest
+          header: "Write the complete HTTPRoute that performs HTTP->HTTPS redirect for both hosts from listener http."
+          manifestDefinitionId: httproute-v1
+          expectedFields:
+            - path: metadata.name
+              expectedValue: tls-redirect
+            - path: metadata.namespace
+              expectedValue: web
+            - path: spec.parentRefs.0.name
+              expectedValue: web-gw
+            - path: spec.parentRefs.0.sectionName
+              expectedValue: http
+            - path: spec.hostnames.0
+              expectedValue: shop.example.com
+            - path: spec.hostnames.1
+              expectedValue: admin.example.com
+            - path: spec.rules.0.filters.0.type
+              expectedValue: RequestRedirect
+            - path: spec.rules.0.filters.0.requestRedirect.scheme
+              expectedValue: https
+            - path: spec.rules.0.filters.0.requestRedirect.port
+              expectedValue: 443
+    explanation:
+      elements:
+        - type: context
+          text: |
+            The key migration patterns in this scenario are the ones most often missed:
+              - Ingress has implicit HTTP/HTTPS entry points, but Gateway requires explicit listeners.
+              - TLS termination belongs to the Gateway listener, not to HTTPRoute.
+              - Redirect behavior should be an explicit HTTPRoute with RequestRedirect.
+
+            Keeping host-specific routing in separate HTTPRoutes is usually clearer and aligns
+            well with team ownership boundaries.
+        - type: references
+          links:
+            - url: https://gateway-api.sigs.k8s.io/guides/getting-started/migrating-from-ingress/
+              text: Migration example and feature mapping
+            - url: https://gateway-api.sigs.k8s.io/reference/api-spec/main/spec/#listener
+              text: Gateway Listener reference
+
+  - title: "Path Matching and Default Backend Migration"
+    category: "Services & Networking"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          Existing ingress configuration:
+      - type: manifest
+        content: |
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: docs-ingress
+            namespace: docs
+          spec:
+            ingressClassName: prod
+            rules:
+              - host: docs.example.com
+                http:
+                  paths:
+                    - path: /healthz
+                      pathType: Exact
+                      backend:
+                        service:
+                          name: docs-health
+                          port:
+                            number: 8081
+                    - path: /v1
+                      pathType: Prefix
+                      backend:
+                        service:
+                          name: docs-v1
+                          port:
+                            number: 8080
+                    - path: /
+                      pathType: Prefix
+                      backend:
+                        service:
+                          name: docs-default
+                          port:
+                            number: 8080
+        header: "Current Ingress"
+        footer: "Model default backend behavior explicitly with a catch-all route rule."
+      - type: context
+        text: |
+          Conversion requirements:
+            - Reuse an existing Gateway named shared-gw in namespace docs
+            - Attach to listener sectionName https
+            - Preserve match semantics:
+              - /healthz exact -> docs-health:8081
+              - /v1 prefix -> docs-v1:8080
+              - / prefix -> docs-default:8080
+      - type: question
+        question:
+          questionType: manifest
+          header: "Write the complete HTTPRoute manifest for docs.example.com preserving exact and prefix behavior."
+          manifestDefinitionId: httproute-v1
+          expectedFields:
+            - path: metadata.name
+              expectedValue: docs-route
+            - path: metadata.namespace
+              expectedValue: docs
+            - path: spec.parentRefs.0.name
+              expectedValue: shared-gw
+            - path: spec.parentRefs.0.sectionName
+              expectedValue: https
+            - path: spec.hostnames.0
+              expectedValue: docs.example.com
+            - path: spec.rules.0.matches.0.path.type
+              expectedValue: Exact
+            - path: spec.rules.0.matches.0.path.value
+              expectedValue: /healthz
+            - path: spec.rules.0.backendRefs.0.name
+              expectedValue: docs-health
+            - path: spec.rules.0.backendRefs.0.port
+              expectedValue: 8081
+            - path: spec.rules.1.matches.0.path.type
+              expectedValue: PathPrefix
+            - path: spec.rules.1.matches.0.path.value
+              expectedValue: /v1
+            - path: spec.rules.1.backendRefs.0.name
+              expectedValue: docs-v1
+            - path: spec.rules.1.backendRefs.0.port
+              expectedValue: 8080
+            - path: spec.rules.2.matches.0.path.type
+              expectedValue: PathPrefix
+            - path: spec.rules.2.matches.0.path.value
+              expectedValue: /
+            - path: spec.rules.2.backendRefs.0.name
+              expectedValue: docs-default
+            - path: spec.rules.2.backendRefs.0.port
+              expectedValue: 8080
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Ingress default backend does not have a single dedicated field in Gateway API.
+            The migration approach is to define an explicit catch-all rule using PathPrefix '/'.
+
+            Keep exact match rules explicit when needed (for probes or fixed endpoints), then add
+            broader prefix rules after those specific intents to preserve operational clarity.
+        - type: references
+          links:
+            - url: https://gateway-api.sigs.k8s.io/guides/getting-started/migrating-from-ingress/
+              text: Default backend migration guidance
+            - url: https://gateway-api.sigs.k8s.io/reference/api-spec/main/spec/#httppathmatch
+              text: HTTPPathMatch types
+
+  - title: "Shared Gateway Across Namespaces (allowedRoutes + ParentRef Namespace)"
+    category: "Services & Networking"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          Existing ingress (application namespace):
+      - type: manifest
+        content: |
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: payments-ingress
+            namespace: team-a
+          spec:
+            ingressClassName: prod
+            rules:
+              - host: pay.example.com
+                http:
+                  paths:
+                    - path: /
+                      pathType: Prefix
+                      backend:
+                        service:
+                          name: payments
+                          port:
+                            number: 8080
+        header: "Current Ingress"
+        footer: "This app now must attach to a shared Gateway in another namespace."
+      - type: context
+        text: |
+          Requirements:
+            - Create Gateway in namespace edge, name: shared-edge, class: prod
+            - Listener https on 443 with hostname *.example.com and TLS terminate using secret wildcard-example-com
+            - The listener must allow routes from all namespaces
+            - Then create HTTPRoute in namespace team-a targeting that gateway/listener
+      - type: question
+        question:
+          questionType: manifest
+          header: "Write the complete shared Gateway manifest in namespace edge with cross-namespace route attachment enabled."
+          manifestDefinitionId: gateway-v1
+          expectedFields:
+            - path: metadata.name
+              expectedValue: shared-edge
+            - path: metadata.namespace
+              expectedValue: edge
+            - path: spec.gatewayClassName
+              expectedValue: prod
+            - path: spec.listeners.0.name
+              expectedValue: https
+            - path: spec.listeners.0.protocol
+              expectedValue: HTTPS
+            - path: spec.listeners.0.port
+              expectedValue: 443
+            - path: spec.listeners.0.hostname
+              expectedValue: "*.example.com"
+            - path: spec.listeners.0.tls.mode
+              expectedValue: Terminate
+            - path: spec.listeners.0.tls.certificateRefs.0.kind
+              expectedValue: Secret
+            - path: spec.listeners.0.tls.certificateRefs.0.name
+              expectedValue: wildcard-example-com
+            - path: spec.listeners.0.allowedRoutes.namespaces.from
+              expectedValue: All
+      - type: question
+        question:
+          questionType: manifest
+          header: "Write the complete HTTPRoute in team-a that attaches to shared-edge/https and routes pay.example.com to payments:8080."
+          manifestDefinitionId: httproute-v1
+          expectedFields:
+            - path: metadata.name
+              expectedValue: payments-route
+            - path: metadata.namespace
+              expectedValue: team-a
+            - path: spec.parentRefs.0.name
+              expectedValue: shared-edge
+            - path: spec.parentRefs.0.namespace
+              expectedValue: edge
+            - path: spec.parentRefs.0.sectionName
+              expectedValue: https
+            - path: spec.hostnames.0
+              expectedValue: pay.example.com
+            - path: spec.rules.0.matches.0.path.type
+              expectedValue: PathPrefix
+            - path: spec.rules.0.matches.0.path.value
+              expectedValue: /
+            - path: spec.rules.0.backendRefs.0.name
+              expectedValue: payments
+            - path: spec.rules.0.backendRefs.0.port
+              expectedValue: 8080
+    explanation:
+      elements:
+        - type: context
+          text: |
+            A common migration failure is forgetting that Gateway listeners accept routes from
+            the same namespace by default.
+
+            For cross-namespace attachment:
+              - Listener must allow it via allowedRoutes.namespaces.from
+              - Route parentRef should include the gateway namespace
+
+            If hostnames do not intersect between listener and route, the route will not attach.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/concepts/services-networking/gateway/
+              text: Gateway defaults and allowedRoutes
+            - url: https://gateway-api.sigs.k8s.io/reference/api-spec/main/spec/#allowedroutes
+              text: AllowedRoutes API reference
+
+  - title: "Cross-Namespace TLS Secret with ReferenceGrant"
+    category: "Services & Networking"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          Existing ingress configuration used a same-namespace TLS secret:
+      - type: manifest
+        content: |
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: portal-ingress
+            namespace: app
+          spec:
+            ingressClassName: prod
+            tls:
+              - hosts:
+                  - portal.example.com
+                secretName: portal-tls
+            rules:
+              - host: portal.example.com
+                http:
+                  paths:
+                    - path: /
+                      pathType: Prefix
+                      backend:
+                        service:
+                          name: portal
+                          port:
+                            number: 80
+        header: "Current Ingress"
+        footer: "Target architecture stores certs in namespace certs, not app."
+      - type: context
+        text: |
+          Requirements:
+            - Gateway name: portal-gw in namespace app
+            - HTTPS listener on 443 hostname portal.example.com
+            - certificateRefs points to Secret central-portal-tls in namespace certs
+            - Add ReferenceGrant in namespace certs so Gateway in app can reference that Secret
+      - type: question
+        question:
+          questionType: manifest
+          header: "Write the complete Gateway manifest using a cross-namespace certificateRef."
+          manifestDefinitionId: gateway-v1
+          expectedFields:
+            - path: metadata.name
+              expectedValue: portal-gw
+            - path: metadata.namespace
+              expectedValue: app
+            - path: spec.gatewayClassName
+              expectedValue: prod
+            - path: spec.listeners.0.name
+              expectedValue: https
+            - path: spec.listeners.0.protocol
+              expectedValue: HTTPS
+            - path: spec.listeners.0.port
+              expectedValue: 443
+            - path: spec.listeners.0.hostname
+              expectedValue: portal.example.com
+            - path: spec.listeners.0.tls.mode
+              expectedValue: Terminate
+            - path: spec.listeners.0.tls.certificateRefs.0.kind
+              expectedValue: Secret
+            - path: spec.listeners.0.tls.certificateRefs.0.name
+              expectedValue: central-portal-tls
+            - path: spec.listeners.0.tls.certificateRefs.0.namespace
+              expectedValue: certs
+      - type: question
+        question:
+          questionType: manifest
+          header: "Write the complete ReferenceGrant manifest in namespace certs to permit that secret reference."
+          manifestDefinitionId: referencegrant-v1
+          expectedFields:
+            - path: apiVersion
+              expectedValue: gateway.networking.k8s.io/v1
+            - path: kind
+              expectedValue: ReferenceGrant
+            - path: metadata.name
+              expectedValue: allow-app-gateway-secret
+            - path: metadata.namespace
+              expectedValue: certs
+            - path: spec.from.0.group
+              expectedValue: gateway.networking.k8s.io
+            - path: spec.from.0.kind
+              expectedValue: Gateway
+            - path: spec.from.0.namespace
+              expectedValue: app
+            - path: spec.to.0.group
+              expectedValue: ""
+            - path: spec.to.0.kind
+              expectedValue: Secret
+            - path: spec.to.0.name
+              expectedValue: central-portal-tls
+      - type: question
+        question:
+          questionType: manifest
+          header: "Write the complete HTTPRoute in namespace app to route portal.example.com to service portal:80 via listener https."
+          manifestDefinitionId: httproute-v1
+          expectedFields:
+            - path: metadata.name
+              expectedValue: portal-route
+            - path: metadata.namespace
+              expectedValue: app
+            - path: spec.parentRefs.0.name
+              expectedValue: portal-gw
+            - path: spec.parentRefs.0.sectionName
+              expectedValue: https
+            - path: spec.hostnames.0
+              expectedValue: portal.example.com
+            - path: spec.rules.0.backendRefs.0.name
+              expectedValue: portal
+            - path: spec.rules.0.backendRefs.0.port
+              expectedValue: 80
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Cross-namespace object references are denied by default in Gateway API.
+            ReferenceGrant is the explicit trust object for those references.
+
+            For TLS cert migration this is especially important when a central certificate namespace
+            is used by platform teams.
+        - type: references
+          links:
+            - url: https://gateway-api.sigs.k8s.io/guides/user-guides/tls/
+              text: TLS and cross-namespace certificate references
+            - url: https://gateway-api.sigs.k8s.io/reference/api-spec/main/spec/#referencegrant
+              text: ReferenceGrant API reference
+
+  - title: "Rewrite and Redirect Annotation Migration"
+    category: "Services & Networking"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          Existing ingress configuration uses implementation-specific annotations:
+      - type: manifest
+        content: |
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: legacy-anno-ingress
+            namespace: web
+            annotations:
+              nginx.ingress.kubernetes.io/rewrite-target: /
+              nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+          spec:
+            ingressClassName: prod
+            tls:
+              - hosts:
+                  - legacy.example.com
+                secretName: legacy-tls
+            rules:
+              - host: legacy.example.com
+                http:
+                  paths:
+                    - path: /old
+                      pathType: Prefix
+                      backend:
+                        service:
+                          name: legacy-web
+                          port:
+                            number: 8080
+        header: "Current Ingress"
+        footer: "Convert annotation behavior into structured Gateway API filters."
+      - type: context
+        text: |
+          Requirements:
+            - Gateway name: legacy-gw, namespace: web, class: prod
+            - listeners:
+              - http:80 hostname legacy.example.com
+              - https:443 hostname legacy.example.com tls terminate secret legacy-tls
+            - Route 1 on http listener: redirect to https:443
+            - Route 2 on https listener: match /old prefix and rewrite prefix to /
+              then forward to legacy-web:8080
+      - type: question
+        question:
+          questionType: manifest
+          header: "Write the complete Gateway manifest for legacy.example.com with both listeners and TLS termination."
+          manifestDefinitionId: gateway-v1
+          expectedFields:
+            - path: metadata.name
+              expectedValue: legacy-gw
+            - path: metadata.namespace
+              expectedValue: web
+            - path: spec.gatewayClassName
+              expectedValue: prod
+            - path: spec.listeners.0.name
+              expectedValue: http
+            - path: spec.listeners.0.protocol
+              expectedValue: HTTP
+            - path: spec.listeners.0.port
+              expectedValue: 80
+            - path: spec.listeners.0.hostname
+              expectedValue: legacy.example.com
+            - path: spec.listeners.1.name
+              expectedValue: https
+            - path: spec.listeners.1.protocol
+              expectedValue: HTTPS
+            - path: spec.listeners.1.port
+              expectedValue: 443
+            - path: spec.listeners.1.hostname
+              expectedValue: legacy.example.com
+            - path: spec.listeners.1.tls.mode
+              expectedValue: Terminate
+            - path: spec.listeners.1.tls.certificateRefs.0.name
+              expectedValue: legacy-tls
+      - type: question
+        question:
+          questionType: manifest
+          header: "Write the complete HTTPRoute that redirects HTTP traffic to HTTPS."
+          manifestDefinitionId: httproute-v1
+          expectedFields:
+            - path: metadata.name
+              expectedValue: legacy-redirect
+            - path: metadata.namespace
+              expectedValue: web
+            - path: spec.parentRefs.0.name
+              expectedValue: legacy-gw
+            - path: spec.parentRefs.0.sectionName
+              expectedValue: http
+            - path: spec.hostnames.0
+              expectedValue: legacy.example.com
+            - path: spec.rules.0.filters.0.type
+              expectedValue: RequestRedirect
+            - path: spec.rules.0.filters.0.requestRedirect.scheme
+              expectedValue: https
+            - path: spec.rules.0.filters.0.requestRedirect.port
+              expectedValue: 443
+      - type: question
+        question:
+          questionType: manifest
+          header: "Write the complete HTTPS HTTPRoute that rewrites /old prefix to / and forwards to legacy-web:8080."
+          manifestDefinitionId: httproute-v1
+          expectedFields:
+            - path: metadata.name
+              expectedValue: legacy-rewrite
+            - path: metadata.namespace
+              expectedValue: web
+            - path: spec.parentRefs.0.name
+              expectedValue: legacy-gw
+            - path: spec.parentRefs.0.sectionName
+              expectedValue: https
+            - path: spec.hostnames.0
+              expectedValue: legacy.example.com
+            - path: spec.rules.0.matches.0.path.type
+              expectedValue: PathPrefix
+            - path: spec.rules.0.matches.0.path.value
+              expectedValue: /old
+            - path: spec.rules.0.filters.0.type
+              expectedValue: URLRewrite
+            - path: spec.rules.0.filters.0.urlRewrite.path.type
+              expectedValue: ReplacePrefixMatch
+            - path: spec.rules.0.filters.0.urlRewrite.path.replacePrefixMatch
+              expectedValue: /
+            - path: spec.rules.0.backendRefs.0.name
+              expectedValue: legacy-web
+            - path: spec.rules.0.backendRefs.0.port
+              expectedValue: 8080
+    explanation:
+      elements:
+        - type: context
+          text: |
+            A major Gateway API benefit is migrating from controller-specific annotation strings
+            to typed, structured route filters.
+
+            In practice this improves portability and readability because redirect and rewrite
+            behavior is directly represented in route spec fields.
+
+            Note that filter support levels vary; always check your implementation conformance.
+        - type: references
+          links:
+            - url: https://gateway-api.sigs.k8s.io/guides/getting-started/migrating-from-ingress/
+              text: Annotation feature mapping
+            - url: https://gateway-api.sigs.k8s.io/reference/api-spec/main/spec/#httproutefilter
+              text: HTTPRouteFilter reference
+
+  - title: "Exam-Speed Validation Workflow for Migration Tasks"
+    category: "Services & Networking"
+    hintsEnabled: true
+    elements:
+      - type: context
+        text: |
+          For CKA, speed comes from a repeatable verification workflow after writing manifests.
+          This scenario checks the exact commands used to confirm migration success quickly.
+      - type: question
+        question:
+          questionType: command
+          header: "List all Gateway API resources in namespace web (Gateway and HTTPRoute) in one command."
+          command:
+            executable: kubectl
+            subcommands:
+              - name: get
+            positionals:
+              - index: 0
+                required: true
+                value: gateway,httproute
+            flags:
+              - name: namespace
+                short: n
+                required: true
+                value: web
+      - type: question
+        question:
+          questionType: command
+          header: "Show full status and conditions for gateway web-gw in namespace web."
+          command:
+            executable: kubectl
+            subcommands:
+              - name: describe
+              - name: gateway
+            positionals:
+              - index: 0
+                required: true
+                value: web-gw
+            flags:
+              - name: namespace
+                short: n
+                required: true
+                value: web
+      - type: question
+        question:
+          questionType: command
+          header: "Check route parent attachment conditions by describing HTTPRoute shop-route in namespace web."
+          command:
+            executable: kubectl
+            subcommands:
+              - name: describe
+              - name: httproute
+            positionals:
+              - index: 0
+                required: true
+                value: shop-route
+            flags:
+              - name: namespace
+                short: n
+                required: true
+                value: web
+      - type: table
+        style: terminal
+        columns: [RESOURCE, EXPECTATION, FAST_CHECK]
+        rows:
+          - [Gateway, "Accepted=True Programmed=True", "kubectl describe gateway <name> -n <ns>"]
+          - [HTTPRoute, "Accepted=True under Parents", "kubectl describe httproute <name> -n <ns>"]
+          - [TLS Secret Ref, "ResolvedRefs=True", "describe gateway listeners/conditions"]
+          - [Hostname Binding, "Route hostname intersects listener hostname", "describe gateway + route"]
+    explanation:
+      elements:
+        - type: context
+          text: |
+            This is the practical closeout loop for migration tasks:
+              1. apply manifests
+              2. inspect Gateway listener conditions
+              3. inspect HTTPRoute parent attachment and resolved references
+
+            If route attachment fails, inspect in this order:
+              - parentRef name/namespace/sectionName
+              - listener allowedRoutes namespace policy
+              - hostname intersection
+              - cross-namespace references and ReferenceGrant
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/concepts/services-networking/gateway/
+              text: Gateway API concepts and status
+            - url: https://gateway-api.sigs.k8s.io/reference/api-spec/main/spec/#routeparentstatus
+              text: Route parent status reference

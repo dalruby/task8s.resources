@@ -2,6 +2,15 @@ apiVersion: v1alpha1
 name: CKA
 subdirs: []
 sets:
+  - name: "CKA: Ingress to Gateway API Migration"
+    filename: ingress-to-gateway-migration.yaml
+    description: "Comprehensive CKA-focused migration lab from Ingress to Gateway API with full-manifest Gateway/HTTPRoute authoring, TLS termination, redirects/rewrites, cross-namespace attachments, and ReferenceGrant troubleshooting."
+    tags:
+      - Services & Networking
+      - Gateway API
+      - Ingress Migration
+      - TLS
+      - Troubleshooting
   - name: "CKA: HPA Workload Autoscaling"
     filename: hpa-workload-autoscaling.yaml
     description: "Focused CKA autoscaling practice for 2026: full-manifest HPA and Deployment authoring, autoscaling/v2 metrics and behavior tuning, and prerequisite troubleshooting."
