@@ -739,23 +739,35 @@ CEL is useful when:
 
 For `command` questions, CEL is rarely needed — the `command` spec handles most cases. Use CEL as a fallback for edge cases the command validator cannot express.
 
-### Supported CEL methods
+### Supported CEL operations
 
-The CEL runtime used by task8s implements core CEL only. **Do not use methods outside this list** — unsupported methods will cause a runtime error for the user.
+task8s uses the [`@bufbuild/cel`](https://github.com/bufbuild/cel-go) runtime with the full CEL string extension library enabled. All standard string methods from the CEL spec are available.
 
-**Supported string methods:**
+**String methods:**
 
 | Method | Example | Description |
 |---|---|---|
+| `contains(sub)` | `answer.contains('api')` | True if the string contains the substring. |
 | `startsWith(prefix)` | `answer.startsWith('kubectl')` | True if the string begins with the given prefix. |
 | `endsWith(suffix)` | `answer.endsWith('.yaml')` | True if the string ends with the given suffix. |
 | `matches(regex)` | `answer.matches('pods?')` | True if the string contains a match for the regex (partial match). |
-| `lowerAscii()` | `answer.lowerAscii() == 'yes'` | Returns the string lowercased. Useful for case-insensitive equality. |
-| `upperAscii()` | `answer.upperAscii() == 'YES'` | Returns the string uppercased. |
-| `size()` | `answer.size() > 0` | Returns the string length. |
-| `contains(substring)` | `answer.contains('api')` | True if the string contains the substring. Internally rewritten to `matches`. |
+| `lowerAscii()` | `answer.lowerAscii() == 'yes'` | Returns the string lowercased (ASCII only). Useful for case-insensitive equality. |
+| `upperAscii()` | `answer.upperAscii() == 'YES'` | Returns the string uppercased (ASCII only). |
+| `trim()` | `answer.trim() == 'yes'` | Returns the string with leading/trailing whitespace removed. |
+| `size()` | `answer.size() > 0` | Returns the string length as an integer. |
+| `indexOf(sub)` | `answer.indexOf('get') >= 0` | Returns the index of the first occurrence of `sub`, or `-1` if not found. |
+| `indexOf(sub, start)` | `answer.indexOf('get', 5)` | Returns the index of `sub` starting the search at position `start`. |
+| `lastIndexOf(sub)` | `answer.lastIndexOf('/')` | Returns the index of the last occurrence of `sub`, or `-1`. |
+| `substring(start)` | `answer.substring(8)` | Returns the suffix starting at `start`. |
+| `substring(start, end)` | `answer.substring(0, 7) == 'kubectl'` | Returns the slice `[start, end)`. |
+| `replace(old, new)` | `answer.replace('-', '_')` | Returns the string with all occurrences of `old` replaced by `new`. |
+| `replace(old, new, n)` | `answer.replace('-', '_', 1)` | Replaces up to `n` occurrences. |
+| `split(sep)` | `answer.split(' ').size() == 3` | Splits the string on `sep` and returns a list. |
+| `split(sep, n)` | `answer.split(' ', 2)` | Splits into at most `n` parts. |
+| `join(sep)` | `['a','b'].join('-')` | Joins a list of strings with `sep`. |
+| `charAt(i)` | `answer.charAt(0) == 'k'` | Returns the character at index `i` as a single-character string. |
 
-**Supported operators and functions:**
+**Operators and functions:**
 
 | Expression | Description |
 |---|---|
@@ -769,8 +781,7 @@ The CEL runtime used by task8s implements core CEL only. **Do not use methods ou
 
 **Do not use:**
 - `contains()` on lists — use `in` instead: `'value' in someList`
-- `indexOf()`, `replace()`, `split()`, `trim()` — not supported
-- Custom functions or macros beyond the above
+- Any CEL extension beyond the standard string library (e.g. math extensions, URL parsing) — not enabled
 
 ---
 
