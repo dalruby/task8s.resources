@@ -274,10 +274,9 @@ scenarios:
       - type: question
         question:
           questionType: single-line
-          header: "What does the 'Revision' value in snapshot status represent?"
-          expectedAnswer: "the etcd revision at the time the snapshot was taken"
+          header: "What does the 'Revision' column represent in etcdctl snapshot status output? (two words)"
+          expectedAnswer: "etcd revision"
           hint: "etcd uses a monotonically increasing revision counter. Every write increments it."
-          cel: "answer.lowerAscii().contains('revision') || answer.lowerAscii().contains('point in time') || answer.lowerAscii().contains('when the snapshot')"
           correctAnswerInfo: "The revision tells you 'how old' the backup is in terms of cluster writes. If you compare revisions from two snapshots, the higher one is more recent."
     explanation:
       elements:
@@ -357,7 +356,7 @@ scenarios:
           header: "Besides the --data-dir flag in the command section, which other part of the etcd manifest must be updated to match the new data directory path?"
           expectedAnswer: "hostPath volume"
           hint: "etcd mounts its data directory from the host into the Pod using a volume. Both the mount path and the host source must be consistent."
-          cel: "answer.lowerAscii().contains('hostpath') || answer.lowerAscii().contains('host path') || answer.lowerAscii().contains('volume') || answer.lowerAscii().contains('volumes')"
+          cel: "answer.contains('volume') || answer.contains('Volume') || answer.contains('hostPath') || answer.contains('hostpath')"
           correctAnswerInfo: "In the volumes section of the manifest, the etcd-data volume has a hostPath.path field. This must match --data-dir exactly, or the Pod will start reading from the wrong (or non-existent) directory."
     explanation:
       elements:
@@ -603,10 +602,9 @@ scenarios:
       - type: question
         question:
           questionType: single-line
-          header: "The etcd Pod is failing to start. Identify the root cause: what is inconsistent in the manifest above?"
-          expectedAnswer: "The --data-dir flag points to /var/lib/etcd-restored but the hostPath volume still points to /var/lib/etcd, so the restored data is not mounted into the container."
-          hint: "Compare --data-dir with hostPath.path. One points to the restored directory, the other does not."
-          cel: "answer.lowerAscii().contains('hostpath') || answer.lowerAscii().contains('host path') || (answer.lowerAscii().contains('volume') && answer.lowerAscii().contains('etcd'))"
+          header: "In the manifest above, --data-dir is set to /var/lib/etcd-restored. Which volume field still points to the old path /var/lib/etcd? (format: field.subfield)"
+          expectedAnswer: "hostPath.path"
+          hint: "Compare --data-dir with the hostPath fields in the volumes section. One still points to the old directory."
           correctAnswerInfo: "etcd is looking for its data at /var/lib/etcd-restored inside the container. But the host directory /var/lib/etcd is mounted there — which contains the old (pre-restore) data or nothing."
       - type: question
         question:
@@ -621,7 +619,7 @@ scenarios:
           header: "After fixing and saving the manifest, how long should you typically wait for etcd to recover before investigating further?"
           expectedAnswer: "30 seconds"
           hint: "Static Pod recreation is not instantaneous — the kubelet must stop the old container and start a new one."
-          cel: "answer.lowerAscii().contains('second') || answer.lowerAscii().contains('30') || answer.lowerAscii().contains('minute')"
+          cel: "answer.contains('30') || answer.contains('second') || answer.contains('minute')"
           correctAnswerInfo: "Give it at least 30 seconds. Use 'watch crictl ps' or 'watch kubectl get pod -n kube-system' to observe the etcd Pod state. If it is still crashing after 60 seconds, check logs again."
     explanation:
       elements:
@@ -704,7 +702,7 @@ scenarios:
           header: "Besides fixing the command flags, what else in the manifest must reference /etc/kubernetes/pki/etcd to ensure the certificate files are accessible inside the container?"
           expectedAnswer: "the hostPath volume for etcd certs"
           hint: "The cert files are on the host. They get into the container via a volume mount. Both the hostPath source and the volumeMount path must be correct."
-          cel: "answer.lowerAscii().contains('hostpath') || answer.lowerAscii().contains('volume') || answer.lowerAscii().contains('mount')"
+          cel: "answer.contains('volume') || answer.contains('Volume') || answer.contains('hostPath') || answer.contains('mount')"
           correctAnswerInfo: "The etcd-certs volume in the manifest has a hostPath.path pointing to the PKI directory on the host. If that also says /etc/etcd/pki, fix it to /etc/kubernetes/pki/etcd."
       - type: question
         question:
@@ -780,18 +778,16 @@ scenarios:
       - type: question
         question:
           questionType: single-line
-          header: "When etcd loses quorum, what happens to the Kubernetes API server?"
-          expectedAnswer: "It becomes unavailable and cannot process write requests"
+          header: "When etcd loses quorum, kubectl write operations will ___ (one word)"
+          expectedAnswer: "fail"
           hint: "The API server stores all state in etcd. If etcd cannot accept writes, neither can the API server."
-          cel: "answer.lowerAscii().contains('unavailable') || answer.lowerAscii().contains('unresponsive') || answer.lowerAscii().contains('cannot') || answer.lowerAscii().contains('stops')"
           correctAnswerInfo: "Without etcd quorum, kubectl apply, kubectl create, and any state-changing operations will fail. kubectl get may still work briefly from the API server cache, but no changes can be persisted."
       - type: question
         question:
           questionType: single-line
-          header: "Why should etcd clusters always have an odd number of members?"
-          expectedAnswer: "Adding an even member does not increase fault tolerance but doubles the chance of a split-brain scenario"
-          hint: "Compare a 2-member and a 3-member cluster. With 2 members and quorum=2, you cannot tolerate any failure. With 3 members and quorum=2, you tolerate 1 failure."
-          cel: "answer.lowerAscii().contains('odd') || answer.lowerAscii().contains('fault tolerance') || answer.lowerAscii().contains('no additional') || answer.lowerAscii().contains('quorum') || answer.lowerAscii().contains('split')"
+          header: "How many member failures can a 4-member etcd cluster tolerate while remaining operational?"
+          expectedAnswer: "1"
+          hint: "Calculate the quorum for 4 members: floor(4/2) + 1. Then subtract from 4."
           correctAnswerInfo: "A 4-member cluster requires quorum=3, tolerating only 1 failure — the same as a 3-member cluster, but with more complexity and more members to maintain. Going from 3 to 5 members is meaningful (tolerance increases from 1 to 2). Going from 3 to 4 is not."
     explanation:
       elements:

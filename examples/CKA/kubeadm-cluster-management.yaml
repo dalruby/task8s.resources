@@ -376,11 +376,10 @@ scenarios:
       - type: question
         question:
           questionType: single-line
-          header: "What is the key difference between 'kubeadm upgrade apply' and 'kubeadm upgrade node'?"
-          expectedAnswer: "upgrade apply upgrades the control-plane components and requires a version argument; upgrade node only updates kubelet configuration on the current node and requires no version argument"
-          hint: "Think about what each command changes: apply upgrades kube-apiserver/scheduler/etc; node only touches the kubelet config on this one node."
-          cel: "answer.lowerAscii().contains('apply') && (answer.lowerAscii().contains('control') || answer.lowerAscii().contains('apiserver') || answer.lowerAscii().contains('version')) && answer.lowerAscii().contains('node')"
-          correctAnswerInfo: "apply is run exactly once on the first control-plane node and upgrades all control-plane component manifests cluster-wide. node is run on every other node (additional control planes and workers) to update their local kubelet configuration."
+          header: "Which kubeadm upgrade subcommand requires a version argument? (one word)"
+          expectedAnswer: "apply"
+          hint: "Think about which command kicks off the full control-plane upgrade vs. which one just updates the local kubelet config."
+          correctAnswerInfo: "apply is run once on the first control-plane node and requires a target version (e.g. v1.30.0) — it upgrades kube-apiserver, scheduler, and controller-manager cluster-wide. node is run on every other node with no version argument — it only updates the local kubelet configuration."
       - type: question
         question:
           questionType: command
@@ -489,15 +488,15 @@ scenarios:
           header: "What is the default Time-To-Live (TTL) for a kubeadm bootstrap token?"
           expectedAnswer: "24h"
           hint: "Think about how long you typically have after kubeadm init before the join token expires."
-          cel: "answer == '24h' || answer == '24 hours' || answer == '24 hours (24h)' || answer.lowerAscii().contains('24 hour') || answer == '24h0m0s'"
+          cel: "answer == '24h' || answer == '24 hours' || answer == '24 hours (24h)' || answer.contains('24 hour') || answer == '24h0m0s'"
           correctAnswerInfo: "Tokens expire after 24 hours. To create a non-expiring token (not recommended): kubeadm token create --ttl=0"
       - type: question
         question:
           questionType: single-line
-          header: "What does the --discovery-token-ca-cert-hash flag verify during kubeadm join?"
-          expectedAnswer: "the SHA256 hash of the control-plane's CA certificate, ensuring the worker is joining the correct cluster"
-          hint: "It prevents a man-in-the-middle attack. The worker checks that the control-plane it is connecting to presents a certificate signed by the expected CA."
-          cel: "answer.lowerAscii().contains('ca') && (answer.lowerAscii().contains('hash') || answer.lowerAscii().contains('verify') || answer.lowerAscii().contains('certif'))"
+          header: "What does --discovery-token-ca-cert-hash contain? (format: 'SHA256 hash of the ___ certificate')"
+          expectedAnswer: "SHA256 hash of the CA certificate"
+          hint: "It prevents a man-in-the-middle attack by pinning the control-plane's certificate authority."
+          cel: "(answer.contains('CA') || answer.contains('ca')) && answer.contains('hash')"
           correctAnswerInfo: "Without this check, an attacker could intercept the join request and send the worker node's credentials to a malicious cluster. The hash pins the expected CA and prevents this."
       - type: question
         question:
@@ -752,7 +751,7 @@ scenarios:
           header: "Which kubeadm command lets you re-run a single phase of init without running the entire bootstrap process again? (format: 'kubeadm init phase <phase-name>')"
           expectedAnswer: "kubeadm init phase certs"
           hint: "The 'phase' subcommand lets you run individual phases. The certs phase regenerates certificates."
-          cel: "answer.startsWith('kubeadm init phase') && answer.lowerAscii().contains('phase')"
+          cel: "answer.startsWith('kubeadm init phase')"
           correctAnswerInfo: "Examples: 'kubeadm init phase certs all' (regenerate all certs), 'kubeadm init phase kubeconfig all' (regenerate all kubeconfigs). This is useful when certificates expire or need to be rotated."
     explanation:
       elements:
@@ -859,7 +858,7 @@ scenarios:
           header: "After renewing certificates, what must you do to the control-plane components so they load the new certificates?"
           expectedAnswer: "restart them"
           hint: "The control-plane components (kube-apiserver, controller-manager, scheduler) load certificates at startup. They must be restarted to pick up renewed cert files."
-          cel: "answer.lowerAscii().contains('restart') || answer.lowerAscii().contains('restar') || answer.lowerAscii().contains('bounce')"
+          cel: "answer.contains('restart') || answer.contains('restar') || answer.contains('bounce')"
           correctAnswerInfo: "For static Pods, the easiest approach is: move each manifest out of /etc/kubernetes/manifests/, wait for the Pod to stop, then move it back. Or: kill the container with crictl stopp. The kubelet will recreate it automatically."
     explanation:
       elements:
@@ -959,7 +958,7 @@ scenarios:
           header: "After the upgrade, what should you do with the apt package hold on kubeadm, kubelet, and kubectl to prevent accidental future upgrades?"
           expectedAnswer: "keep them on hold"
           hint: "The hold was re-applied after each package install. Its purpose is to prevent unintended upgrades."
-          cel: "answer.lowerAscii().contains('hold') || answer.lowerAscii().contains('keep') || answer.lowerAscii().contains('leave')"
+          cel: "answer.contains('hold') || answer.contains('keep') || answer.contains('leave')"
           correctAnswerInfo: "apt-mark hold ensures that apt-get upgrade never automatically upgrades these packages. This is correct and expected — Kubernetes upgrades must always be deliberate and sequential, never automatic."
     explanation:
       elements:
