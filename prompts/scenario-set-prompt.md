@@ -73,7 +73,7 @@ introduction:
 
 | Type | Required fields | Description |
 |---|---|---|
-| `context` | `text` | A paragraph of text. Supports multi-line YAML (`\|`). |
+| `context` | `text` | A paragraph of text. Supports multi-line YAML (`\|`) and **markdown**. |
 | `break` | _(none)_ | Adds vertical spacing between context blocks. |
 | `image` | `data` | A base64-encoded image data URI. Optional `alt` text. |
 | `references` | `links` | A list of external links, each with `url` and `text`. |
@@ -183,7 +183,7 @@ Elements 4, 5, and 6 appear — the table, the follow-up context, and the second
     about to do and why it matters.
 ```
 
-Context elements are always visible and do not block questions from appearing. Use them liberally to give the user enough information to answer the following question.
+Context elements are always visible and do not block questions from appearing. Use them liberally to give the user enough information to answer the following question. The `text` field supports **markdown** — see the [Markdown support](#markdown-support) section.
 
 ### Question element
 
@@ -695,11 +695,55 @@ explanation:
 
 | Type | Required fields | Description |
 |---|---|---|
-| `context` | `text` | A paragraph of explanatory text. |
+| `context` | `text` | A paragraph of explanatory text. Supports **markdown**. |
 | `image` | `data` | Base64-encoded image data URI. Optional `alt` text. |
 | `references` | `links` | One or more external links (`url` + `text`). |
 
 Note: The explanation does not have a `break` element (unlike the introduction).
+
+---
+
+## Markdown support
+
+**Only `context` elements support markdown.** This applies in three places:
+- Introduction `context` elements
+- Scenario `context` elements
+- Explanation `context` elements
+
+All other text fields — question `header`, `hint`, `correctAnswerInfo`, table headers and cells, reference link text, image `alt`, `name`, `description` — are rendered as **plain text**. Do not use markdown syntax (e.g. `**bold**`, `_italic_`, `## heading`) in those fields; it will appear as literal characters.
+
+### Supported markdown
+
+| Feature | Syntax | Notes |
+|---|---|---|
+| **Bold** | `**text**` | |
+| _Italic_ | `_text_` or `*text*` | |
+| Inline code | `` `code` `` | Monospace, lightly highlighted |
+| Fenced code block | ` ```yaml ... ``` ` | Syntax-highlighted block |
+| Headings | `## Heading` | h1–h3 most useful |
+| Unordered list | `- item` | |
+| Ordered list | `1. item` | |
+| Table | `\| col \| col \|` | Standard GFM table |
+| Blockquote | `> text` | Indented, muted style |
+| Horizontal rule | `---` | |
+| Link | `[text](url)` | Opens in same tab — use sparingly |
+
+### Tips
+
+- Use a YAML block scalar (`|`) for any context that spans multiple lines or contains markdown:
+  ```yaml
+  - type: context
+    text: |
+      The pod is in a **CrashLoopBackOff** state. This usually means:
+
+      - The container exits immediately after starting
+      - Kubernetes keeps restarting it with exponential back-off
+
+      Run `kubectl describe pod <name>` to see the exit code.
+  ```
+- Prefer bullet lists over long prose paragraphs for step-by-step explanations.
+- Use inline code (backticks) for all command names, flag names, resource names, and field paths.
+- Do not nest markdown inside question `header` or `hint` — those fields are plain text.
 
 ---
 
