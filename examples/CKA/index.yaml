@@ -2,6 +2,14 @@ apiVersion: v1alpha1
 name: CKA
 subdirs: []
 sets:
+  - name: "CKA: Comprehensive Understanding Check (MCQ Only)"
+    filename: cka-mcq-understanding-check.yaml
+    description: "Difficult CKA-wide multiple-choice-only diagnostic with one scenario per core domain: architecture/configuration, workloads/scheduling, networking, storage, and troubleshooting."
+    tags:
+      - CKA
+      - Multiple Choice
+      - Assessment
+      - Troubleshooting
   - name: "CKA: Ingress to Gateway API Migration"
     filename: ingress-to-gateway-migration.yaml
     description: "Comprehensive CKA-focused migration lab from Ingress to Gateway API with full-manifest Gateway/HTTPRoute authoring, TLS termination, redirects/rewrites, cross-namespace attachments, and ReferenceGrant troubleshooting."

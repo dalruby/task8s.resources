@@ -10,7 +10,7 @@ This repository and the associated website are in alpha. Expect changes.
 
 [task8s.com](https://task8s.com) lets you practice Kubernetes concepts through interactive scenario sets — no cluster required. You work through scenarios by typing `kubectl` commands, writing YAML manifests, and answering questions, getting instant feedback as you go.
 
-Scenario sets are plain YAML files. You load them into the app directly from your computer or from a URL, and your progress is saved locally in your browser.
+Scenario sets are plain YAML files. You load them into the app directly from your computer or from a URL, and your progress is saved locally in your browser. Alternatively, you can browse a remote directory right from the application in your browser, see [task8s.com - Directory](https://task8s.com/directory).
 
 ## What is it not?
 
@@ -27,17 +27,24 @@ This repository contains resources to help you get the most out of task8s:
 | Folder | Contents |
 |---|---|
 | `examples` | Contains example schema sets that you can use to explore the tool |
-| `prompts/` | AI prompts for generating scenario set YAML files with tools like ChatGPT, Claude, or Codex |
+| `prompts` | AI prompts for generating scenario set YAML files with tools like ChatGPT, Claude, or Codex |
 | `schemas`  | Contains the schemas used for scenario sets |
 
 More resources (scenario sets, guides, examples) will be added here over time.
 
 ## Getting started
 
-1. Visit [task8s.com](https://task8s.com)
+### I want to create a new scenario set
+
+1. Download the schema (see `schemas`)
 2. Generate or write a scenario set YAML file (see `prompts/` for an AI prompt to help)
-3. Upload it in the app, or paste the raw file URL directly into the import field
-4. Work through the scenarios and track your progress
+
+### I want to work through a scenario set
+
+Navigate to [task8s.com](https://task8s.com) and execute one of these steps:
+- Upload a scenario set to the application, or
+- Paste the link to the raw scenario set yaml file found on a GitHub repository like this one and press Import, or
+- Browse a [directory](https://task8s.com/directory) such as this one through the application and click Load on the scenario set you wish to run
 
 ## Creating scenario sets
 

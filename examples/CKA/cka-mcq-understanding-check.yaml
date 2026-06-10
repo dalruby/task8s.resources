@@ -1,0 +1,456 @@
+apiVersion: v1alpha1
+name: "CKA: Comprehensive Understanding Check (MCQ Only)"
+
+timing:
+  enabled: true
+  limitSeconds: 5400
+
+introduction:
+  elements:
+    - type: context
+      text: |
+        This scenario set is a difficult CKA-wide understanding check using only multiple choice questions.
+
+        Design:
+          - one scenario per CKA topic
+          - fundamentals plus deep operational and troubleshooting knowledge
+          - no implementation-specific trick annotations as answer hints
+          - several questions require selecting multiple correct options
+
+        You should treat this as an exam-pressure diagnostic. If you can pass this reliably,
+        your conceptual readiness is strong.
+    - type: break
+    - type: references
+      links:
+        - url: https://training.linuxfoundation.org/certification/certified-kubernetes-administrator-cka/
+          text: CKA Domains and Competencies
+        - url: https://github.com/cncf/curriculum/blob/master/CKA_Curriculum_v1.35.pdf
+          text: CKA Curriculum v1.35
+
+scenarios:
+  - title: "Cluster Architecture, Installation & Configuration"
+    category: "Cluster Architecture, Installation & Configuration"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          Focus: kubeadm lifecycle, control-plane behavior, version-skew policy, and certificate operations.
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "A kubeadm cluster upgrade to the next minor version is planned. Which sequence is correct for a control-plane node?"
+          choices:
+            - text: "Upgrade kubelet and kubectl first, then run kubeadm upgrade apply"
+              answerType: Invalid
+            - text: "Upgrade kubeadm, run kubeadm upgrade plan/apply on control plane, then upgrade kubelet and restart kubelet"
+              answerType: Solution
+            - text: "Run kubeadm init again with the target version"
+              answerType: Invalid
+            - text: "Drain workers, then only upgrade kubectl on all nodes"
+              answerType: Invalid
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "Which statements about static Pods in kubeadm clusters are correct?"
+          choices:
+            - text: "They are created by Deployments in kube-system"
+              answerType: Invalid
+            - text: "Their manifests are read directly by kubelet from disk"
+              answerType: PartOfSolution
+            - text: "Deleting the mirror Pod via API permanently removes the static Pod"
+              answerType: Invalid
+            - text: "Control-plane components are typically run this way"
+              answerType: PartOfSolution
+            - text: "They require scheduler placement like regular Pods"
+              answerType: Invalid
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "Which are valid certificate-management actions with kubeadm on an existing cluster?"
+          choices:
+            - text: "kubeadm certs check-expiration"
+              answerType: PartOfSolution
+            - text: "kubeadm certs renew all"
+              answerType: PartOfSolution
+            - text: "kubeadm token delete --all to rotate all certs"
+              answerType: Invalid
+            - text: "kubectl rotate certs"
+              answerType: Invalid
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "A new control-plane endpoint is needed for HA access. Which object usually fronts multiple API servers?"
+          choices:
+            - text: "DaemonSet"
+              answerType: Invalid
+            - text: "Layer-4 load balancer or equivalent virtual IP endpoint"
+              answerType: Solution
+            - text: "CoreDNS Service"
+              answerType: Invalid
+            - text: "PodDisruptionBudget"
+              answerType: Invalid
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "Which statement best describes Kubernetes version-skew constraints in operations?"
+          choices:
+            - text: "Any kubelet can be two minors ahead of kube-apiserver"
+              answerType: Invalid
+            - text: "kubelet may be older than kube-apiserver only within supported skew limits"
+              answerType: Solution
+            - text: "kubectl must always exactly match kube-apiserver patch version"
+              answerType: Invalid
+            - text: "Control-plane components can jump two minor versions in one kubeadm apply"
+              answerType: Invalid
+    explanation:
+      elements:
+        - type: context
+          text: |
+            High-scoring CKA cluster-admin work depends on sequencing and safe lifecycle operations:
+            plan first, apply control-plane upgrade, then align node binaries and service restarts.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/kubeadm-upgrade/
+              text: kubeadm Upgrade Workflow
+            - url: https://kubernetes.io/docs/setup/release/version-skew-policy/
+              text: Version Skew Policy
+
+  - title: "Workloads & Scheduling"
+    category: "Workloads & Scheduling"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          Focus: rollout safety, scheduling constraints, autoscaling prerequisites, and workload reliability primitives.
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "A Deployment rollout is failing. Which command gives rollout state and reason in one place?"
+          choices:
+            - text: "kubectl rollout status deployment/<name>"
+              answerType: Solution
+            - text: "kubectl top deployment/<name>"
+              answerType: Invalid
+            - text: "kubectl logs deploy/<name> --all-namespaces"
+              answerType: Invalid
+            - text: "kubectl cordon deployment/<name>"
+              answerType: Invalid
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "For CPU-utilization HPA to compute meaningful scaling, what is required on target Pods?"
+          choices:
+            - text: "CPU limits only"
+              answerType: Invalid
+            - text: "CPU requests set on containers"
+              answerType: Solution
+            - text: "HostNetwork enabled"
+              answerType: Invalid
+            - text: "NodeSelector omitted"
+              answerType: Invalid
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "Which are true about taints, tolerations, and affinity?"
+          choices:
+            - text: "A toleration forces scheduling onto tainted nodes"
+              answerType: Invalid
+            - text: "Node affinity influences node selection; tolerations only permit, not force"
+              answerType: PartOfSolution
+            - text: "NoSchedule taint blocks Pods lacking matching toleration"
+              answerType: PartOfSolution
+            - text: "Taints are defined inside Pod spec only"
+              answerType: Invalid
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "Which workload controller is best for stable network identity and ordered rollout semantics by default?"
+          choices:
+            - text: "DaemonSet"
+              answerType: Invalid
+            - text: "StatefulSet"
+              answerType: Solution
+            - text: "Job"
+              answerType: Invalid
+            - text: "ReplicaSet"
+              answerType: Invalid
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "Which action most directly reduces blast radius during risky updates of a critical Deployment?"
+          choices:
+            - text: "Set strategy to Recreate for speed"
+              answerType: Invalid
+            - text: "Use rolling update parameters with conservative maxUnavailable and verify rollout status"
+              answerType: Solution
+            - text: "Delete old ReplicaSets before applying new spec"
+              answerType: Invalid
+            - text: "Disable readiness probes"
+              answerType: Invalid
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Advanced workload administration is mostly about preserving service continuity while changing runtime state.
+            The right abstractions are only half the job; safe rollout mechanics and scheduler reasoning are the other half.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/concepts/workloads/controllers/deployment/
+              text: Deployment Concepts
+            - url: https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/
+              text: Scheduling Constraints
+
+  - title: "Services & Networking"
+    category: "Services & Networking"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          Focus: Service types, DNS behavior, NetworkPolicy semantics, Ingress/Gateway API intent, and traffic debugging.
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "Which statement correctly contrasts ClusterIP and NodePort?"
+          choices:
+            - text: "ClusterIP exposes a service on each node's external interface"
+              answerType: Invalid
+            - text: "NodePort allocates a port on each node and forwards to service backends"
+              answerType: Solution
+            - text: "NodePort can only be used by Ingress controllers"
+              answerType: Invalid
+            - text: "ClusterIP bypasses kube-proxy and EndpointSlices"
+              answerType: Invalid
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "You apply a NetworkPolicy selecting Pods, but ingress still works unexpectedly. Which causes are plausible?"
+          choices:
+            - text: "CNI plugin does not enforce NetworkPolicy"
+              answerType: PartOfSolution
+            - text: "Policy selects no Pods due to label mismatch"
+              answerType: PartOfSolution
+            - text: "Service has ClusterIP, so policies are automatically ignored"
+              answerType: Invalid
+            - text: "NetworkPolicy only affects egress in all cases"
+              answerType: Invalid
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "Which DNS record behavior is expected for normal Services?"
+          choices:
+            - text: "A/AAAA record resolves service name to ClusterIP"
+              answerType: Solution
+            - text: "Service DNS directly returns Pod IPs for all service types"
+              answerType: Invalid
+            - text: "CoreDNS creates records only for NodePort services"
+              answerType: Invalid
+            - text: "Service DNS requires HostNetwork Pods"
+              answerType: Invalid
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "Regarding Ingress vs Gateway API in modern Kubernetes docs, which is accurate?"
+          choices:
+            - text: "Ingress is removed and unsupported"
+              answerType: Invalid
+            - text: "Ingress is frozen; Gateway API is recommended for new feature evolution"
+              answerType: Solution
+            - text: "Gateway API cannot express TLS termination"
+              answerType: Invalid
+            - text: "Gateway API has no route attachment model"
+              answerType: Invalid
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "A Service has no ready endpoints. Which checks are highest value first?"
+          choices:
+            - text: "Confirm Service selector matches Pod labels"
+              answerType: PartOfSolution
+            - text: "Inspect EndpointSlices for target population"
+              answerType: PartOfSolution
+            - text: "Delete CoreDNS pods immediately"
+              answerType: Invalid
+            - text: "Change Service type to LoadBalancer to repopulate endpoints"
+              answerType: Invalid
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Networking failures are often label and attachment failures in disguise.
+            Fast operators verify object relationships first, then transport path details.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/concepts/services-networking/service/
+              text: Service Networking
+            - url: https://kubernetes.io/docs/concepts/services-networking/network-policies/
+              text: NetworkPolicy Concepts
+
+  - title: "Storage"
+    category: "Storage"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          Focus: PV/PVC binding, access modes, reclaim policy behavior, and dynamic provisioning intent.
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "A PVC remains Pending. Which diagnostics are most relevant?"
+          choices:
+            - text: "Check storageClassName and whether a matching StorageClass/provisioner exists"
+              answerType: PartOfSolution
+            - text: "Check requested accessModes and size against available PVs"
+              answerType: PartOfSolution
+            - text: "Restart kube-scheduler to force volume creation"
+              answerType: Invalid
+            - text: "Delete namespace immediately"
+              answerType: Invalid
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "Which reclaim-policy statement is correct?"
+          choices:
+            - text: "Retain preserves underlying volume data after PVC deletion"
+              answerType: Solution
+            - text: "Delete always keeps data and object for manual recovery"
+              answerType: Invalid
+            - text: "Recycle is default in modern production setups"
+              answerType: Invalid
+            - text: "Reclaim policy is defined on Pod spec"
+              answerType: Invalid
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "Which access mode details are accurate in practice?"
+          choices:
+            - text: "RWX means every driver supports multi-node read/write"
+              answerType: Invalid
+            - text: "Actual multi-attach behavior depends on volume plugin/driver capabilities"
+              answerType: PartOfSolution
+            - text: "RWO usually allows one node attach for read/write"
+              answerType: PartOfSolution
+            - text: "Access mode is ignored once Pod starts"
+              answerType: Invalid
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "What does dynamic provisioning primarily require?"
+          choices:
+            - text: "A StorageClass tied to a functioning provisioner"
+              answerType: Solution
+            - text: "A DaemonSet in every namespace"
+              answerType: Invalid
+            - text: "Only a PVC without storageClassName"
+              answerType: Invalid
+            - text: "A NodePort service for CSI"
+              answerType: Invalid
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "A Pod using a PVC is stuck Pending with volume attach/mount errors. Best first triage targets?"
+          choices:
+            - text: "Pod events and node-level kubelet events for mount/attach messages"
+              answerType: PartOfSolution
+            - text: "PVC/PV status and StorageClass parameters"
+              answerType: PartOfSolution
+            - text: "CoreDNS ConfigMap syntax"
+              answerType: Invalid
+            - text: "Ingress rules"
+              answerType: Invalid
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Storage incidents are usually control-plane-object mismatches or CSI-driver path failures.
+            Strong candidates correlate PVC, PV, StorageClass, and node events quickly.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/concepts/storage/persistent-volumes/
+              text: Persistent Volumes and Claims
+            - url: https://kubernetes.io/docs/concepts/storage/storage-classes/
+              text: StorageClass Concepts
+
+  - title: "Troubleshooting"
+    category: "Troubleshooting"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          Focus: broken clusters under pressure, systematic diagnosis, and avoiding destructive guesswork.
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "kube-apiserver appears unreachable from kubectl on control plane. Which first checks are most strategic?"
+          choices:
+            - text: "Verify control-plane static Pod status and container logs"
+              answerType: PartOfSolution
+            - text: "Verify etcd health/connectivity and apiserver-etcd certificate paths"
+              answerType: PartOfSolution
+            - text: "Rotate all worker node images"
+              answerType: Invalid
+            - text: "Delete all kube-system Pods"
+              answerType: Invalid
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "A node is NotReady. Which categories are core to isolate root cause quickly?"
+          choices:
+            - text: "kubelet service status/logs and config validity"
+              answerType: PartOfSolution
+            - text: "Container runtime health and CRI socket alignment"
+              answerType: PartOfSolution
+            - text: "Node network reachability to control plane"
+              answerType: PartOfSolution
+            - text: "Ingress TLS certificate expiration for app domains"
+              answerType: Invalid
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "A Deployment has desired replicas but zero Ready pods. Which approach is best?"
+          choices:
+            - text: "Delete and recreate namespace to clear state"
+              answerType: Invalid
+            - text: "Trace from Deployment -> ReplicaSet -> Pod events -> container logs/probes"
+              answerType: Solution
+            - text: "Scale to zero and assume image pull issue"
+              answerType: Invalid
+            - text: "Change service type to ClusterIP"
+              answerType: Invalid
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "You suspect DNS resolution failure inside Pods. Which checks provide high signal?"
+          choices:
+            - text: "CoreDNS pod status/logs in kube-system"
+              answerType: PartOfSolution
+            - text: "Pod /etc/resolv.conf search domains and nameserver"
+              answerType: PartOfSolution
+            - text: "Service and EndpointSlice existence for kube-dns"
+              answerType: PartOfSolution
+            - text: "Rebuild entire cluster immediately"
+              answerType: Invalid
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "In high-pressure exam troubleshooting, what principle most improves accuracy and speed?"
+          choices:
+            - text: "Start with destructive resets to remove uncertainty"
+              answerType: Invalid
+            - text: "Use evidence-driven layer-by-layer checks and verify each hypothesis before changing state"
+              answerType: Solution
+            - text: "Assume every issue is RBAC"
+              answerType: Invalid
+            - text: "Prefer random trial commands over event inspection"
+              answerType: Invalid
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Difficult CKA scenarios reward structured diagnosis over command memorization.
+            The strongest pattern is dependency-chain tracing: object state, events, logs, and runtime health.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/tasks/debug/
+              text: Kubernetes Debugging Tasks
+            - url: https://kubernetes.io/docs/concepts/architecture/control-plane-node-communication/
+              text: Control Plane and Node Communication
