@@ -99,14 +99,14 @@ scenarios:
               3. The next minor version upgrade path
 
             Components upgraded by `kubeadm upgrade apply`:
-              kube-apiserver, kube-controller-manager, kube-scheduler (as static Pods)
-              kube-proxy (as a DaemonSet)
-              CoreDNS (as a Deployment)
-              etcd (as a static Pod, in stacked topology)
+            - `kube-apiserver`, `kube-controller-manager`, `kube-scheduler` (as static Pods)
+            - `kube-proxy` (as a DaemonSet)
+            - `CoreDNS` (as a Deployment)
+            - `etcd` (as a static Pod, in stacked topology)
 
             Components NOT upgraded by kubeadm — you do this yourself:
-              kubelet  — OS package, requires apt/yum + systemctl restart
-              kubectl  — OS package, requires apt/yum
+            - `kubelet` — OS package, requires apt/yum + systemctl restart
+            - `kubectl` — OS package, requires apt/yum
 
             The version skew policy: kubelet can be at most one minor version behind the
             API server. So if your API server is v1.30, kubelet can be v1.30 or v1.29
@@ -131,11 +131,9 @@ scenarios:
           the control-plane node. The kubeadm binary version must match the target Kubernetes
           version — you cannot use kubeadm v1.29 to apply a v1.30 upgrade.
 
-          The package name format changed in Kubernetes 1.29. The version string is now:
-            <k8s-version>-1.1   (e.g. 1.30.0-1.1)
+          The package name format changed in Kubernetes 1.29. The version string is now: `<k8s-version>-1.1` (e.g. `1.30.0-1.1`)
 
-          To discover exact available strings, run:
-            apt-cache madison kubeadm
+          To discover exact available strings, run: `apt-cache madison kubeadm`
           This shows the exact installable versions from the configured apt repository.
 
           You are upgrading to Kubernetes 1.30.0.
@@ -511,11 +509,11 @@ scenarios:
           text: |
             kubeadm token management commands:
 
-              kubeadm token list                       — show all active tokens + expiry
-              kubeadm token create                     — create a new 24h token (prints just the token)
-              kubeadm token create --print-join-command — create token AND print full join command
-              kubeadm token create --ttl=0             — create non-expiring token (insecure)
-              kubeadm token delete <token>             — revoke a token
+            - `kubeadm token list` — show all active tokens + expiry
+            - `kubeadm token create` — create a new 24h token (prints just the token)
+            - `kubeadm token create --print-join-command` — create token AND print full join command
+            - `kubeadm token create --ttl=0` — create non-expiring token (insecure)
+            - `kubeadm token delete <token>` — revoke a token
 
             The join command for a control-plane node (HA setup) requires additional flags:
               --control-plane
@@ -675,21 +673,10 @@ scenarios:
           text: |
             kubelet configuration file locations on a kubeadm node:
 
-              /var/lib/kubelet/config.yaml
-                — kubelet's own runtime configuration (DNS, auth, staticPodPath, etc.)
-                — passed via --config flag in the systemd drop-in
-
-              /etc/kubernetes/kubelet.conf
-                — kubeconfig: how kubelet authenticates to the API server
-                — contains the client cert/key embedded as base64 or file paths
-
-              /etc/systemd/system/kubelet.service.d/10-kubeadm.conf
-                — systemd drop-in that sets KUBELET_KUBECONFIG_ARGS and KUBELET_CONFIG_ARGS
-                — this is where the --config and --kubeconfig flags are set
-
-              /var/lib/kubelet/kubeadm-flags.env
-                — additional flags set by kubeadm during init/join
-                — read by the systemd unit via EnvironmentFile
+            - `/var/lib/kubelet/config.yaml` — kubelet's own runtime configuration (DNS, auth, staticPodPath, etc.); passed via `--config` flag in the systemd drop-in
+            - `/etc/kubernetes/kubelet.conf` — kubeconfig: how kubelet authenticates to the API server; contains the client cert/key embedded as base64 or file paths
+            - `/etc/systemd/system/kubelet.service.d/10-kubeadm.conf` — systemd drop-in that sets `KUBELET_KUBECONFIG_ARGS` and `KUBELET_CONFIG_ARGS`; where `--config` and `--kubeconfig` flags are set
+            - `/var/lib/kubelet/kubeadm-flags.env` — additional flags set by kubeadm during init/join; read by the systemd unit via `EnvironmentFile`
 
             Troubleshooting sequence for kubelet config errors:
               1. journalctl -u kubelet -n 50  → find the error message
@@ -714,16 +701,16 @@ scenarios:
           and for questions about cluster architecture on the exam.
 
           The main phases in order are:
-            preflight          — environment checks (swap, kernel modules, ports)
-            certs              — generates the PKI: CA, apiserver, etcd, front-proxy certs
-            kubeconfig         — generates admin.conf, controller-manager.conf, scheduler.conf, kubelet.conf
-            etcd               — creates the etcd static Pod manifest
-            control-plane      — creates static Pod manifests for kube-apiserver, controller-manager, scheduler
-            mark-control-plane — labels and taints the node as a control-plane
-            bootstrap-token    — creates the bootstrap token for workers to join
-            upload-config      — stores kubeadm and kubelet config in ConfigMaps in kube-system
-            upload-certs       — (optional) uploads certs for HA control-plane join
-            addon              — installs CoreDNS and kube-proxy
+          - `preflight` — environment checks (swap, kernel modules, ports)
+          - `certs` — generates the PKI: CA, apiserver, etcd, front-proxy certs
+          - `kubeconfig` — generates admin.conf, controller-manager.conf, scheduler.conf, kubelet.conf
+          - `etcd` — creates the etcd static Pod manifest
+          - `control-plane` — creates static Pod manifests for kube-apiserver, controller-manager, scheduler
+          - `mark-control-plane` — labels and taints the node as a control-plane
+          - `bootstrap-token` — creates the bootstrap token for workers to join
+          - `upload-config` — stores kubeadm and kubelet config in ConfigMaps in kube-system
+          - `upload-certs` — (optional) uploads certs for HA control-plane join
+          - `addon` — installs CoreDNS and kube-proxy
       - type: question
         question:
           questionType: single-line
@@ -759,27 +746,21 @@ scenarios:
           text: |
             Key files and directories created by kubeadm init:
 
-              /etc/kubernetes/pki/
-                ca.crt / ca.key                — cluster CA
-                apiserver.crt / apiserver.key  — API server TLS cert
-                apiserver-kubelet-client.*     — used by API server to call kubelet
-                front-proxy-ca.*               — for aggregation layer
-                etcd/                          — etcd PKI (ca, server, peer, healthcheck-client)
-
-              /etc/kubernetes/
-                admin.conf                     — cluster-admin kubeconfig
-                kubelet.conf                   — kubelet's kubeconfig
-                controller-manager.conf        — controller-manager kubeconfig
-                scheduler.conf                 — scheduler kubeconfig
-                manifests/                     — static Pod manifests
-                  etcd.yaml
-                  kube-apiserver.yaml
-                  kube-controller-manager.yaml
-                  kube-scheduler.yaml
-
-              /var/lib/kubelet/
-                config.yaml                    — kubelet runtime config
-                kubeadm-flags.env              — kubeadm-set kubelet flags
+            - **`/etc/kubernetes/pki/`**
+              - `ca.crt` / `ca.key` — cluster CA
+              - `apiserver.crt` / `apiserver.key` — API server TLS cert
+              - `apiserver-kubelet-client.*` — used by API server to call kubelet
+              - `front-proxy-ca.*` — for aggregation layer
+              - `etcd/` — etcd PKI (ca, server, peer, healthcheck-client)
+            - **`/etc/kubernetes/`**
+              - `admin.conf` — cluster-admin kubeconfig
+              - `kubelet.conf` — kubelet's kubeconfig
+              - `controller-manager.conf` — controller-manager kubeconfig
+              - `scheduler.conf` — scheduler kubeconfig
+              - `manifests/` — static Pod manifests (`etcd.yaml`, `kube-apiserver.yaml`, `kube-controller-manager.yaml`, `kube-scheduler.yaml`)
+            - **`/var/lib/kubelet/`**
+              - `config.yaml` — kubelet runtime config
+              - `kubeadm-flags.env` — kubeadm-set kubelet flags
 
             Useful commands for post-init inspection:
               kubeadm config view              — show the stored kubeadm config
@@ -866,10 +847,10 @@ scenarios:
           text: |
             Certificate management commands:
 
-              kubeadm certs check-expiration   — list all certs with expiry dates
-              kubeadm certs renew all          — renew all certificates
-              kubeadm certs renew apiserver    — renew only the apiserver cert
-              kubeadm certs renew admin.conf   — renew the admin kubeconfig cert
+            - `kubeadm certs check-expiration` — list all certs with expiry dates
+            - `kubeadm certs renew all` — renew all certificates
+            - `kubeadm certs renew apiserver` — renew only the apiserver cert
+            - `kubeadm certs renew admin.conf` — renew the admin kubeconfig cert
 
             After `kubeadm certs renew all`, restart control-plane components:
 
@@ -966,21 +947,11 @@ scenarios:
           text: |
             Post-upgrade verification checklist:
 
-              kubectl get nodes
-                → All nodes Ready, all nodes show new version
-
-              kubectl version
-                → Server Version matches target version
-
-              kubectl get pods -A
-                → All kube-system pods Running
-                → No CrashLoopBackOff or Error
-
-              kubectl get daemonsets -n kube-system
-                → kube-proxy DaemonSet desired == ready
-
-              kubectl get deployments -n kube-system
-                → CoreDNS deployment available == desired
+            - `kubectl get nodes` — All nodes Ready, all nodes show new version
+            - `kubectl version` — Server Version matches target version
+            - `kubectl get pods -A` — All kube-system pods Running, no CrashLoopBackOff or Error
+            - `kubectl get daemonsets -n kube-system` — kube-proxy DaemonSet desired == ready
+            - `kubectl get deployments -n kube-system` — CoreDNS deployment available == desired
 
             If a worker node still shows the old kubelet version:
               1. SSH to the worker

@@ -1,0 +1,531 @@
+apiVersion: v1alpha1
+name: "CKA: kubeadm File Locations — Know It By Heart"
+
+timing:
+  enabled: true
+  limitSeconds: 1200
+
+introduction:
+  elements:
+    - type: context
+      text: |
+        On the CKA exam, you will need to locate certificates, kubeconfigs, manifests,
+        and configuration files without any documentation. The exam is open-book, but
+        there is no time to search for paths you should already know.
+
+        This scenario set tests pure memory recall. No hints. No multiple choice.
+        You type the full, exact absolute path.
+
+        These locations come up in upgrade tasks, certificate renewal, kubelet
+        troubleshooting, and node-join scenarios. If you hesitate on any of them
+        during the exam, it costs you time you cannot spare.
+
+        Repeat this set until every path is automatic.
+    - type: break
+    - type: context
+      text: |
+        Difficulty: Very High — no hints, exact paths required.
+        Time limit: 20 minutes.
+        All answers are absolute file paths unless otherwise stated.
+    - type: references
+      links:
+        - url: https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/kubelet-integration/
+          text: Configuring each kubelet in your cluster using kubeadm
+        - url: https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/kubeadm-certs/
+          text: Certificate Management with kubeadm
+
+scenarios:
+  - title: "PKI: Cluster Certificate Authority and PKI Structure"
+    category: PKI & Certificates
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          kubeadm init creates a complete public key infrastructure for the cluster.
+          The root of this PKI is a Certificate Authority. Its certificate is used to
+          sign all other certificates in the cluster, and its hash is embedded in the
+          node join command to prevent man-in-the-middle attacks during bootstrap.
+
+          When you need to manually compute a discovery token CA cert hash, inspect
+          a certificate's issuer, or troubleshoot a TLS handshake failure, you must
+          know exactly where these files live — before the error message tells you.
+      - type: question
+        question:
+          questionType: single-line
+          header: "What is the full path to the cluster CA certificate created by kubeadm init?"
+          expectedAnswer: "/etc/kubernetes/pki/ca.crt"
+          correctAnswerInfo: "/etc/kubernetes/pki/ca.crt is the root certificate authority for the entire cluster. Its paired private key is ca.key in the same directory. All component certificates are signed by this CA."
+      - type: question
+        question:
+          questionType: single-line
+          header: "What is the full path to the directory where kubeadm stores all PKI material?"
+          expectedAnswer: "/etc/kubernetes/pki"
+          cel: "answer == '/etc/kubernetes/pki' || answer == '/etc/kubernetes/pki/'"
+          correctAnswerInfo: "/etc/kubernetes/pki/ contains the cluster CA, API server cert, front-proxy CA, service account keys, and the etcd PKI subdirectory. Every certificate the control plane uses lives under this path."
+      - type: question
+        question:
+          questionType: single-line
+          header: "etcd uses its own separate certificate authority, independent from the main cluster CA. What is the full path to the directory containing etcd's PKI files?"
+          expectedAnswer: "/etc/kubernetes/pki/etcd"
+          cel: "answer == '/etc/kubernetes/pki/etcd' || answer == '/etc/kubernetes/pki/etcd/'"
+          correctAnswerInfo: "/etc/kubernetes/pki/etcd/ contains etcd's own CA (ca.crt, ca.key), its server cert, peer cert, and healthcheck client cert. The API server uses /etc/kubernetes/pki/apiserver-etcd-client.crt to authenticate to etcd."
+      - type: question
+        question:
+          questionType: single-line
+          header: "What is the full path to the TLS certificate that kube-apiserver presents to clients (such as kubectl) during the TLS handshake?"
+          expectedAnswer: "/etc/kubernetes/pki/apiserver.crt"
+          correctAnswerInfo: "/etc/kubernetes/pki/apiserver.crt is the API server's serving certificate. Its private key is /etc/kubernetes/pki/apiserver.key. This certificate is signed by the cluster CA and contains the API server's SANs (IP addresses and DNS names)."
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Full PKI layout under /etc/kubernetes/pki/:
+
+            ```
+            ca.crt / ca.key                      cluster root CA
+            apiserver.crt / apiserver.key         API server TLS serving cert
+            apiserver-kubelet-client.crt/.key     API server → kubelet client cert
+            apiserver-etcd-client.crt/.key        API server → etcd client cert
+            front-proxy-ca.crt/.key               aggregation layer CA
+            front-proxy-client.crt/.key           aggregation layer client cert
+            sa.pub / sa.key                       service account token signing keys
+            etcd/
+              ca.crt / ca.key                    etcd root CA
+              server.crt / server.key            etcd TLS serving cert
+              peer.crt / peer.key                etcd peer-to-peer cert
+              healthcheck-client.crt/.key        liveness probe client cert
+            ```
+
+  - title: "Kubeconfig Files: Every Component's Credentials"
+    category: Kubeconfig Files
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          Every Kubernetes component that communicates with the API server needs a
+          kubeconfig file. kubeadm generates four of these during init and places them
+          in a specific directory on the control-plane node.
+
+          The CKA exam frequently requires you to locate one of these files — for example,
+          when a component is failing to authenticate, when you need to copy credentials
+          for kubectl access, or when renewing certificates forces you to refresh
+          a component's kubeconfig.
+
+          Each file belongs to a different identity. Know which file belongs to whom.
+      - type: question
+        question:
+          questionType: single-line
+          header: "After kubeadm init, the final output tells you to run three commands so kubectl works. The second command copies a file to ~/.kube/config. What is the full source path of that file?"
+          expectedAnswer: "/etc/kubernetes/admin.conf"
+          correctAnswerInfo: "/etc/kubernetes/admin.conf contains a client certificate bound to the cluster-admin ClusterRole. Copying it to ~/.kube/config gives the current user full administrative access to the cluster."
+      - type: question
+        question:
+          questionType: single-line
+          header: "The kubelet on each node must authenticate to the API server to register itself, report node status, and receive Pod assignments. What is the full path to the kubeconfig it uses for this?"
+          expectedAnswer: "/etc/kubernetes/kubelet.conf"
+          correctAnswerInfo: "/etc/kubernetes/kubelet.conf is generated by kubeadm join (or kubeadm init for the control plane). If this file is missing or contains expired credentials, the node cannot communicate with the API server and will appear NotReady."
+      - type: question
+        question:
+          questionType: single-line
+          header: "kube-controller-manager calls the API server to manage cluster state (Deployments, Nodes, Jobs, etc.). What is the full path to its kubeconfig file?"
+          expectedAnswer: "/etc/kubernetes/controller-manager.conf"
+          correctAnswerInfo: "/etc/kubernetes/controller-manager.conf contains the controller-manager's client certificate. It is mounted into the controller-manager static Pod and referenced by its --kubeconfig flag."
+      - type: question
+        question:
+          questionType: single-line
+          header: "kube-scheduler watches the API server for unscheduled Pods and assigns them to nodes. What is the full path to its kubeconfig file?"
+          expectedAnswer: "/etc/kubernetes/scheduler.conf"
+          correctAnswerInfo: "/etc/kubernetes/scheduler.conf is the scheduler's kubeconfig. All four kubeconfigs — admin.conf, kubelet.conf, controller-manager.conf, and scheduler.conf — share the same parent directory."
+    explanation:
+      elements:
+        - type: context
+          text: |
+            kubeconfig files under /etc/kubernetes/:
+
+              admin.conf              cluster-admin access; copy to ~/.kube/config after init
+              kubelet.conf            kubelet's credentials for the API server
+              controller-manager.conf controller-manager's credentials for the API server
+              scheduler.conf          scheduler's credentials for the API server
+
+            All four use X.509 client certificates signed by the cluster CA.
+
+            After 'kubeadm certs renew all', the embedded certificates in these files
+            are also renewed. Copy the refreshed admin.conf to ~/.kube/config afterwards
+            or kubectl will continue presenting the expired certificate.
+
+  - title: "Static Pod Manifests: The Control Plane on Disk"
+    category: Static Pod Manifests
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          The four core control-plane components — kube-apiserver, kube-controller-manager,
+          kube-scheduler, and etcd — run as static Pods. The kubelet watches a specific
+          directory and creates a Pod for every YAML manifest it finds there. These Pods
+          are not stored in etcd; they exist solely because of files on disk.
+
+          This has important consequences: you can restart a control-plane component by
+          moving its manifest out of the directory and back. You can inspect the exact
+          startup flags a component uses by reading its manifest. You can modify component
+          flags by editing the manifest directly.
+
+          Know the directory and each file name precisely.
+      - type: question
+        question:
+          questionType: single-line
+          header: "What is the full path to the directory where kubeadm places the static Pod manifests for all control-plane components?"
+          expectedAnswer: "/etc/kubernetes/manifests"
+          cel: "answer == '/etc/kubernetes/manifests' || answer == '/etc/kubernetes/manifests/'"
+          correctAnswerInfo: "/etc/kubernetes/manifests/ is the staticPodPath written into the kubelet's configuration. The kubelet reconciles this directory continuously — a file added here starts a Pod; a file removed here stops the Pod."
+      - type: question
+        question:
+          questionType: single-line
+          header: "What is the full path to the etcd static Pod manifest?"
+          expectedAnswer: "/etc/kubernetes/manifests/etcd.yaml"
+          correctAnswerInfo: "/etc/kubernetes/manifests/etcd.yaml defines the etcd Pod. It contains the etcd data directory path, PKI file references, and listen addresses. Inspect this file to find which --advertise-client-urls or --data-dir etcd is using."
+      - type: question
+        question:
+          questionType: single-line
+          header: "What is the full path to the kube-apiserver static Pod manifest?"
+          expectedAnswer: "/etc/kubernetes/manifests/kube-apiserver.yaml"
+          correctAnswerInfo: "/etc/kubernetes/manifests/kube-apiserver.yaml contains every flag the API server runs with: --etcd-servers, --service-cluster-ip-range, --authorization-mode, certificate paths, and more. Saving a change to this file causes the kubelet to restart the apiserver Pod automatically."
+      - type: question
+        question:
+          questionType: single-line
+          header: "What is the full path to the kube-controller-manager static Pod manifest?"
+          expectedAnswer: "/etc/kubernetes/manifests/kube-controller-manager.yaml"
+          correctAnswerInfo: "/etc/kubernetes/manifests/kube-controller-manager.yaml. The controller-manager manifest mounts the cluster CA and kubeconfig and passes them via --root-ca-file and --kubeconfig flags."
+      - type: question
+        question:
+          questionType: single-line
+          header: "What is the full path to the kube-scheduler static Pod manifest?"
+          expectedAnswer: "/etc/kubernetes/manifests/kube-scheduler.yaml"
+          correctAnswerInfo: "/etc/kubernetes/manifests/kube-scheduler.yaml. The scheduler manifest is the simplest of the four — it primarily sets --kubeconfig and --config for the scheduler's own KubeSchedulerConfiguration file."
+    explanation:
+      elements:
+        - type: context
+          text: |
+            The four static Pod manifests under /etc/kubernetes/manifests/:
+
+              etcd.yaml                     etcd key-value store
+              kube-apiserver.yaml           the Kubernetes API server
+              kube-controller-manager.yaml  controller loops (Deployments, Nodes, Jobs...)
+              kube-scheduler.yaml           Pod placement decisions
+
+            To restart a control-plane component after certificate renewal:
+              mv /etc/kubernetes/manifests/kube-apiserver.yaml /tmp/
+              # wait ~5 seconds for the Pod to stop
+              mv /tmp/kube-apiserver.yaml /etc/kubernetes/manifests/
+
+            The kubelet detects the manifest returning and recreates the Pod within seconds.
+            This technique works for any of the four manifests.
+
+  - title: "Kubelet Runtime Configuration Files"
+    category: Kubelet Configuration
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          The kubelet's behaviour is controlled through two separate concerns that live
+          in completely different locations:
+
+          First: its runtime configuration — the KubeletConfiguration object that defines
+          DNS servers, the staticPodPath, cgroup driver, authentication settings, and
+          eviction thresholds. This is passed to kubelet via the --config flag.
+
+          Second: the environment file containing additional flags that kubeadm sets
+          during node bootstrap, such as the container runtime endpoint. This is read
+          by the systemd unit as an EnvironmentFile.
+
+          When the kubelet fails to start, the journal error will name whichever file
+          is missing or malformed. You need to know where to look before you see the error.
+      - type: question
+        question:
+          questionType: single-line
+          header: "The kubelet is started with a --config flag pointing to its runtime configuration file. What is the full path to this file on a kubeadm-provisioned node?"
+          expectedAnswer: "/var/lib/kubelet/config.yaml"
+          correctAnswerInfo: "/var/lib/kubelet/config.yaml contains the KubeletConfiguration: clusterDNS, clusterDomain, staticPodPath, cgroupDriver, authentication/authorization settings, and eviction thresholds. kubeadm writes this file during init or join."
+      - type: question
+        question:
+          questionType: single-line
+          header: "kubeadm writes an environment file containing extra kubelet flags (such as --container-runtime-endpoint). The kubelet's systemd unit reads this as an EnvironmentFile. What is the full path to this file?"
+          expectedAnswer: "/var/lib/kubelet/kubeadm-flags.env"
+          correctAnswerInfo: "/var/lib/kubelet/kubeadm-flags.env contains the KUBELET_KUBEADM_ARGS variable, which holds flags like --container-runtime-endpoint and --pod-infra-container-image that kubeadm sets and manages. Do not edit this file manually."
+      - type: question
+        question:
+          questionType: single-line
+          header: "What is the full path to the directory that contains all kubelet state and configuration files, including the runtime config and the kubeadm flags environment file?"
+          expectedAnswer: "/var/lib/kubelet"
+          cel: "answer == '/var/lib/kubelet' || answer == '/var/lib/kubelet/'"
+          correctAnswerInfo: "/var/lib/kubelet/ is the kubelet's data directory. Beyond configuration, it also holds CPU manager state, memory manager state, checkpoint files, and Pod volumes. It is separate from the kubeconfig at /etc/kubernetes/kubelet.conf."
+    explanation:
+      elements:
+        - type: context
+          text: |
+            kubelet files and their purposes:
+
+            /var/lib/kubelet/config.yaml
+              KubeletConfiguration object; the --config flag target
+              Contents: clusterDNS, staticPodPath, cgroupDriver, auth settings
+
+            /var/lib/kubelet/kubeadm-flags.env
+              EnvironmentFile read by the systemd unit
+              Contains: KUBELET_KUBEADM_ARGS with runtime endpoint and image flags
+
+            /etc/kubernetes/kubelet.conf
+              kubeconfig for API server authentication (not in /var/lib/kubelet/)
+              Contains: cluster address, embedded client cert and key
+
+            To see all flags the currently running kubelet was started with:
+              ps aux | grep kubelet
+
+  - title: "Kubelet Systemd Drop-in Configuration"
+    category: Kubelet Configuration
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          The kubelet runs as a systemd service. kubeadm does not modify the base
+          kubelet.service unit file — instead, it writes a drop-in override file that
+          sets the startup arguments, specifically which kubeconfig file to use and
+          where to find the runtime configuration.
+
+          When the kubelet fails with "failed to load Kubelet config file" pointing to
+          the wrong path, the source of the incorrect path is this drop-in file.
+          You must know exactly where it is to find and fix the problem.
+      - type: question
+        question:
+          questionType: single-line
+          header: "What is the full path to the directory that contains the kubelet systemd drop-in override files?"
+          expectedAnswer: "/etc/systemd/system/kubelet.service.d"
+          cel: "answer == '/etc/systemd/system/kubelet.service.d' || answer == '/etc/systemd/system/kubelet.service.d/'"
+          correctAnswerInfo: "/etc/systemd/system/kubelet.service.d/ is the standard drop-in directory for the kubelet.service unit. systemd merges all .conf files here with the base unit at startup."
+      - type: question
+        question:
+          questionType: single-line
+          header: "What is the full path to the specific drop-in file that kubeadm creates to set the kubelet's --config and --kubeconfig startup flags?"
+          expectedAnswer: "/etc/systemd/system/kubelet.service.d/10-kubeadm.conf"
+          correctAnswerInfo: "/etc/systemd/system/kubelet.service.d/10-kubeadm.conf sets KUBELET_KUBECONFIG_ARGS (--kubeconfig=/etc/kubernetes/kubelet.conf) and KUBELET_CONFIG_ARGS (--config=/var/lib/kubelet/config.yaml). A wrong path in this file is why kubelet fails to start after misconfiguration."
+      - type: question
+        question:
+          questionType: single-line
+          header: "After editing the drop-in file to fix a wrong --config path, what command must you run before restarting the kubelet — without this step, your change will have no effect?"
+          expectedAnswer: "systemctl daemon-reload"
+          correctAnswerInfo: "systemctl daemon-reload causes systemd to re-read all unit files and drop-ins from disk. Without it, systemd uses its in-memory cached version of the unit and ignores your change entirely. Always: daemon-reload, then restart."
+    explanation:
+      elements:
+        - type: context
+          text: |
+            The full kubelet systemd configuration chain:
+
+            1. /lib/systemd/system/kubelet.service
+               Base unit installed by the kubelet package.
+               References: EnvironmentFile=-/var/lib/kubelet/kubeadm-flags.env
+
+            2. /etc/systemd/system/kubelet.service.d/10-kubeadm.conf
+               Drop-in created by kubeadm. Sets:
+                 KUBELET_KUBECONFIG_ARGS: --kubeconfig=/etc/kubernetes/kubelet.conf
+                 KUBELET_CONFIG_ARGS:    --config=/var/lib/kubelet/config.yaml
+
+            3. /var/lib/kubelet/kubeadm-flags.env
+               Sets KUBELET_KUBEADM_ARGS with container runtime flags.
+
+            Fix sequence for kubelet configuration path errors:
+              journalctl -u kubelet -n 50
+              cat /etc/systemd/system/kubelet.service.d/10-kubeadm.conf
+              # edit to correct the path
+              systemctl daemon-reload
+              systemctl restart kubelet
+              systemctl status kubelet
+
+  - title: "CNI Plugin File Locations"
+    category: Networking
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          After kubeadm init completes successfully, the control-plane node shows NotReady.
+          This is expected — kubeadm deliberately does not install a CNI plugin. You must
+          install one yourself.
+
+          When troubleshooting a node that stays NotReady even after the kubelet is confirmed
+          running, the next check is CNI. A CNI plugin installs files into two separate
+          locations. The kubelet checks both when setting up Pod networking for each new Pod.
+          If either location is empty or missing the right files, Pods will not get network
+          interfaces and the node will not become Ready.
+      - type: question
+        question:
+          questionType: single-line
+          header: "In which directory must CNI plugin binary executables be installed for the kubelet to find and invoke them when setting up Pod networking?"
+          expectedAnswer: "/opt/cni/bin"
+          cel: "answer == '/opt/cni/bin' || answer == '/opt/cni/bin/'"
+          correctAnswerInfo: "/opt/cni/bin/ contains CNI plugin executables (e.g., bridge, host-local, calico, flannel). The kubelet's --cni-bin-dir flag defaults to this path. To confirm CNI binaries are present: ls /opt/cni/bin/"
+      - type: question
+        question:
+          questionType: single-line
+          header: "In which directory does a CNI plugin place its network configuration files — the JSON or conflist files that define the Pod network CIDR, plugin type, and IPAM configuration?"
+          expectedAnswer: "/etc/cni/net.d"
+          cel: "answer == '/etc/cni/net.d' || answer == '/etc/cni/net.d/'"
+          correctAnswerInfo: "/etc/cni/net.d/ contains CNI configuration files (e.g., 10-calico.conflist, 10-flannel.conflist). If this directory is empty, no CNI plugin has configured the network. The kubelet's --cni-conf-dir flag defaults to this path."
+    explanation:
+      elements:
+        - type: context
+          text: |
+            CNI troubleshooting quick reference:
+
+              # Confirm CNI binaries are present:
+              ls /opt/cni/bin/
+
+              # Confirm CNI configuration file exists:
+              ls /etc/cni/net.d/
+              cat /etc/cni/net.d/*.conflist
+
+            If /etc/cni/net.d/ is empty, no CNI plugin has been applied yet:
+              kubectl apply -f <cni-manifest-url>
+
+            If /opt/cni/bin/ is missing expected executables, the CNI DaemonSet may not
+            have finished copying them. Check the CNI plugin Pods in their namespace.
+
+            The kubelet journal will log CNI errors when configuration is missing:
+              journalctl -u kubelet -n 100 | grep -i cni
+
+  - title: "Rapid Fire: All Locations From Memory"
+    category: Mixed
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          No explanations. No context clues. Just paths, from memory.
+
+          This is how the exam feels: a task description, and then you need to immediately
+          know where to look. Answer each question without pausing.
+      - type: question
+        question:
+          questionType: single-line
+          header: "Full path — cluster root CA certificate"
+          expectedAnswer: "/etc/kubernetes/pki/ca.crt"
+          correctAnswerInfo: "/etc/kubernetes/pki/ca.crt — root of trust for all cluster certificates"
+      - type: question
+        question:
+          questionType: single-line
+          header: "Full path — admin kubeconfig (the file you copy to ~/.kube/config after kubeadm init)"
+          expectedAnswer: "/etc/kubernetes/admin.conf"
+          correctAnswerInfo: "/etc/kubernetes/admin.conf — cluster-admin credentials for kubectl"
+      - type: question
+        question:
+          questionType: single-line
+          header: "Full path — kubelet's kubeconfig for authenticating to the API server"
+          expectedAnswer: "/etc/kubernetes/kubelet.conf"
+          correctAnswerInfo: "/etc/kubernetes/kubelet.conf — contains the kubelet's client cert and cluster address"
+      - type: question
+        question:
+          questionType: single-line
+          header: "Full path — controller-manager's kubeconfig"
+          expectedAnswer: "/etc/kubernetes/controller-manager.conf"
+          correctAnswerInfo: "/etc/kubernetes/controller-manager.conf — mounted into the controller-manager static Pod"
+      - type: question
+        question:
+          questionType: single-line
+          header: "Full path — scheduler's kubeconfig"
+          expectedAnswer: "/etc/kubernetes/scheduler.conf"
+          correctAnswerInfo: "/etc/kubernetes/scheduler.conf — mounted into the scheduler static Pod"
+      - type: question
+        question:
+          questionType: single-line
+          header: "Full path — directory containing all control-plane static Pod manifests"
+          expectedAnswer: "/etc/kubernetes/manifests"
+          cel: "answer == '/etc/kubernetes/manifests' || answer == '/etc/kubernetes/manifests/'"
+          correctAnswerInfo: "/etc/kubernetes/manifests/ — the kubelet's staticPodPath; files here become Pods"
+      - type: question
+        question:
+          questionType: single-line
+          header: "Full path — etcd static Pod manifest"
+          expectedAnswer: "/etc/kubernetes/manifests/etcd.yaml"
+          correctAnswerInfo: "/etc/kubernetes/manifests/etcd.yaml"
+      - type: question
+        question:
+          questionType: single-line
+          header: "Full path — kube-apiserver static Pod manifest"
+          expectedAnswer: "/etc/kubernetes/manifests/kube-apiserver.yaml"
+          correctAnswerInfo: "/etc/kubernetes/manifests/kube-apiserver.yaml"
+      - type: question
+        question:
+          questionType: single-line
+          header: "Full path — kube-controller-manager static Pod manifest"
+          expectedAnswer: "/etc/kubernetes/manifests/kube-controller-manager.yaml"
+          correctAnswerInfo: "/etc/kubernetes/manifests/kube-controller-manager.yaml"
+      - type: question
+        question:
+          questionType: single-line
+          header: "Full path — kube-scheduler static Pod manifest"
+          expectedAnswer: "/etc/kubernetes/manifests/kube-scheduler.yaml"
+          correctAnswerInfo: "/etc/kubernetes/manifests/kube-scheduler.yaml"
+      - type: question
+        question:
+          questionType: single-line
+          header: "Full path — kubelet runtime configuration file (the target of the --config flag)"
+          expectedAnswer: "/var/lib/kubelet/config.yaml"
+          correctAnswerInfo: "/var/lib/kubelet/config.yaml — KubeletConfiguration: DNS, staticPodPath, cgroupDriver, auth"
+      - type: question
+        question:
+          questionType: single-line
+          header: "Full path — environment file containing extra kubelet flags set by kubeadm (read as EnvironmentFile by systemd)"
+          expectedAnswer: "/var/lib/kubelet/kubeadm-flags.env"
+          correctAnswerInfo: "/var/lib/kubelet/kubeadm-flags.env — contains KUBELET_KUBEADM_ARGS"
+      - type: question
+        question:
+          questionType: single-line
+          header: "Full path — kubeadm's systemd drop-in file that sets kubelet startup arguments"
+          expectedAnswer: "/etc/systemd/system/kubelet.service.d/10-kubeadm.conf"
+          correctAnswerInfo: "/etc/systemd/system/kubelet.service.d/10-kubeadm.conf — sets --config and --kubeconfig for the kubelet"
+      - type: question
+        question:
+          questionType: single-line
+          header: "Full path — etcd PKI subdirectory"
+          expectedAnswer: "/etc/kubernetes/pki/etcd"
+          cel: "answer == '/etc/kubernetes/pki/etcd' || answer == '/etc/kubernetes/pki/etcd/'"
+          correctAnswerInfo: "/etc/kubernetes/pki/etcd/ — etcd's own CA and all etcd certificates"
+      - type: question
+        question:
+          questionType: single-line
+          header: "Full path — directory where CNI network configuration files are placed"
+          expectedAnswer: "/etc/cni/net.d"
+          cel: "answer == '/etc/cni/net.d' || answer == '/etc/cni/net.d/'"
+          correctAnswerInfo: "/etc/cni/net.d/ — CNI conflist files; empty means no CNI plugin is configured"
+      - type: question
+        question:
+          questionType: single-line
+          header: "Full path — directory where CNI plugin binaries must be installed"
+          expectedAnswer: "/opt/cni/bin"
+          cel: "answer == '/opt/cni/bin' || answer == '/opt/cni/bin/'"
+          correctAnswerInfo: "/opt/cni/bin/ — CNI executables; kubelet invokes these when wiring up Pod network interfaces"
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Complete path reference — every location covered in this scenario set:
+
+            /etc/kubernetes/
+              pki/
+                ca.crt / ca.key                      cluster root CA
+                apiserver.crt / apiserver.key         API server TLS cert
+                etcd/                                 etcd PKI subdirectory
+              admin.conf                              cluster-admin kubeconfig
+              kubelet.conf                            kubelet kubeconfig
+              controller-manager.conf                 controller-manager kubeconfig
+              scheduler.conf                          scheduler kubeconfig
+              manifests/
+                etcd.yaml                             etcd static Pod manifest
+                kube-apiserver.yaml                   API server static Pod manifest
+                kube-controller-manager.yaml          controller-manager static Pod manifest
+                kube-scheduler.yaml                   scheduler static Pod manifest
+
+            /var/lib/kubelet/
+              config.yaml                             kubelet runtime config (--config)
+              kubeadm-flags.env                       extra kubelet flags (EnvironmentFile)
+
+            /etc/systemd/system/kubelet.service.d/
+              10-kubeadm.conf                         kubelet drop-in (--config, --kubeconfig)
+
+            /etc/cni/net.d/                           CNI network configuration files
+            /opt/cni/bin/                             CNI plugin binaries
