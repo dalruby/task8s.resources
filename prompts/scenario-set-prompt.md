@@ -837,6 +837,23 @@ task8s uses the [`@bufbuild/cel`](https://github.com/bufbuild/cel-go) runtime wi
 - A sequence has one shared `hint` that appears after any step fails. Individual steps may also have their own hints.
 - Once the user answers correctly, the hint is hidden.
 
+### What makes a good hint
+
+A hint points the user toward *where to look* or *what concept to think about* — it does not contain the answer or any part of it.
+
+**Do not** write hints that give the answer away:
+- "Use `kubectl get pods -o wide`" — this is the answer
+- "The flag is `-o` and the value is `wide`" — this is the answer broken into two pieces
+- "Use the namespace flag with value `kube-system`" — still the answer
+
+**Do** write hints that steer without spoiling:
+- "kubectl has a flag to control output format — check `kubectl get --help`"
+- "Think about which subcommand describes a resource in detail rather than listing it"
+- "The namespace this resource lives in is not the default one"
+- "Kubernetes has a short-form alias for most resource types"
+
+The hint should make the user think harder, not stop thinking.
+
 ---
 
 ## Design Principles
@@ -844,7 +861,25 @@ task8s uses the [`@bufbuild/cel`](https://github.com/bufbuild/cel-go) runtime wi
 Follow these principles when writing scenario sets:
 
 ### 1. Context before questions
-Always add a `context` element before a question that requires background knowledge. The user should have everything they need to answer within the scenario — they should not need external references to answer correctly.
+Add `context` elements before questions to set the scene and provide necessary background — but **never reveal the answer in the context**. Context explains *what situation the user is in* and *why it matters*. It does not show the command, flag, or value the user is expected to type.
+
+Bad (gives the answer away):
+```
+To list all pods, run: kubectl get pods
+```
+```
+The -o flag controls the output format. Use -o wide for more columns.
+```
+
+Good (sets the scene, requires recall):
+```
+You need to inspect what is running in the default namespace.
+```
+```
+The output of the previous command is too narrow to see node placement.
+```
+
+For introductory (easy) scenarios it is acceptable to explain the concept and its syntax in context — but the exact answer must still require the user to apply that knowledge, not copy it verbatim. At harder difficulty levels, context should describe the *situation* without teaching the solution.
 
 ### 2. One concept per scenario
 Keep each scenario focused on a single command, concept, or task. A scenario with 1–3 questions is ideal. Longer scenarios are acceptable for complex workflows (e.g. drain + cordon + delete), but avoid padding.
@@ -855,8 +890,13 @@ The explanation is as important as the questions. Use it to explain not just wha
 ### 4. Use `correctAnswerInfo` for depth
 After a correct answer, `correctAnswerInfo` is shown inline. Use it to add a short note that enriches the answer without overwhelming the question itself.
 
-### 5. Design for typing, not recall
-The user is learning by typing, not by recognising. Write questions that require the user to recall and type the right command, not guess from context. The `header` should be a clear, unambiguous instruction.
+### 5. Questions must require thought
+The user should have to think, remember, or understand a concept to answer correctly. A question is too easy if the answer appears verbatim anywhere in the context, hint, `correctAnswerInfo`, or question `header` itself.
+
+- The `header` states the *task or goal*, never the solution. "Run kubectl get pods" is not a question header — "List all pods in the default namespace" is.
+- Do not embed the expected value in an example within the `header`. "Use the `-o` flag with value `wide` to show extra columns — what is the full command?" gives the answer away.
+- `correctAnswerInfo` is shown *after* a correct answer, so it may explain what the command does and why. It must not be a hint that the user can read before submitting.
+- The `hint` must not contain the answer. See the [Hints](#hints) section.
 
 ### 6. Prefer `autoLoad` for standard Kubernetes resources
 For standard resources (`Pod`, `Namespace`, `Deployment`, `Service`, `ConfigMap`, etc.), always use `autoLoad: true` on the manifest definition and set `k8sVersion` at the top level. Do not embed inline schemas for standard resources — they are very large and the auto-load mechanism handles this cleanly.
@@ -869,6 +909,45 @@ After a command question is answered correctly, place a `table` element (style: 
 
 ### 9. Be precise with flags
 For command questions, only specify flags that matter for the question. If a flag is truly optional and any value (or no value) is acceptable, do not include it in the `flags` array. Only define `FlagSpec` entries for flags you actually want to validate.
+
+---
+
+## Difficulty levels
+
+The difficulty of a scenario set is controlled by **how much information the context provides relative to what the questions ask for**. This is a dial, not a binary switch.
+
+Unless the person requesting the scenario set specifies a difficulty, default to **medium**.
+
+The difficulty guidance below applies to the default prompt. The person requesting the scenario set may override it in their own instructions — if they do, their instructions take precedence over these defaults.
+
+### Easy
+Context teaches the concept and shows the relevant syntax or command structure. The user applies what was just shown — they must still type the answer themselves, but everything they need is on screen.
+
+- Acceptable to show the flag name and its purpose before asking the user to use it
+- Acceptable to show the general form of a command before asking for a specific invocation
+- The exact answer must still require composition (combining what was shown with the specific context), not copy-paste
+
+### Medium *(default)*
+Context explains the *situation* and the *goal* but does not show the solution. The user must recall or derive the command from their existing knowledge of Kubernetes.
+
+- Describe what needs to be achieved, not how to achieve it
+- Acceptable to mention the resource type or concept involved, but not the command or flags
+- Hints point toward the right concept area without naming the answer
+
+### Hard
+Context describes a situation or problem the user must solve. No syntax guidance is given. The user must already know — or be able to work out — the right approach.
+
+- Context reads like a real-world task or incident: "The payments-api pod is in CrashLoopBackOff. Investigate." or "Create a NetworkPolicy that allows only the frontend to reach the backend on port 8080."
+- Do not name the commands or flags involved
+- Hints, if present, nudge toward the right Kubernetes concept, not the solution
+
+### Practical rule
+
+Before writing each question, ask: *if the user has only read the context for this scenario, can they answer without already knowing Kubernetes?*
+
+- Easy: yes, because the context taught them
+- Medium: no, they must already know the concept — context only frames the task
+- Hard: no, they must know the concept *and* the specific command or resource structure
 
 ---
 
@@ -979,3 +1058,7 @@ Before producing the final YAML, verify:
 - [ ] The output is valid YAML (correct indentation, quoted strings where needed)
 - [ ] Category names are consistent across scenarios
 - [ ] Every scenario's `explanation` links to relevant official Kubernetes documentation
+- [ ] No question `header` contains the answer or any part of it verbatim
+- [ ] No `context` element shows the exact command, flag value, or field value that a following question asks for
+- [ ] No `hint` contains the answer — hints point toward a concept or direction, not a solution
+- [ ] Difficulty is appropriate to what was requested (default: medium — context frames the task but does not teach the answer)
