@@ -322,6 +322,18 @@ expectedAnswer: |
 
 A terminal-style input with a `$` prompt. Validates that the user typed the correct kubectl command with the correct subcommands, positional arguments, and flags. Argument order does not matter — `kubectl get pods -n foo` and `kubectl get pods --namespace foo` are both valid if the spec allows them.
 
+**Top-level fields:**
+
+| Field | Required | Description |
+|---|---|---|
+| `questionType` | yes | Must be `"command"`. |
+| `command` | yes | The `CommandSpec` object describing what is accepted. |
+| `initialValue` | no | Pre-filled text shown in the command input when the question loads. Use for cloze-style questions where part of the command is provided and the user must complete it. |
+| `header` | no | The question text shown above the input. |
+| `hint` | no | Shown after the first incorrect attempt. |
+| `correctAnswerInfo` | no | Shown below the success message after a correct answer. |
+| `cel` | no | CEL expression for additional validation (see CEL section). |
+
 #### `CommandSpec` object
 
 | Field | Required | Description |
@@ -482,6 +494,33 @@ command:
       boolean: true
       required: true
 ```
+
+**Example 4 — cloze (fill-in-the-blank) using `initialValue`**
+
+The user is given `kubectl get pods` pre-filled and must add the flag that shows output across all namespaces:
+
+```yaml
+questionType: command
+header: "Add the flag that lists pods across all namespaces"
+initialValue: "kubectl get pods "
+hint: "There is a boolean flag for this — check kubectl get --help."
+correctAnswerInfo: "--all-namespaces (or -A) tells kubectl to show resources from every namespace."
+command:
+  executable: kubectl
+  subcommands:
+    - name: get
+    - name: pods
+      aliases: [pod, po]
+  flags:
+    - name: all-namespaces
+      short: "A"
+      boolean: true
+      required: true
+```
+
+The `initialValue` is displayed in the input when the question loads. The user edits it freely — the final submitted value is validated exactly like any other command answer. Keep the initial value clearly incomplete so the user knows what to add; a trailing space after the partial command is a useful visual cue.
+
+**Caution:** `initialValue` is a difficulty tool, not a shortcut. Do not pre-fill so much of the command that the answer requires no thought. The filled portion should establish context (e.g. the subcommand), not supply the part being tested.
 
 #### When to use `sequence` vs ordered standalone questions
 
@@ -671,6 +710,57 @@ Combined answer (all must be selected):
       - text: "--grace-period=0"
         answerType: Invalid
 ```
+
+---
+
+### `ordering`
+
+A drag-and-drop question where the user arranges a list of items into the correct sequence. Good for topics like rollout strategies, container lifecycle, kubeadm bootstrap steps, or any process with a defined order.
+
+Items are displayed in a randomised order that is **guaranteed not to equal the correct order**, so the question is never trivially correct on first view.
+
+```yaml
+- type: question
+  question:
+    questionType: ordering
+    header: "Put these Deployment rollout steps in the correct order"
+    hint: "Think about what Kubernetes checks before it scales down the old ReplicaSet."
+    correctAnswerInfo: "Kubernetes waits for the readiness probe to pass before terminating old pods — this ensures zero-downtime rollouts."
+    items:
+      - id: apply
+        text: "kubectl apply is run"
+      - id: new-rs
+        text: "New ReplicaSet is created"
+      - id: ready
+        text: "Readiness probe passes on new pods"
+      - id: old-down
+        text: "Old pods are terminated"
+    correctOrder: [apply, new-rs, ready, old-down]
+```
+
+**Fields:**
+
+| Field | Required | Description |
+|---|---|---|
+| `questionType` | yes | Must be `ordering`. |
+| `items` | yes | Array of at least 2 items, each with a stable `id` and display `text`. |
+| `correctOrder` | yes | Array of `id` values in the correct sequence. Every ID must exist in `items`. |
+| `header` | no | Question text shown above the list. |
+| `hint` | no | Shown after the first incorrect submission. |
+| `correctAnswerInfo` | no | Shown after a correct submission. |
+
+**Item fields:**
+
+| Field | Required | Description |
+|---|---|---|
+| `id` | yes | Stable internal key used in `correctOrder`. Never shown to the user. Use short, descriptive slugs. |
+| `text` | yes | The label shown on the draggable card. |
+
+**Rules:**
+- `items` must have at least 2 entries.
+- Every ID in `correctOrder` must match an `id` in `items`, and the lengths must match.
+- The `id` values are never exposed to the user — they are only used to define and check the order.
+- Do not use ordering for questions with a single obviously correct starting point that makes the rest trivial to derive. It works best when multiple steps have plausible alternative orderings.
 
 ---
 
@@ -901,8 +991,10 @@ The user should have to think, remember, or understand a concept to answer corre
 ### 6. Prefer `autoLoad` for standard Kubernetes resources
 For standard resources (`Pod`, `Namespace`, `Deployment`, `Service`, `ConfigMap`, etc.), always use `autoLoad: true` on the manifest definition and set `k8sVersion` at the top level. Do not embed inline schemas for standard resources — they are very large and the auto-load mechanism handles this cleanly.
 
-### 7. Choose `initialContent` based on intended difficulty
-For manifest questions, `initialContent` is a difficulty dial. A scaffold with empty fields guides the user toward the correct structure without revealing the answer. No `initialContent` at all requires the user to recall and write the manifest from memory. Use the former for introductory scenarios and the latter for advanced ones. Never pre-fill the values that `expectedFields` checks — that would make the question trivially correct on first submit, unless the user must correct something.
+### 7. Use `initialContent` / `initialValue` as a difficulty dial
+For **manifest** questions, `initialContent` scaffolds the YAML structure. Pre-filling field names but leaving values blank guides the user without giving the answer. No `initialContent` at all requires recall from memory. Never pre-fill the values that `expectedFields` checks.
+
+For **command** questions, `initialValue` pre-fills the input with a partial command. Use it to establish the context (e.g. the subcommand chain) and leave the part being tested blank. The pre-filled portion should make the task clearer, not easier — do not pre-fill the flags or values the question is testing.
 
 ### 8. Use manifest and table elements to close the feedback loop
 After a command question is answered correctly, place a `table` element (style: `terminal`) showing realistic `kubectl` output. After a manifest question is answered correctly, place a `manifest` element showing the complete ideal manifest. This makes scenarios feel interactive rather than quiz-like — the user sees the consequences of their actions.
@@ -1052,6 +1144,7 @@ Before producing the final YAML, verify:
 - [ ] Every `manifest` question has `manifestDefinitionId`
 - [ ] Every `sequence` has at least 2 `steps`
 - [ ] Every `multiple-choice` question has at least 2 `choices`; each choice has `text` and `answerType`; `PartOfSolution` and `Solution` are not mixed in the same question
+- [ ] Every `ordering` question has at least 2 `items`; every ID in `correctOrder` matches an `id` in `items`; lengths match
 - [ ] Every `manifest` element (display type) has `content`
 - [ ] Every `table` element has `columns` and `rows`; each row has the same number of entries as `columns`
 - [ ] No unknown/extra properties are present (the schema uses `additionalProperties: false` everywhere)

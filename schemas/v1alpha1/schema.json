@@ -263,6 +263,7 @@
           "properties": {
             "questionType": { "const": "command" },
             "command": { "$ref": "#/$defs/CommandSpec" },
+            "initialValue": { "type": "string", "description": "Optional pre-filled command shown in the input when the question first appears. Use for cloze-style questions where part of the command is given and the user completes the rest." },
             "header": { "type": "string" },
             "hint": { "type": "string" },
             "correctAnswerInfo": { "type": "string" },
@@ -331,6 +332,43 @@
         }
       ]
     },
+    "OrderingItem": {
+      "type": "object",
+      "required": ["id", "text"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "description": "Stable identifier used in correctOrder. Never shown to the user." },
+        "text": { "type": "string", "minLength": 1, "description": "The label displayed on the draggable card." }
+      }
+    },
+    "OrderingQuestion": {
+      "allOf": [
+        { "$ref": "#/$defs/BaseQuestion" },
+        {
+          "type": "object",
+          "required": ["questionType", "items", "correctOrder"],
+          "additionalProperties": false,
+          "properties": {
+            "questionType": { "const": "ordering" },
+            "items": {
+              "type": "array",
+              "minItems": 2,
+              "items": { "$ref": "#/$defs/OrderingItem" },
+              "description": "The items the user will drag into order. Displayed in a randomised sequence that is guaranteed not to equal correctOrder."
+            },
+            "correctOrder": {
+              "type": "array",
+              "minItems": 2,
+              "items": { "type": "string" },
+              "description": "Array of item IDs in the correct sequence. Every ID in this array must correspond to an entry in items."
+            },
+            "header": { "type": "string" },
+            "hint": { "type": "string" },
+            "correctAnswerInfo": { "type": "string" }
+          }
+        }
+      ]
+    },
     "SequenceChildQuestion": {
       "oneOf": [
         { "$ref": "#/$defs/SingleLineQuestion" },
@@ -361,7 +399,8 @@
         { "$ref": "#/$defs/CommandQuestion" },
         { "$ref": "#/$defs/ManifestQuestion" },
         { "$ref": "#/$defs/SequenceQuestion" },
-        { "$ref": "#/$defs/MultipleChoiceQuestion" }
+        { "$ref": "#/$defs/MultipleChoiceQuestion" },
+        { "$ref": "#/$defs/OrderingQuestion" }
       ]
     },
     "ContextScenarioElement": {
