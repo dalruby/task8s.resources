@@ -43,3 +43,12 @@ sets:
       - Upgrade
       - Cluster Management
       - Troubleshooting
+  - name: "CKA: kubeadm File Locations — Know It By Heart"
+    filename: kubeadm-file-locations.yaml
+    description: "Pure memory-recall drill covering every file path kubeadm creates: PKI certificates, kubeconfig files, static Pod manifests, kubelet configuration and systemd drop-in, and CNI locations. No hints, no multiple choice — exact paths only."
+    tags:
+      - Cluster Management
+      - PKI & Certificates
+      - Kubelet Configuration
+      - Static Pods
+      - Troubleshooting
