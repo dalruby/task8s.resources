@@ -322,6 +322,18 @@ expectedAnswer: |
 
 A terminal-style input with a `$` prompt. Validates that the user typed the correct kubectl command with the correct subcommands, positional arguments, and flags. Argument order does not matter — `kubectl get pods -n foo` and `kubectl get pods --namespace foo` are both valid if the spec allows them.
 
+**Top-level fields:**
+
+| Field | Required | Description |
+|---|---|---|
+| `questionType` | yes | Must be `"command"`. |
+| `command` | yes | The `CommandSpec` object describing what is accepted. |
+| `initialValue` | no | Pre-filled text shown in the command input when the question loads. Use for cloze-style questions where part of the command is provided and the user must complete it. |
+| `header` | no | The question text shown above the input. |
+| `hint` | no | Shown after the first incorrect attempt. |
+| `correctAnswerInfo` | no | Shown below the success message after a correct answer. |
+| `cel` | no | CEL expression for additional validation (see CEL section). |
+
 #### `CommandSpec` object
 
 | Field | Required | Description |
@@ -482,6 +494,33 @@ command:
       boolean: true
       required: true
 ```
+
+**Example 4 — cloze (fill-in-the-blank) using `initialValue`**
+
+The user is given `kubectl get pods` pre-filled and must add the flag that shows output across all namespaces:
+
+```yaml
+questionType: command
+header: "Add the flag that lists pods across all namespaces"
+initialValue: "kubectl get pods "
+hint: "There is a boolean flag for this — check kubectl get --help."
+correctAnswerInfo: "--all-namespaces (or -A) tells kubectl to show resources from every namespace."
+command:
+  executable: kubectl
+  subcommands:
+    - name: get
+    - name: pods
+      aliases: [pod, po]
+  flags:
+    - name: all-namespaces
+      short: "A"
+      boolean: true
+      required: true
+```
+
+The `initialValue` is displayed in the input when the question loads. The user edits it freely — the final submitted value is validated exactly like any other command answer. Keep the initial value clearly incomplete so the user knows what to add; a trailing space after the partial command is a useful visual cue.
+
+**Caution:** `initialValue` is a difficulty tool, not a shortcut. Do not pre-fill so much of the command that the answer requires no thought. The filled portion should establish context (e.g. the subcommand), not supply the part being tested.
 
 #### When to use `sequence` vs ordered standalone questions
 
@@ -674,6 +713,57 @@ Combined answer (all must be selected):
 
 ---
 
+### `ordering`
+
+A drag-and-drop question where the user arranges a list of items into the correct sequence. Good for topics like rollout strategies, container lifecycle, kubeadm bootstrap steps, or any process with a defined order.
+
+Items are displayed in a randomised order that is **guaranteed not to equal the correct order**, so the question is never trivially correct on first view.
+
+```yaml
+- type: question
+  question:
+    questionType: ordering
+    header: "Put these Deployment rollout steps in the correct order"
+    hint: "Think about what Kubernetes checks before it scales down the old ReplicaSet."
+    correctAnswerInfo: "Kubernetes waits for the readiness probe to pass before terminating old pods — this ensures zero-downtime rollouts."
+    items:
+      - id: apply
+        text: "kubectl apply is run"
+      - id: new-rs
+        text: "New ReplicaSet is created"
+      - id: ready
+        text: "Readiness probe passes on new pods"
+      - id: old-down
+        text: "Old pods are terminated"
+    correctOrder: [apply, new-rs, ready, old-down]
+```
+
+**Fields:**
+
+| Field | Required | Description |
+|---|---|---|
+| `questionType` | yes | Must be `ordering`. |
+| `items` | yes | Array of at least 2 items, each with a stable `id` and display `text`. |
+| `correctOrder` | yes | Array of `id` values in the correct sequence. Every ID must exist in `items`. |
+| `header` | no | Question text shown above the list. |
+| `hint` | no | Shown after the first incorrect submission. |
+| `correctAnswerInfo` | no | Shown after a correct submission. |
+
+**Item fields:**
+
+| Field | Required | Description |
+|---|---|---|
+| `id` | yes | Stable internal key used in `correctOrder`. Never shown to the user. Use short, descriptive slugs. |
+| `text` | yes | The label shown on the draggable card. |
+
+**Rules:**
+- `items` must have at least 2 entries.
+- Every ID in `correctOrder` must match an `id` in `items`, and the lengths must match.
+- The `id` values are never exposed to the user — they are only used to define and check the order.
+- Do not use ordering for questions with a single obviously correct starting point that makes the rest trivial to derive. It works best when multiple steps have plausible alternative orderings.
+
+---
+
 ## Explanation
 
 Every scenario requires an `explanation` block. It is displayed after all questions in the scenario are answered correctly. Use it to explain why the answers were correct, provide deeper context, and link to official documentation.
@@ -837,6 +927,23 @@ task8s uses the [`@bufbuild/cel`](https://github.com/bufbuild/cel-go) runtime wi
 - A sequence has one shared `hint` that appears after any step fails. Individual steps may also have their own hints.
 - Once the user answers correctly, the hint is hidden.
 
+### What makes a good hint
+
+A hint points the user toward *where to look* or *what concept to think about* — it does not contain the answer or any part of it.
+
+**Do not** write hints that give the answer away:
+- "Use `kubectl get pods -o wide`" — this is the answer
+- "The flag is `-o` and the value is `wide`" — this is the answer broken into two pieces
+- "Use the namespace flag with value `kube-system`" — still the answer
+
+**Do** write hints that steer without spoiling:
+- "kubectl has a flag to control output format — check `kubectl get --help`"
+- "Think about which subcommand describes a resource in detail rather than listing it"
+- "The namespace this resource lives in is not the default one"
+- "Kubernetes has a short-form alias for most resource types"
+
+The hint should make the user think harder, not stop thinking.
+
 ---
 
 ## Design Principles
@@ -844,7 +951,25 @@ task8s uses the [`@bufbuild/cel`](https://github.com/bufbuild/cel-go) runtime wi
 Follow these principles when writing scenario sets:
 
 ### 1. Context before questions
-Always add a `context` element before a question that requires background knowledge. The user should have everything they need to answer within the scenario — they should not need external references to answer correctly.
+Add `context` elements before questions to set the scene and provide necessary background — but **never reveal the answer in the context**. Context explains *what situation the user is in* and *why it matters*. It does not show the command, flag, or value the user is expected to type.
+
+Bad (gives the answer away):
+```
+To list all pods, run: kubectl get pods
+```
+```
+The -o flag controls the output format. Use -o wide for more columns.
+```
+
+Good (sets the scene, requires recall):
+```
+You need to inspect what is running in the default namespace.
+```
+```
+The output of the previous command is too narrow to see node placement.
+```
+
+For introductory (easy) scenarios it is acceptable to explain the concept and its syntax in context — but the exact answer must still require the user to apply that knowledge, not copy it verbatim. At harder difficulty levels, context should describe the *situation* without teaching the solution.
 
 ### 2. One concept per scenario
 Keep each scenario focused on a single command, concept, or task. A scenario with 1–3 questions is ideal. Longer scenarios are acceptable for complex workflows (e.g. drain + cordon + delete), but avoid padding.
@@ -855,20 +980,66 @@ The explanation is as important as the questions. Use it to explain not just wha
 ### 4. Use `correctAnswerInfo` for depth
 After a correct answer, `correctAnswerInfo` is shown inline. Use it to add a short note that enriches the answer without overwhelming the question itself.
 
-### 5. Design for typing, not recall
-The user is learning by typing, not by recognising. Write questions that require the user to recall and type the right command, not guess from context. The `header` should be a clear, unambiguous instruction.
+### 5. Questions must require thought
+The user should have to think, remember, or understand a concept to answer correctly. A question is too easy if the answer appears verbatim anywhere in the context, hint, `correctAnswerInfo`, or question `header` itself.
+
+- The `header` states the *task or goal*, never the solution. "Run kubectl get pods" is not a question header — "List all pods in the default namespace" is.
+- Do not embed the expected value in an example within the `header`. "Use the `-o` flag with value `wide` to show extra columns — what is the full command?" gives the answer away.
+- `correctAnswerInfo` is shown *after* a correct answer, so it may explain what the command does and why. It must not be a hint that the user can read before submitting.
+- The `hint` must not contain the answer. See the [Hints](#hints) section.
 
 ### 6. Prefer `autoLoad` for standard Kubernetes resources
 For standard resources (`Pod`, `Namespace`, `Deployment`, `Service`, `ConfigMap`, etc.), always use `autoLoad: true` on the manifest definition and set `k8sVersion` at the top level. Do not embed inline schemas for standard resources — they are very large and the auto-load mechanism handles this cleanly.
 
-### 7. Choose `initialContent` based on intended difficulty
-For manifest questions, `initialContent` is a difficulty dial. A scaffold with empty fields guides the user toward the correct structure without revealing the answer. No `initialContent` at all requires the user to recall and write the manifest from memory. Use the former for introductory scenarios and the latter for advanced ones. Never pre-fill the values that `expectedFields` checks — that would make the question trivially correct on first submit, unless the user must correct something.
+### 7. Use `initialContent` / `initialValue` as a difficulty dial
+For **manifest** questions, `initialContent` scaffolds the YAML structure. Pre-filling field names but leaving values blank guides the user without giving the answer. No `initialContent` at all requires recall from memory. Never pre-fill the values that `expectedFields` checks.
+
+For **command** questions, `initialValue` pre-fills the input with a partial command. Use it to establish the context (e.g. the subcommand chain) and leave the part being tested blank. The pre-filled portion should make the task clearer, not easier — do not pre-fill the flags or values the question is testing.
 
 ### 8. Use manifest and table elements to close the feedback loop
 After a command question is answered correctly, place a `table` element (style: `terminal`) showing realistic `kubectl` output. After a manifest question is answered correctly, place a `manifest` element showing the complete ideal manifest. This makes scenarios feel interactive rather than quiz-like — the user sees the consequences of their actions.
 
 ### 9. Be precise with flags
 For command questions, only specify flags that matter for the question. If a flag is truly optional and any value (or no value) is acceptable, do not include it in the `flags` array. Only define `FlagSpec` entries for flags you actually want to validate.
+
+---
+
+## Difficulty levels
+
+The difficulty of a scenario set is controlled by **how much information the context provides relative to what the questions ask for**. This is a dial, not a binary switch.
+
+Unless the person requesting the scenario set specifies a difficulty, default to **medium**.
+
+The difficulty guidance below applies to the default prompt. The person requesting the scenario set may override it in their own instructions — if they do, their instructions take precedence over these defaults.
+
+### Easy
+Context teaches the concept and shows the relevant syntax or command structure. The user applies what was just shown — they must still type the answer themselves, but everything they need is on screen.
+
+- Acceptable to show the flag name and its purpose before asking the user to use it
+- Acceptable to show the general form of a command before asking for a specific invocation
+- The exact answer must still require composition (combining what was shown with the specific context), not copy-paste
+
+### Medium *(default)*
+Context explains the *situation* and the *goal* but does not show the solution. The user must recall or derive the command from their existing knowledge of Kubernetes.
+
+- Describe what needs to be achieved, not how to achieve it
+- Acceptable to mention the resource type or concept involved, but not the command or flags
+- Hints point toward the right concept area without naming the answer
+
+### Hard
+Context describes a situation or problem the user must solve. No syntax guidance is given. The user must already know — or be able to work out — the right approach.
+
+- Context reads like a real-world task or incident: "The payments-api pod is in CrashLoopBackOff. Investigate." or "Create a NetworkPolicy that allows only the frontend to reach the backend on port 8080."
+- Do not name the commands or flags involved
+- Hints, if present, nudge toward the right Kubernetes concept, not the solution
+
+### Practical rule
+
+Before writing each question, ask: *if the user has only read the context for this scenario, can they answer without already knowing Kubernetes?*
+
+- Easy: yes, because the context taught them
+- Medium: no, they must already know the concept — context only frames the task
+- Hard: no, they must know the concept *and* the specific command or resource structure
 
 ---
 
@@ -973,9 +1144,14 @@ Before producing the final YAML, verify:
 - [ ] Every `manifest` question has `manifestDefinitionId`
 - [ ] Every `sequence` has at least 2 `steps`
 - [ ] Every `multiple-choice` question has at least 2 `choices`; each choice has `text` and `answerType`; `PartOfSolution` and `Solution` are not mixed in the same question
+- [ ] Every `ordering` question has at least 2 `items`; every ID in `correctOrder` matches an `id` in `items`; lengths match
 - [ ] Every `manifest` element (display type) has `content`
 - [ ] Every `table` element has `columns` and `rows`; each row has the same number of entries as `columns`
 - [ ] No unknown/extra properties are present (the schema uses `additionalProperties: false` everywhere)
 - [ ] The output is valid YAML (correct indentation, quoted strings where needed)
 - [ ] Category names are consistent across scenarios
 - [ ] Every scenario's `explanation` links to relevant official Kubernetes documentation
+- [ ] No question `header` contains the answer or any part of it verbatim
+- [ ] No `context` element shows the exact command, flag value, or field value that a following question asks for
+- [ ] No `hint` contains the answer — hints point toward a concept or direction, not a solution
+- [ ] Difficulty is appropriate to what was requested (default: medium — context frames the task but does not teach the answer)
