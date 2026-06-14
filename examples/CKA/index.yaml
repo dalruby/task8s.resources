@@ -43,3 +43,13 @@ sets:
       - Upgrade
       - Cluster Management
       - Troubleshooting
+  - name: "CKA Weakpoint Set 1"
+    filename: cka-weakpoint-set-1.yaml
+    description: "Hard-difficulty targeted practice for CoreDNS custom forwarding, kubeadm init phases and node join, Gateway API TLS migration with multiple listeners, NetworkPolicy isolation, and pod anti-affinity node spreading."
+    tags:
+      - CoreDNS
+      - kubeadm
+      - Gateway API
+      - NetworkPolicy
+      - Scheduling
+      - Hard

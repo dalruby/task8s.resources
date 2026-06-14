@@ -1,0 +1,596 @@
+apiVersion: v1alpha1
+name: "CKA Weakpoint Set 1"
+k8sVersion: "1.32.0"
+
+introduction:
+  elements:
+    - type: context
+      text: |
+        This set targets specific weak points from your first killer.sh run. All scenarios are **hard** — context describes the situation and goal only. No syntax is provided. You are expected to know the commands, resource structures, and configuration formats.
+
+        **Topics covered:**
+        - CoreDNS configuration and custom upstream forwarding
+        - kubeadm init phases and adding a worker node to an existing cluster
+        - Ingress → Gateway API migration with TLS and per-hostname listeners
+        - NetworkPolicy for pod-level traffic isolation
+        - Pod anti-affinity for node-spread deployments
+    - type: references
+      links:
+        - url: https://kubernetes.io/docs/tasks/administer-cluster/dns-custom-nameservers/
+          text: Customizing DNS Service — Kubernetes Docs
+        - url: https://coredns.io/plugins/forward/
+          text: CoreDNS forward plugin
+        - url: https://kubernetes.io/docs/reference/setup-tools/kubeadm/
+          text: kubeadm Reference
+        - url: https://gateway-api.sigs.k8s.io/guides/tls/
+          text: Gateway API — TLS Configuration
+        - url: https://kubernetes.io/docs/concepts/services-networking/network-policies/
+          text: Network Policies
+        - url: https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#inter-pod-affinity-and-anti-affinity
+          text: Pod Affinity and Anti-Affinity
+
+manifestDefinitions:
+  - id: networkpolicy-v1
+    kind: NetworkPolicy
+    apiVersion: networking.k8s.io/v1
+    autoLoad: true
+  - id: deployment-v1
+    kind: Deployment
+    apiVersion: apps/v1
+    autoLoad: true
+
+scenarios:
+
+  # ── 1. CoreDNS ─────────────────────────────────────────────────────────────
+
+  - title: "CoreDNS: Custom Upstream Forwarding"
+    category: "Cluster DNS"
+    elements:
+      - type: context
+        text: |
+          Pods in the `reporting` namespace cannot resolve hostnames under `corp.internal`. All in-cluster service discovery (`.cluster.local`) works correctly. The internal DNS server for the `corp.internal` domain is at `10.0.0.53`.
+
+          You need to inspect the current CoreDNS configuration and add a forwarding rule for that domain.
+      - type: question
+        question:
+          questionType: command
+          header: "Retrieve the current CoreDNS configuration in YAML format"
+          hint: "CoreDNS reads its config from a ConfigMap. It lives in the same namespace as other cluster infrastructure components."
+          correctAnswerInfo: "The CoreDNS Corefile is stored in the coredns ConfigMap in the kube-system namespace. Viewing it with -o yaml shows the full Corefile content including all active plugins."
+          command:
+            executable: kubectl
+            subcommands:
+              - name: get
+            positionals:
+              - index: 0
+                oneOf: [configmap, cm]
+                description: resource type
+              - index: 1
+                value: coredns
+                description: ConfigMap name
+            flags:
+              - name: namespace
+                short: "n"
+                required: true
+                value: kube-system
+              - name: output
+                short: "o"
+                required: true
+                value: yaml
+      - type: context
+        text: |
+          The ConfigMap contains the following Corefile:
+
+              .:53 {
+                  errors
+                  health { lameduck 5s }
+                  ready
+                  kubernetes cluster.local in-addr.arpa ip6.arpa {
+                      pods insecure
+                      fallthrough in-addr.arpa ip6.arpa
+                  }
+                  prometheus :9153
+                  forward . /etc/resolv.conf {
+                      max_concurrent 1000
+                  }
+                  cache 30
+                  loop
+                  reload
+                  loadbalance
+              }
+
+          There is no forwarding rule for `corp.internal`. Add a new server block **before** the `.:53` block that forwards `corp.internal` queries to `10.0.0.53`. Follow the same convention as the default block and include a 30-second response cache.
+      - type: question
+        question:
+          questionType: multiline
+          header: "Write the Corefile server block to add for the corp.internal domain"
+          hint: "In Corefile syntax a server block starts with the domain name and port. The plugin that routes queries to an upstream resolver takes the upstream address as its argument."
+          correctAnswerInfo: "The server block must start with corp.internal:53, forward queries to 10.0.0.53 using the forward plugin, and include cache 30 for response caching — the same caching convention used in the default block. Insert it before the .:53 catch-all. The reload plugin picks up ConfigMap changes automatically within ~30 seconds, or force immediate apply with a rollout restart."
+          cel: "answer.contains('corp.internal') && answer.contains('forward') && answer.contains('10.0.0.53') && answer.contains('cache')"
+          expectedAnswer: |
+            corp.internal:53 {
+                forward . 10.0.0.53
+                cache 30
+            }
+      - type: question
+        question:
+          questionType: command
+          header: "Force CoreDNS to reload the updated configuration immediately"
+          hint: "CoreDNS's reload plugin polls the ConfigMap periodically, but you need the change applied now. Think about how you would cycle a Deployment's pods."
+          correctAnswerInfo: "While the reload plugin eventually picks up ConfigMap changes (~30s), triggering a rollout restart replaces the pods immediately and is the safest approach under exam time pressure."
+          command:
+            executable: kubectl
+            subcommands:
+              - name: rollout
+              - name: restart
+            positionals:
+              - index: 0
+                oneOf: [deployment/coredns, deploy/coredns, deployments/coredns]
+                description: target resource
+            flags:
+              - name: namespace
+                short: "n"
+                required: true
+                value: kube-system
+    explanation:
+      elements:
+        - type: context
+          text: |
+            **CoreDNS architecture in Kubernetes**
+
+            CoreDNS runs as a Deployment named `coredns` in `kube-system` and is fronted by the `kube-dns` Service (ClusterIP, typically `10.96.0.10`). All pods use this ClusterIP as their nameserver.
+
+            **Default Corefile structure:**
+            ```
+            .:53 {
+                errors
+                health { lameduck 5s }
+                ready
+                kubernetes cluster.local in-addr.arpa ip6.arpa {
+                    pods insecure
+                    fallthrough in-addr.arpa ip6.arpa
+                }
+                prometheus :9153
+                forward . /etc/resolv.conf {
+                    max_concurrent 1000
+                }
+                cache 30
+                loop
+                reload
+                loadbalance
+            }
+            ```
+
+            **Adding a stub domain** — insert the new server block *before* the `.:53` catch-all:
+            ```
+            corp.internal:53 {
+                forward . 10.0.0.53
+                cache 30
+            }
+
+            .:53 {
+                ...
+            }
+            ```
+
+            **Key troubleshooting commands:**
+            - `kubectl logs -n kube-system -l k8s-app=kube-dns` — check for plugin errors
+            - `kubectl run -it --rm debug --image=busybox:1.28 --restart=Never -- nslookup corp.internal` — test resolution from inside the cluster
+            - `kubectl get svc -n kube-system kube-dns` — confirm the ClusterIP
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/tasks/administer-cluster/dns-custom-nameservers/
+              text: Customizing DNS Service
+            - url: https://coredns.io/plugins/forward/
+              text: CoreDNS forward plugin reference
+
+  # ── 2. kubeadm ─────────────────────────────────────────────────────────────
+
+  - title: "kubeadm: Init Phases and Node Join"
+    category: "Cluster Management"
+    elements:
+      - type: context
+        text: |
+          A new cluster is being set up with `kubeadm`. Before running `kubeadm init`, you need to understand the sequence of operations it performs, including what must exist before each subsequent phase can run.
+      - type: question
+        question:
+          questionType: ordering
+          header: "Put the kubeadm init phases in the correct execution order"
+          hint: "Certificates must exist before kubeconfigs can reference them. The API server must be up before the cluster can be configured. Add-ons come last."
+          correctAnswerInfo: "kubeadm init runs these phases in order: preflight, certs, kubeconfig, control-plane manifests, wait for API server, upload config, mark control-plane, bootstrap tokens, add-ons. You can run or re-run individual phases with kubeadm init phase <name> — useful when recovering from a partially failed init."
+          items:
+            - id: preflight
+              text: "Run preflight checks (swap disabled, ports free, container runtime reachable)"
+            - id: certs
+              text: "Generate the cluster PKI — CA, API server cert, etcd cert, front-proxy cert"
+            - id: kubeconfig
+              text: "Write kubeconfig files: admin.conf, kubelet.conf, controller-manager.conf, scheduler.conf"
+            - id: manifests
+              text: "Generate static Pod manifests for kube-apiserver, kube-controller-manager, and kube-scheduler"
+            - id: wait
+              text: "Wait for the API server to become healthy and accept requests"
+            - id: uploadconfig
+              text: "Upload kubeadm and kubelet configuration to a ConfigMap in kube-system"
+            - id: markcp
+              text: "Apply the control-plane taint and node-role labels to the node"
+            - id: bootstrap
+              text: "Create bootstrap tokens and configure RBAC for node joining"
+            - id: addons
+              text: "Install CoreDNS and kube-proxy as cluster add-ons"
+          correctOrder: [preflight, certs, kubeconfig, manifests, wait, uploadconfig, markcp, bootstrap, addons]
+      - type: context
+        text: |
+          The control plane is running. A worker node is ready to join the cluster, but the original bootstrap token from `kubeadm init` has expired. Bootstrap tokens are valid for 24 hours by default.
+      - type: question
+        question:
+          questionType: command
+          header: "Generate a new join command for the worker node from the control plane"
+          hint: "kubeadm has a token subcommand. One of its sub-subcommands creates a token; a flag on it prints the full join command including the CA cert hash."
+          correctAnswerInfo: "kubeadm token create --print-join-command creates a new 24-hour bootstrap token and outputs the complete kubeadm join command — including the control plane endpoint, token, and CA cert hash. Run this on the control plane node."
+          command:
+            executable: kubeadm
+            subcommands:
+              - name: token
+              - name: create
+            flags:
+              - name: print-join-command
+                boolean: true
+                required: true
+      - type: question
+        question:
+          questionType: single-line
+          header: "What is the path to the CA certificate file on the control plane that kubeadm uses to compute the discovery-token-ca-cert-hash?"
+          hint: "All kubeadm PKI files live under a fixed directory in /etc/kubernetes."
+          correctAnswerInfo: "The CA cert at /etc/kubernetes/pki/ca.crt is the root of trust for the cluster. The join hash is computed from its public key, so a joining node can verify it is connecting to the correct control plane."
+          expectedAnswer: "/etc/kubernetes/pki/ca.crt"
+    explanation:
+      elements:
+        - type: context
+          text: |
+            **Bootstrap token lifecycle**
+
+            Tokens are stored as Secrets of type `bootstrap.kubernetes.io/token` in `kube-system`. They expire after 24 hours by default.
+
+            Useful commands for token management:
+            - `kubeadm token list` — see all active tokens and their expiry
+            - `kubeadm token create --print-join-command` — create a new token and get the join command
+            - `kubeadm token create --ttl 2h --print-join-command` — create a short-lived token
+
+            **The join command:**
+            ```
+            kubeadm join <control-plane>:6443 \
+              --token <token> \
+              --discovery-token-ca-cert-hash sha256:<hash>
+            ```
+
+            **Computing the CA cert hash manually** (when you need just the hash):
+            ```
+            openssl x509 -pubkey -in /etc/kubernetes/pki/ca.crt \
+              | openssl rsa -pubin -outform der 2>/dev/null \
+              | openssl dgst -sha256 -hex \
+              | sed 's/^.* //'
+            ```
+
+            **After joining:** the node will show `NotReady` until a CNI plugin assigns it a pod CIDR. Verify with `kubectl get nodes` from the control plane.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/reference/setup-tools/kubeadm/kubeadm-init/
+              text: kubeadm init
+            - url: https://kubernetes.io/docs/reference/setup-tools/kubeadm/kubeadm-join/
+              text: kubeadm join
+            - url: https://kubernetes.io/docs/reference/setup-tools/kubeadm/kubeadm-token/
+              text: kubeadm token
+
+  # ── 3. Gateway API with TLS ─────────────────────────────────────────────────
+
+  - title: "Gateway API: Per-Hostname TLS Listeners"
+    category: "Networking"
+    elements:
+      - type: context
+        text: |
+          The cluster has Gateway API CRDs installed and a GatewayClass named `nginx` is available. Two applications currently have Ingress resources:
+
+          - `shop.example.com` → Service `shop-frontend`, port `80`
+          - `api.example.com` → Service `api-backend`, port `8080`
+
+          Two TLS Secrets exist in the `default` namespace:
+          - `shop-tls` covering `shop.example.com`
+          - `api-tls` covering `api.example.com`
+
+          Migrate to Gateway API. Create a single `Gateway` named `main-gw` in `default` with three listeners:
+          - `http` — port 80, protocol HTTP, all hostnames
+          - `shop-https` — port 443, protocol HTTPS, hostname `shop.example.com`, TLS termination using `shop-tls`
+          - `api-https` — port 443, protocol HTTPS, hostname `api.example.com`, TLS termination using `api-tls`
+      - type: question
+        question:
+          questionType: multiline
+          header: "Write the Gateway manifest for main-gw"
+          hint: "Each HTTPS listener needs its own tls block with mode: Terminate and a certificateRefs entry. Per-hostname listeners on the same port require the hostname field on each listener."
+          correctAnswerInfo: "The Gateway needs three listeners: http on port 80 with no TLS, and two HTTPS listeners each with a distinct hostname and a tls block specifying mode: Terminate and the matching Secret in certificateRefs. Both HTTPS listeners share port 443 but are distinguished by their hostname field."
+          cel: |
+            answer.contains('kind: Gateway') &&
+            answer.contains('main-gw') &&
+            answer.contains('name: http') &&
+            answer.contains('port: 80') &&
+            answer.contains('shop-https') &&
+            answer.contains('api-https') &&
+            answer.contains('port: 443') &&
+            answer.contains('certificateRefs') &&
+            answer.contains('shop-tls') &&
+            answer.contains('api-tls') &&
+            answer.contains('mode: Terminate')
+          expectedAnswer: |
+            apiVersion: gateway.networking.k8s.io/v1
+            kind: Gateway
+            metadata:
+              name: main-gw
+              namespace: default
+            spec:
+              gatewayClassName: nginx
+              listeners:
+                - name: http
+                  port: 80
+                  protocol: HTTP
+                - name: shop-https
+                  port: 443
+                  protocol: HTTPS
+                  hostname: shop.example.com
+                  tls:
+                    mode: Terminate
+                    certificateRefs:
+                      - name: shop-tls
+                        kind: Secret
+                - name: api-https
+                  port: 443
+                  protocol: HTTPS
+                  hostname: api.example.com
+                  tls:
+                    mode: Terminate
+                    certificateRefs:
+                      - name: api-tls
+                        kind: Secret
+      - type: question
+        question:
+          questionType: multiline
+          header: "Write the HTTPRoute for shop.example.com attached to the shop-https listener"
+          hint: "An HTTPRoute binds to a Gateway via parentRefs. To attach to a specific listener (not all listeners on the Gateway), use the sectionName field on the parentRef."
+          correctAnswerInfo: "The sectionName field on the parentRef pins this route to the shop-https listener specifically. Without it the route attaches to all listeners on the Gateway that match, which would expose it over plain HTTP as well."
+          cel: |
+            answer.contains('kind: HTTPRoute') &&
+            answer.contains('shop.example.com') &&
+            answer.contains('shop-frontend') &&
+            answer.contains('port: 80') &&
+            answer.contains('main-gw') &&
+            answer.contains('sectionName')
+          expectedAnswer: |
+            apiVersion: gateway.networking.k8s.io/v1
+            kind: HTTPRoute
+            metadata:
+              name: shop-route
+              namespace: default
+            spec:
+              parentRefs:
+                - name: main-gw
+                  sectionName: shop-https
+              hostnames:
+                - shop.example.com
+              rules:
+                - backendRefs:
+                    - name: shop-frontend
+                      port: 80
+      - type: question
+        question:
+          questionType: multiline
+          header: "Write the HTTPRoute for api.example.com attached to the api-https listener"
+          hint: "Same pattern as the shop route — bind to the specific listener by name using sectionName."
+          correctAnswerInfo: "Same structure as the shop HTTPRoute: parentRef pointing to main-gw with sectionName: api-https, hostnames listing api.example.com, and a backendRef to api-backend on port 8080."
+          cel: |
+            answer.contains('kind: HTTPRoute') &&
+            answer.contains('api.example.com') &&
+            answer.contains('api-backend') &&
+            answer.contains('port: 8080') &&
+            answer.contains('main-gw') &&
+            answer.contains('sectionName')
+          expectedAnswer: |
+            apiVersion: gateway.networking.k8s.io/v1
+            kind: HTTPRoute
+            metadata:
+              name: api-route
+              namespace: default
+            spec:
+              parentRefs:
+                - name: main-gw
+                  sectionName: api-https
+              hostnames:
+                - api.example.com
+              rules:
+                - backendRefs:
+                    - name: api-backend
+                      port: 8080
+    explanation:
+      elements:
+        - type: context
+          text: |
+            **Per-hostname listeners vs a wildcard listener**
+
+            A Gateway listener can carry a `hostname` field to restrict which hostnames it handles. Two listeners can share the same port if they have distinct hostnames — the Gateway implementation routes inbound TLS connections to the correct listener using SNI before the TLS handshake completes.
+
+            **`sectionName` on parentRefs**
+
+            Without `sectionName`, an HTTPRoute attaches to every listener on the Gateway that matches its hostname. In a mixed HTTP/HTTPS setup this would expose the route over plain HTTP as well. Pinning to the HTTPS listener by name is the correct approach when you want TLS-only access.
+
+            **Checking route attachment status:**
+            ```
+            kubectl get httproute shop-route -o yaml
+            ```
+            Look at `status.parents` — each entry shows whether the route is accepted and which listener it is attached to.
+
+            **Common mistakes:**
+            - Forgetting `kind: Secret` in `certificateRefs` (defaults to nothing — the controller will reject it)
+            - Wrong namespace on the Secret reference (by default, certificateRefs must be in the same namespace as the Gateway unless a ReferenceGrant allows cross-namespace refs)
+            - Missing `hostnames` on the HTTPRoute — without it the route matches all hostnames on the listener
+        - type: references
+          links:
+            - url: https://gateway-api.sigs.k8s.io/guides/tls/
+              text: Gateway API TLS Guide
+            - url: https://gateway-api.sigs.k8s.io/api-types/httproute/
+              text: HTTPRoute API Reference
+            - url: https://gateway-api.sigs.k8s.io/reference/spec/#gateway.networking.k8s.io/v1.Listener
+              text: Listener spec reference
+
+  # ── 4. NetworkPolicy ────────────────────────────────────────────────────────
+
+  - title: "NetworkPolicy: Pod-Level Traffic Isolation"
+    category: "Networking"
+    elements:
+      - type: context
+        text: |
+          Three Deployments run in the `app` namespace:
+
+          | Deployment | Label | Port |
+          |---|---|---|
+          | `frontend` | `tier: frontend` | 3000 |
+          | `backend` | `tier: backend` | 8080 |
+          | `database` | `tier: database` | 5432 |
+
+          Requirements:
+          - Only `frontend` pods may initiate connections to `backend` on port 8080. All other ingress to `backend` must be denied.
+          - Only `backend` pods may initiate connections to `database` on port 5432. All other ingress to `database` must be denied.
+          - `frontend` has no ingress restrictions.
+
+          Write a NetworkPolicy for each restriction.
+      - type: question
+        question:
+          questionType: manifest
+          manifestDefinitionId: networkpolicy-v1
+          header: "Write the NetworkPolicy that restricts ingress to the backend pods"
+          hint: "A NetworkPolicy that specifies policyTypes: [Ingress] and an ingress rule acts as a whitelist — only the listed sources are allowed in. All other ingress is denied."
+          correctAnswerInfo: "The podSelector targets which pods the policy applies to. The ingress.from.podSelector specifies which pods may connect. Both must use label selectors, not pod names."
+          expectedFields:
+            - path: metadata.namespace
+              expectedValue: app
+            - path: spec.podSelector.matchLabels.tier
+              expectedValue: backend
+            - path: spec.policyTypes.0
+              expectedValue: Ingress
+            - path: spec.ingress.0.from.0.podSelector.matchLabels.tier
+              expectedValue: frontend
+            - path: spec.ingress.0.ports.0.port
+              expectedValue: "8080"
+      - type: question
+        question:
+          questionType: manifest
+          manifestDefinitionId: networkpolicy-v1
+          header: "Write the NetworkPolicy that restricts ingress to the database pods"
+          hint: "Same pattern as the backend policy — only the target pod selector and allowed source change."
+          correctAnswerInfo: "Defining policyTypes: [Ingress] without an egress block leaves egress unrestricted. If you also need to restrict what database pods can reach out to, you would add Egress to policyTypes and define egress rules."
+          expectedFields:
+            - path: metadata.namespace
+              expectedValue: app
+            - path: spec.podSelector.matchLabels.tier
+              expectedValue: database
+            - path: spec.policyTypes.0
+              expectedValue: Ingress
+            - path: spec.ingress.0.from.0.podSelector.matchLabels.tier
+              expectedValue: backend
+            - path: spec.ingress.0.ports.0.port
+              expectedValue: "5432"
+    explanation:
+      elements:
+        - type: context
+          text: |
+            **How NetworkPolicy works**
+
+            A NetworkPolicy is a whitelist, not a blocklist. Once any NetworkPolicy selects a pod (via `podSelector`), that pod's matching traffic type (Ingress, Egress, or both) is restricted to only what the policy permits. Pods with no NetworkPolicy selecting them allow all traffic.
+
+            **Key fields:**
+            - `spec.podSelector` — which pods in this namespace this policy applies to
+            - `spec.policyTypes` — which direction(s) are restricted: `Ingress`, `Egress`, or both
+            - `spec.ingress[].from` — allowed ingress sources (podSelector, namespaceSelector, or ipBlock)
+            - `spec.ingress[].ports` — allowed destination ports
+
+            **Combining selectors in a `from` entry:**
+            - Multiple entries in `from` are OR'd — any one match allows the connection
+            - Within a single entry, `podSelector` and `namespaceSelector` are AND'd — both must match
+
+            **Testing a NetworkPolicy without deploying apps:**
+            ```
+            kubectl run test --image=busybox --rm -it --restart=Never \
+              --labels="tier=frontend" -- wget -qO- http://backend:8080
+            ```
+
+            **Common mistakes:**
+            - Using `name:` instead of `matchLabels:` in selectors (there is no `name:` field on a LabelSelector)
+            - Forgetting `policyTypes` — without it the policy may not restrict the intended direction
+            - Missing `namespace` on the policy — a NetworkPolicy only applies to pods in its own namespace
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/concepts/services-networking/network-policies/
+              text: Network Policies — Kubernetes Docs
+            - url: https://kubernetes.io/docs/tasks/administer-cluster/declare-network-policy/
+              text: Declare a Network Policy
+
+  # ── 5. Pod anti-affinity ────────────────────────────────────────────────────
+
+  - title: "Pod Anti-Affinity: One Pod Per Node"
+    category: "Scheduling"
+    elements:
+      - type: context
+        text: |
+          You need to deploy an `nginx` workload named `spread-nginx` in the `default` namespace with 3 replicas, such that no two pods from this Deployment may land on the same node.
+
+          The cluster has exactly 3 worker nodes. This must be enforced with a hard scheduling constraint — if a node is unavailable, the pod must remain unscheduled rather than share a node.
+      - type: question
+        question:
+          questionType: manifest
+          manifestDefinitionId: deployment-v1
+          header: "Write the Deployment manifest for spread-nginx with hard pod anti-affinity"
+          hint: "There are two types of pod anti-affinity scheduling constraints: one that is required (hard) and one that is preferred (soft). Hard constraints block scheduling entirely if they cannot be satisfied. The topology key that represents individual nodes uses a well-known node label."
+          correctAnswerInfo: "requiredDuringSchedulingIgnoredDuringExecution is the hard form — a pod will not be scheduled if the constraint cannot be satisfied. The labelSelector in the anti-affinity rule must match the pod template labels. The topologyKey kubernetes.io/hostname means no two matching pods may land on the same node. This pattern behaves like a DaemonSet but gives you explicit replica control and rolling update behaviour."
+          expectedFields:
+            - path: metadata.name
+              expectedValue: spread-nginx
+            - path: metadata.namespace
+              expectedValue: default
+            - path: spec.replicas
+              expectedValue: "3"
+            - path: spec.template.spec.affinity.podAntiAffinity.requiredDuringSchedulingIgnoredDuringExecution.0.topologyKey
+              expectedValue: kubernetes.io/hostname
+    explanation:
+      elements:
+        - type: context
+          text: |
+            **Pod anti-affinity structure**
+
+            ```yaml
+            affinity:
+              podAntiAffinity:
+                requiredDuringSchedulingIgnoredDuringExecution:
+                  - labelSelector:
+                      matchLabels:
+                        app: spread-nginx      # must match pod template labels
+                    topologyKey: kubernetes.io/hostname
+            ```
+
+            **Why this works like a DaemonSet:**
+            The `topologyKey: kubernetes.io/hostname` groups nodes by their individual hostname label. The `required` constraint says "do not schedule me on any node that already has a pod matching this labelSelector." With 3 replicas and 3 nodes, each node gets exactly one pod.
+
+            **Soft vs hard:**
+            - `requiredDuringSchedulingIgnoredDuringExecution` — hard; pod stays Pending if constraint cannot be satisfied
+            - `preferredDuringSchedulingIgnoredDuringExecution` — soft; scheduler tries but will place on same node if necessary
+
+            **The `IgnoredDuringExecution` part** means that if a node's labels change after a pod is already scheduled there, Kubernetes does not evict the pod. A future `RequiredDuringExecution` variant is planned but not yet stable.
+
+            **Difference from a DaemonSet:**
+            - DaemonSet automatically tracks node count and always schedules on every node (including new ones)
+            - Anti-affinity Deployment has a fixed replica count — adding a node does not automatically add a pod
+
+            **Common mistakes:**
+            - `labelSelector` that does not match the pod template labels — the anti-affinity has no effect because it finds no existing pods to avoid
+            - Using the wrong `topologyKey` (e.g. `topology.kubernetes.io/zone`) which groups by zone rather than individual node
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#inter-pod-affinity-and-anti-affinity
+              text: Inter-pod affinity and anti-affinity
+            - url: https://kubernetes.io/docs/reference/labels-annotations-taints/#kubernetesiohostname
+              text: Well-known label — kubernetes.io/hostname
