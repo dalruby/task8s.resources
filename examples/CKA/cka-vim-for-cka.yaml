@@ -1,0 +1,329 @@
+apiVersion: v1alpha1
+name: "CKA: Vim Speed Essentials for Exam Tasks"
+
+timing:
+  enabled: true
+
+introduction:
+  elements:
+    - type: context
+      text: |
+        This hard scenario set trains the Vim muscle memory needed for fast CKA execution.
+
+        During the exam, text editing speed directly affects task throughput. You should be able to move,
+        edit, save, and recover from mistakes without pausing to think about keystrokes.
+
+        Vim has modal behavior:
+        - Normal mode is for navigation and editing commands (move, delete, yank, paste, search).
+        - Insert mode is for typing text into the file.
+        
+        Fast exam workflow depends on switching intentionally between these two modes.
+    - type: break
+    - type: context
+      text: |
+        Scope: only practical Vim operations used while editing manifests and config files on Linux nodes.
+        The scenarios intentionally avoid syntax teaching; you are expected to recall commands from memory.
+    - type: references
+      links:
+        - url: https://vimhelp.org/usr_02.txt.html
+          text: Vim User Manual - Basic editing
+        - url: https://vimhelp.org/quickref.txt.html
+          text: Vim Quick Reference
+
+scenarios:
+  - title: "Mode Control Under Pressure"
+    category: "Vim Operations"
+    hintsEnabled: true
+    elements:
+      - type: context
+        text: |
+          You are editing a manifest in insert mode and need to execute a non-insert command immediately.
+      - type: question
+        question:
+          questionType: single-line
+          header: "Which key returns Vim to normal mode from insert mode?"
+          expectedAnswer: "Esc"
+          hint: "Use the dedicated mode-switch key, not an Ex command."
+          correctAnswerInfo: "Esc exits insert mode and returns to normal mode, where movement and editing commands are available."
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Fast mode switching is foundational for all Vim workflows.
+            Most exam slowdowns happen when users stay in insert mode too long instead of switching back to command-oriented editing.
+        - type: references
+          links:
+            - url: https://vimhelp.org/usr_02.txt.html
+              text: Vim User Manual - Basic editing
+
+  - title: "Save and Exit Cleanly"
+    category: "Vim Operations"
+    hintsEnabled: true
+    elements:
+      - type: context
+        text: |
+          You finished a YAML edit and need to persist it and leave the editor in one action.
+      - type: question
+        question:
+          questionType: single-line
+          header: "Enter the Ex command that writes changes and exits"
+          expectedAnswer: ":wq"
+          hint: "Use the two-action Ex command that combines write and quit."
+          correctAnswerInfo: ":wq writes the current buffer to disk and then closes the file, which is the most common completion path in exam tasks."
+      - type: question
+        question:
+          questionType: single-line
+          header: "Enter the Ex command that quits without saving"
+          expectedAnswer: ":q!"
+          hint: "Use the forced quit path when you want to discard accidental edits."
+          correctAnswerInfo: ":q! exits and discards unsaved modifications, which is useful when a bad edit would cost time to fix manually."
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Confident save and exit behavior prevents accidental data loss and wasted time.
+            In CKA workflows, this is especially important when touching critical files quickly.
+        - type: references
+          links:
+            - url: https://vimhelp.org/editing.txt.html
+              text: Vim Help - Editing files
+
+  - title: "Recover from Editing Mistakes"
+    category: "Vim Operations"
+    hintsEnabled: true
+    elements:
+      - type: context
+        text: |
+          You removed the wrong YAML line while in normal mode and need to recover instantly.
+      - type: question
+        question:
+          questionType: single-line
+          header: "What normal-mode command undoes the last change?"
+          expectedAnswer: "u"
+          hint: "This is a one-character normal-mode command."
+          correctAnswerInfo: "u reverts the most recent change, which is critical for safe high-speed editing."
+      - type: question
+        question:
+          questionType: single-line
+          header: "What command redoes a change you just undid?"
+          expectedAnswer: "Ctrl-r"
+          hint: "Use the redo shortcut built from a control key plus a letter."
+          correctAnswerInfo: "Ctrl-r reapplies an undone change, so you can move backward and forward through edits quickly."
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Undo and redo fluency turns risky edits into low-risk operations.
+            This lets you move faster on exam tasks without fear of making unrecoverable mistakes.
+        - type: references
+          links:
+            - url: https://vimhelp.org/undo.txt.html
+              text: Vim Help - Undo and redo
+
+  - title: "Jump Across a File Fast"
+    category: "Vim Operations"
+    hintsEnabled: true
+    elements:
+      - type: context
+        text: |
+          A large manifest needs quick cursor movement between local and global positions.
+      - type: question
+        question:
+          questionType: single-line
+          header: "What normal-mode command moves to the end of the current line?"
+          expectedAnswer: "$"
+          hint: "It is a single symbol command, not a word-based movement."
+          correctAnswerInfo: "$ jumps directly to the line end, which is useful for appending or fixing trailing values."
+      - type: question
+        question:
+          questionType: single-line
+          header: "What normal-mode command jumps to the end of the file?"
+          expectedAnswer: "G"
+          hint: "Use the single uppercase motion that targets file end."
+          correctAnswerInfo: "G jumps to the last line of the buffer immediately."
+      - type: question
+        question:
+          questionType: single-line
+          header: "What normal-mode command jumps to the first line of the file?"
+          expectedAnswer: "gg"
+          hint: "Use a two-keystroke normal-mode motion, both lowercase."
+          correctAnswerInfo: "gg moves to the first line, making top-of-file edits nearly instant."
+    explanation:
+      elements:
+        - type: context
+          text: |
+            File-scale navigation avoids slow arrow-key movement.
+            High-value exam editing depends on immediate jumps to file boundaries and line endpoints.
+        - type: references
+          links:
+            - url: https://vimhelp.org/motion.txt.html
+              text: Vim Help - Motions
+
+  - title: "Line-Level Edit Primitives"
+    category: "Vim Operations"
+    hintsEnabled: true
+    elements:
+      - type: context
+        text: |
+          You are restructuring a YAML block and need line-wise cut, copy, and paste operations.
+      - type: question
+        question:
+          questionType: single-line
+          header: "What normal-mode command deletes the current line?"
+          expectedAnswer: "dd"
+          hint: "Use the repeated operator that acts on a full line."
+          correctAnswerInfo: "dd deletes the current line and places it in the unnamed register, so it can be pasted elsewhere."
+      - type: question
+        question:
+          questionType: single-line
+          header: "What normal-mode command yanks (copies) the current line?"
+          expectedAnswer: "yy"
+          hint: "It mirrors the line-delete pattern but with the copy operator."
+          correctAnswerInfo: "yy copies the full current line into a register without removing it from the file."
+      - type: question
+        question:
+          questionType: single-line
+          header: "What normal-mode command pastes after the cursor or current line?"
+          expectedAnswer: "p"
+          hint: "Use the single-letter put command."
+          correctAnswerInfo: "p pastes the most recently yanked or deleted text after the cursor position."
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Most manifest refactors are line-oriented.
+            Mastering delete, yank, and paste reduces the need to retype blocks and lowers typo risk.
+        - type: references
+          links:
+            - url: https://vimhelp.org/change.txt.html
+              text: Vim Help - Operators and changes
+
+  - title: "Search and Match Navigation"
+    category: "Vim Operations"
+    hintsEnabled: true
+    elements:
+      - type: context
+        text: |
+          You need to find every occurrence of an image tag quickly in a long manifest.
+      - type: question
+        question:
+          questionType: single-line
+          header: "What command begins a forward search for the word image?"
+          expectedAnswer: "/image"
+          hint: "Start with the forward-search prefix and then the target text."
+          correctAnswerInfo: "/image searches forward from the cursor for the next matching text."
+      - type: question
+        question:
+          questionType: single-line
+          header: "What command begins a backward search for the word image?"
+          expectedAnswer: "?image"
+          hint: "Use the reverse-direction search prefix, then the same target text."
+          correctAnswerInfo: "?image searches backward from the cursor for the previous matching text."
+      - type: question
+        question:
+          questionType: single-line
+          header: "After a search, what key jumps to the next match in the same direction?"
+          expectedAnswer: "n"
+          hint: "Use the repeat-search key that follows the current search direction."
+          correctAnswerInfo: "n repeats the previous search forward (or in the same active direction), allowing rapid traversal of repeated fields."
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Search-driven navigation is faster than manual scanning in large YAML documents.
+            It is especially useful when validating repeated keys across containers and volumes.
+        - type: references
+          links:
+            - url: https://vimhelp.org/pattern.txt.html
+              text: Vim Help - Search patterns
+
+  - title: "Global Replace for Repeated Values"
+    category: "Vim Operations"
+    hintsEnabled: true
+    elements:
+      - type: context
+        text: |
+          A deployment manifest contains an outdated image tag in many places.
+          You need one command to update all occurrences in the file.
+      - type: question
+        question:
+          questionType: single-line
+          header: "Enter the Ex substitution to replace all old occurrences with new across the file"
+          expectedAnswer: ":%s/old/new/g"
+          hint: "Use whole-file range with substitute syntax and a global flag."
+          correctAnswerInfo: ":%s/old/new/g applies substitution on every line and every match per line, which is ideal for repeated-value updates."
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Global substitution saves large amounts of time when values repeat throughout YAML.
+            It also reduces the chance of leaving stale values behind after partial manual edits.
+        - type: references
+          links:
+            - url: https://vimhelp.org/change.txt.html
+              text: Vim Help - Substitution
+
+  - title: "YAML Indentation Repair"
+    category: "Vim Operations"
+    hintsEnabled: true
+    elements:
+      - type: context
+        text: |
+          A pasted block is indented incorrectly and YAML parsing fails.
+          You need fast line-shift commands instead of rewriting spaces manually.
+      - type: question
+        question:
+          questionType: single-line
+          header: "What normal-mode command shifts the current line one indent level to the right?"
+          expectedAnswer: ">>"
+          hint: "Use the repeated shift operator in normal mode."
+          correctAnswerInfo: ">> increases indentation for the current line, useful for fixing YAML nesting quickly."
+      - type: question
+        question:
+          questionType: single-line
+          header: "What normal-mode command shifts the current line one indent level to the left?"
+          expectedAnswer: "<<"
+          hint: "Use the mirrored shift form in normal mode."
+          correctAnswerInfo: "<< decreases indentation for the current line, helping recover from over-indented blocks."
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Correct indentation is mandatory in YAML.
+            Fast shift commands let you repair structure without slow character-level edits.
+        - type: references
+          links:
+            - url: https://vimhelp.org/change.txt.html
+              text: Vim Help - Shift commands
+
+  - title: "Rapid Positioning and Readability"
+    category: "Vim Operations"
+    hintsEnabled: true
+    elements:
+      - type: context
+        text: |
+          You need to jump to an exact line from an error message and then improve visual scanning in a dense file.
+      - type: question
+        question:
+          questionType: single-line
+          header: "What Ex command jumps to line 42?"
+          expectedAnswer: ":42"
+          hint: "Use the colon-prefixed absolute line jump form."
+          correctAnswerInfo: ":42 moves the cursor directly to line 42, which is useful when tools report exact line numbers."
+      - type: question
+        question:
+          questionType: single-line
+          header: "What Ex command enables line numbers in the current Vim session?"
+          expectedAnswer: ":set number"
+          hint: "Use the set command with the standard option name for numbered lines."
+          correctAnswerInfo: ":set number displays line numbers, improving navigation and cross-checking with validation errors."
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Exact-line navigation and visible line numbers are practical accelerators during exam troubleshooting.
+            They reduce friction when correlating editor position with command output or parser errors.
+        - type: references
+          links:
+            - url: https://vimhelp.org/options.txt.html
+              text: Vim Help - Options and line numbers
