@@ -29,6 +29,7 @@ This repository contains resources to help you get the most out of task8s:
 | `examples` | Contains example schema sets that you can use to explore the tool |
 | `prompts` | AI prompts for generating scenario set YAML files with tools like ChatGPT, Claude, or Codex |
 | `schemas`  | Contains the schemas used for scenario sets |
+| `skills`   | Claude Code skills for generating scenario sets interactively |
 
 More resources (scenario sets, guides, examples) will be added here over time.
 
@@ -48,11 +49,27 @@ Navigate to [task8s.com](https://task8s.com) and execute one of these steps:
 
 ## Creating scenario sets
 
-Scenario sets follow a versioned YAML schema (`v1alpha1`). The easiest way to create one is with an AI assistant using the prompt in [`prompts/scenario-set-prompt.md`](prompts/scenario-set-prompt.md).
+Scenario sets follow a versioned YAML schema (`v1alpha1`). There are two ways to create one:
+
+### Option 1 — Claude Code skill (recommended)
+
+If you use [Claude Code](https://claude.ai/code), the [`skills/generate-scenario-set.md`](skills/generate-scenario-set.md) skill guides you through an interactive dialogue and then generates a complete, valid YAML file. To use it:
+
+1. Copy [`skills/generate-scenario-set.md`](skills/generate-scenario-set.md) into `.claude/skills/` in your project.
+2. In a Claude Code session, run `/generate-scenario-set`.
+3. Answer the prompts (topic, difficulty, question types, sub-topics, name).
+4. Claude generates the YAML and optionally saves it to a file.
+
+The skill fetches the latest `scenario-set-prompt.md` from this repository at generation time, so it always uses the current schema.
+
+### Option 2 — AI prompt (any assistant)
+
+Use the prompt in [`prompts/scenario-set-prompt.md`](prompts/scenario-set-prompt.md) with any AI assistant (ChatGPT, Claude, Gemini, etc.). Paste it into a new conversation and follow the instructions at the top of the file.
 
 You can also download the JSON Schema from the app to validate your files as you write them.
 
 ## Links
 
 - **App:** [task8s.com](https://task8s.com)
+- **Claude Code skill:** [`skills/generate-scenario-set.md`](skills/generate-scenario-set.md)
 - **AI prompt:** [`prompts/scenario-set-prompt.md`](prompts/scenario-set-prompt.md)
