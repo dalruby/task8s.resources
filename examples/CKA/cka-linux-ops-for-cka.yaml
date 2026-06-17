@@ -1,0 +1,396 @@
+apiVersion: v1alpha1
+name: "CKA: Linux Operations for Exam Tasks"
+
+introduction:
+  elements:
+    - type: context
+      text: |
+        This hard set focuses on Linux command-line operations that repeatedly appear during real CKA troubleshooting workflows.
+
+        You will practice host-level actions around privilege escalation, service management, log inspection, filesystem inspection,
+        runtime inspection, and backup extraction.
+
+        The scenarios intentionally avoid command syntax coaching. You are expected to know which command and options solve each task.
+    - type: break
+    - type: context
+      text: |
+        Scope note: this set targets non-kubectl host operations that support cluster administration.
+        Treat each scenario as if you are SSH'd into a node during an exam incident.
+    - type: references
+      links:
+        - url: https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/troubleshooting-kubeadm/
+          text: kubeadm Troubleshooting
+        - url: https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/install-kubeadm/
+          text: Installing kubeadm (service and runtime context)
+
+scenarios:
+  - title: "Escalate to an Interactive Root Shell"
+    category: "Linux Operations"
+    elements:
+      - type: context
+        text: |
+          A control-plane node has ownership and permission mismatches under system-managed paths.
+          You need a login-style root shell before making corrective changes.
+      - type: question
+        question:
+          questionType: command
+          header: "Enter the command that opens a login-style root shell via sudo"
+          hint: "Use sudo in a way that simulates a root login environment, not just one-off command execution."
+          correctAnswerInfo: "This starts a root login shell so root profile and environment are loaded, which is useful during node-level repair work."
+          command:
+            executable: sudo
+            flags:
+              - name: login
+                short: "i"
+                boolean: true
+                required: true
+      - type: table
+        style: terminal
+        columns: [USER, SHELL, HOME]
+        rows:
+          - [root, /bin/bash, /root]
+    explanation:
+      elements:
+        - type: context
+          text: |
+            During CKA troubleshooting, host-level fixes often require root privileges and a predictable root environment.
+            A login-style root shell avoids subtle issues caused by retaining an unprivileged user's environment.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/troubleshooting-kubeadm/
+              text: kubeadm Troubleshooting
+
+  - title: "Verify kubelet Service Health"
+    category: "Linux Operations"
+    elements:
+      - type: context
+        text: |
+          A worker node reports NotReady shortly after a configuration change.
+          Your first task is to inspect the service state directly through systemd.
+      - type: question
+        question:
+          questionType: command
+          header: "Run the systemd command that shows detailed status for kubelet"
+          hint: "Use the system manager's status-oriented verb against the kubelet unit name."
+          correctAnswerInfo: "The status view shows whether kubelet is active, recent log lines, restart attempts, and failure metadata from systemd."
+          command:
+            executable: systemctl
+            subcommands:
+              - name: status
+            positionals:
+              - index: 0
+                required: true
+                value: kubelet
+                description: unit name
+      - type: table
+        style: terminal
+        columns: [UNIT, LOAD, ACTIVE, SUB]
+        rows:
+          - [kubelet.service, loaded, active, running]
+    explanation:
+      elements:
+        - type: context
+          text: |
+            `kubelet` is a systemd-managed service on kubeadm-based nodes.
+            Checking service state early helps you separate host-service failures from Kubernetes API-level symptoms.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/install-kubeadm/
+              text: kubelet and systemd context in kubeadm install flow
+
+  - title: "Restart kubelet After Host-Level Changes"
+    category: "Linux Operations"
+    elements:
+      - type: context
+        text: |
+          You fixed a node-local kubelet configuration issue and need systemd to restart the service so the change is applied.
+      - type: question
+        question:
+          questionType: command
+          header: "Run the command that restarts the kubelet unit immediately"
+          hint: "Use the same service manager, but now choose the verb that forces a stop/start cycle."
+          correctAnswerInfo: "Restarting the kubelet unit causes systemd to relaunch kubelet with updated node-local configuration."
+          command:
+            executable: systemctl
+            subcommands:
+              - name: restart
+            positionals:
+              - index: 0
+                required: true
+                value: kubelet
+                description: unit name
+      - type: table
+        style: terminal
+        columns: [UNIT, RESULT]
+        rows:
+          - [kubelet.service, restarted]
+    explanation:
+      elements:
+        - type: context
+          text: |
+            After editing files used by kubelet, a restart is frequently required before the node reflects those changes.
+            This is a common exam-side recovery step when node components drift or misconfigure.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/troubleshooting-kubeadm/
+              text: kubeadm Troubleshooting
+
+  - title: "Inspect Recent kubelet Logs via journald"
+    category: "Linux Operations"
+    elements:
+      - type: context
+        text: |
+          A node is flapping between Ready and NotReady.
+          You need a quick, bounded view of kubelet logs directly from the journal.
+      - type: question
+        question:
+          questionType: command
+          header: "Show the last 100 kubelet log lines without invoking a pager"
+          hint: "Target the kubelet unit in journalctl, limit line count, and keep output fully non-interactive."
+          correctAnswerInfo: "This queries journald for kubelet logs, limits output to recent lines, and avoids paging so you can script or scan quickly."
+          command:
+            executable: journalctl
+            flags:
+              - name: unit
+                short: "u"
+                required: true
+                value: kubelet
+              - name: lines
+                short: "n"
+                required: true
+                value: "100"
+              - name: no-pager
+                boolean: true
+                required: true
+      - type: table
+        style: terminal
+        columns: [TIME, UNIT, LEVEL, MESSAGE]
+        rows:
+          - ["Jun 16 09:14:22", kubelet, warning, "Failed to load kubelet config file"]
+          - ["Jun 16 09:14:23", kubelet, info, "Starting kubelet"]
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Fast journal inspection is one of the highest-value Linux skills for CKA node troubleshooting.
+            It lets you confirm whether kubelet failures are caused by config, certificates, runtime connectivity, or cgroup mismatches.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/troubleshooting-kubeadm/
+              text: kubeadm Troubleshooting
+
+  - title: "Locate Static Pod Manifests on a Control Plane Node"
+    category: "Linux Operations"
+    elements:
+      - type: context
+        text: |
+          The API server is failing to come up after a manual edit.
+          You need to inspect the static pod manifest directory with detailed file metadata.
+      - type: question
+        question:
+          questionType: command
+          header: "List the static pod manifest directory with long-format output"
+          hint: "Use the standard directory listing command with an option that exposes ownership, mode, and timestamps."
+          correctAnswerInfo: "Long-format listing helps confirm manifest presence, ownership, permissions, and modification time during static pod debugging."
+          command:
+            executable: ls
+            flags:
+              - name: l
+                short: "l"
+                boolean: true
+                required: true
+            positionals:
+              - index: 0
+                required: true
+                value: /etc/kubernetes/manifests
+                description: static pod manifest directory
+      - type: table
+        style: terminal
+        columns: [MODE, OWNER, GROUP, SIZE, NAME]
+        rows:
+          - ["-rw-------", root, root, "3821", kube-apiserver.yaml]
+          - ["-rw-------", root, root, "3412", kube-controller-manager.yaml]
+          - ["-rw-------", root, root, "3359", kube-scheduler.yaml]
+    explanation:
+      elements:
+        - type: context
+          text: |
+            kubeadm control planes run core components as static pods.
+            Verifying files in this directory is often the fastest way to diagnose broken control-plane startup after host-side edits.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/reference/setup-tools/kubeadm/implementation-details/
+              text: kubeadm Implementation Details (static pod manifests)
+
+  - title: "Inspect Containers with CRI Tooling"
+    category: "Linux Operations"
+    elements:
+      - type: context
+        text: |
+          The API server is unavailable, but you still need to inspect node-local containers.
+          Use CRI tooling to enumerate containers, including those not currently running.
+      - type: question
+        question:
+          questionType: command
+          header: "List all containers through the CRI, not only running ones"
+          hint: "Use the CRI CLI subcommand for listing and include the option that expands scope beyond active containers."
+          correctAnswerInfo: "crictl talks directly to the container runtime and can inspect container state even when the Kubernetes API is down."
+          command:
+            executable: crictl
+            subcommands:
+              - name: ps
+            flags:
+              - name: all
+                short: "a"
+                boolean: true
+                required: true
+      - type: table
+        style: terminal
+        columns: [CONTAINER, IMAGE, STATE, NAME]
+        rows:
+          - [a1c9f2d7b1a4, registry.k8s.io/kube-apiserver:v1.31.0, Exited, kube-apiserver]
+          - [d8b2e11f6c44, registry.k8s.io/etcd:3.5.15-0, Running, etcd]
+    explanation:
+      elements:
+        - type: context
+          text: |
+            CRI-level inspection is essential when control-plane components fail before normal API workflows are available.
+            It provides direct visibility into container state, image version, and restart behavior.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/tasks/debug/debug-cluster/crictl/
+              text: Debugging Kubernetes Nodes With crictl
+
+  - title: "Search kubelet Data Paths Efficiently"
+    category: "Linux Operations"
+    elements:
+      - type: context
+        text: |
+          You need to quickly locate regular files under the kubelet data tree while avoiding deep recursive scans.
+          The goal is a bounded filesystem query suitable for exam time pressure.
+      - type: question
+        question:
+          questionType: command
+          header: "Find regular files under /var/lib/kubelet with a recursion depth cap of 2"
+          hint: "Use find with one option for depth control and another that filters by file type."
+          correctAnswerInfo: "A depth-limited find reduces noise and execution time when hunting for kubelet state files and configuration artifacts."
+          command:
+            executable: find
+            positionals:
+              - index: 0
+                required: true
+                value: /var/lib/kubelet
+                description: search root
+            flags:
+              - name: maxdepth
+                required: true
+                value: "2"
+              - name: type
+                required: true
+                value: f
+      - type: table
+        style: terminal
+        columns: [PATH]
+        rows:
+          - [/var/lib/kubelet/config.yaml]
+          - [/var/lib/kubelet/kubeadm-flags.env]
+          - [/var/lib/kubelet/cpu_manager_state]
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Efficient file discovery saves significant time during node debugging.
+            `find` with constrained depth is a practical exam tactic when you know roughly where kubelet stores state.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/kubelet-integration/
+              text: kubelet Integration With kubeadm
+
+  - title: "Extract a Compressed Backup Into a Target Directory"
+    category: "Linux Operations"
+    elements:
+      - type: context
+        text: |
+          You received a compressed node backup archive and must unpack it into a prepared restore path.
+          The extraction needs to be explicit and deterministic.
+      - type: question
+        question:
+          questionType: command
+          header: "Extract etcd-snapshots.tar.gz into /opt/restore using explicit tar long options"
+          hint: "Use tar's long-form options to declare extraction mode, gzip handling, input archive, and destination directory."
+          correctAnswerInfo: "Using explicit long options in tar improves readability under pressure and reduces mistakes during restore preparation."
+          command:
+            executable: tar
+            flags:
+              - name: extract
+                boolean: true
+                required: true
+              - name: gzip
+                boolean: true
+                required: true
+              - name: file
+                required: true
+                value: etcd-snapshots.tar.gz
+              - name: directory
+                required: true
+                value: /opt/restore
+      - type: table
+        style: terminal
+        columns: [ITEM, RESULT]
+        rows:
+          - [member/snap/db, extracted]
+          - [member/wal, extracted]
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Archive handling appears in backup and recovery workflows.
+            Being fluent with extraction options helps avoid restoring into the wrong path or using an incorrect archive format assumption.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/tasks/administer-cluster/configure-upgrade-etcd/
+              text: Operating etcd Clusters for Kubernetes
+
+  - title: "Tighten Sensitive File Permissions"
+    category: "Linux Operations"
+    elements:
+      - type: context
+        text: |
+          A security review flagged a control-plane private key as overly permissive.
+          You need to apply a strict mode while emitting a change record.
+      - type: question
+        question:
+          questionType: command
+          header: "Set /etc/kubernetes/pki/ca.key to mode 600 and print changes"
+          hint: "Use chmod with a reporting flag so changed files are echoed to output."
+          correctAnswerInfo: "Mode 600 restricts key access to the owner only; the reporting option confirms what chmod actually modified."
+          command:
+            executable: chmod
+            flags:
+              - name: changes
+                boolean: true
+                required: true
+            positionals:
+              - index: 0
+                required: true
+                value: "600"
+                description: file mode
+              - index: 1
+                required: true
+                value: /etc/kubernetes/pki/ca.key
+                description: key path
+      - type: table
+        style: terminal
+        columns: [OUTPUT]
+        rows:
+          - ["mode of '/etc/kubernetes/pki/ca.key' changed from 0644 to 0600"]
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Certificate and key file permissions are part of baseline cluster hardening.
+            During CKA tasks, unsafe modes can break security expectations and sometimes trigger validation checks.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/setup/best-practices/certificates/
+              text: PKI Certificates and Requirements

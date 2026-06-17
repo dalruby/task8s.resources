@@ -38,6 +38,16 @@ manifestDefinitions:
     kind: Deployment
     apiVersion: apps/v1
     autoLoad: true
+  - id: gateway-v1
+    kind: Gateway
+    apiVersion: gateway.networking.k8s.io/v1
+    schema:
+      type: object
+  - id: httproute-v1
+    kind: HTTPRoute
+    apiVersion: gateway.networking.k8s.io/v1
+    schema:
+      type: object
 
 scenarios:
 
@@ -303,7 +313,8 @@ scenarios:
           - `api-https` — port 443, protocol HTTPS, hostname `api.example.com`, TLS termination using `api-tls`
       - type: question
         question:
-          questionType: multiline
+          questionType: manifest
+          manifestDefinitionId: gateway-v1
           header: "Write the Gateway manifest for main-gw"
           hint: "Each HTTPS listener needs its own tls block with mode: Terminate and a certificateRefs entry. Per-hostname listeners on the same port require the hostname field on each listener."
           correctAnswerInfo: "The Gateway needs three listeners: http on port 80 with no TLS, and two HTTPS listeners each with a distinct hostname and a tls block specifying mode: Terminate and the matching Secret in certificateRefs. Both HTTPS listeners share port 443 but are distinguished by their hostname field."
@@ -319,94 +330,50 @@ scenarios:
             answer.contains('shop-tls') &&
             answer.contains('api-tls') &&
             answer.contains('mode: Terminate')
-          expectedAnswer: |
-            apiVersion: gateway.networking.k8s.io/v1
-            kind: Gateway
-            metadata:
-              name: main-gw
-              namespace: default
-            spec:
-              gatewayClassName: nginx
-              listeners:
-                - name: http
-                  port: 80
-                  protocol: HTTP
-                - name: shop-https
-                  port: 443
-                  protocol: HTTPS
-                  hostname: shop.example.com
-                  tls:
-                    mode: Terminate
-                    certificateRefs:
-                      - name: shop-tls
-                        kind: Secret
-                - name: api-https
-                  port: 443
-                  protocol: HTTPS
-                  hostname: api.example.com
-                  tls:
-                    mode: Terminate
-                    certificateRefs:
-                      - name: api-tls
-                        kind: Secret
       - type: question
         question:
-          questionType: multiline
+          questionType: manifest
+          manifestDefinitionId: httproute-v1
           header: "Write the HTTPRoute for shop.example.com attached to the shop-https listener"
           hint: "An HTTPRoute binds to a Gateway via parentRefs. To attach to a specific listener (not all listeners on the Gateway), use the sectionName field on the parentRef."
           correctAnswerInfo: "The sectionName field on the parentRef pins this route to the shop-https listener specifically. Without it the route attaches to all listeners on the Gateway that match, which would expose it over plain HTTP as well."
-          cel: |
-            answer.contains('kind: HTTPRoute') &&
-            answer.contains('shop.example.com') &&
-            answer.contains('shop-frontend') &&
-            answer.contains('port: 80') &&
-            answer.contains('main-gw') &&
-            answer.contains('sectionName')
-          expectedAnswer: |
-            apiVersion: gateway.networking.k8s.io/v1
-            kind: HTTPRoute
-            metadata:
-              name: shop-route
-              namespace: default
-            spec:
-              parentRefs:
-                - name: main-gw
-                  sectionName: shop-https
-              hostnames:
-                - shop.example.com
-              rules:
-                - backendRefs:
-                    - name: shop-frontend
-                      port: 80
+          expectedFields:
+            - path: metadata.name
+              expectedValue: shop-route
+            - path: metadata.namespace
+              expectedValue: default
+            - path: spec.parentRefs.0.name
+              expectedValue: main-gw
+            - path: spec.parentRefs.0.sectionName
+              expectedValue: shop-https
+            - path: spec.hostnames.0
+              expectedValue: shop.example.com
+            - path: spec.rules.0.backendRefs.0.name
+              expectedValue: shop-frontend
+            - path: spec.rules.0.backendRefs.0.port
+              expectedValue: 80
       - type: question
         question:
-          questionType: multiline
+          questionType: manifest
+          manifestDefinitionId: httproute-v1
           header: "Write the HTTPRoute for api.example.com attached to the api-https listener"
           hint: "Same pattern as the shop route — bind to the specific listener by name using sectionName."
           correctAnswerInfo: "Same structure as the shop HTTPRoute: parentRef pointing to main-gw with sectionName: api-https, hostnames listing api.example.com, and a backendRef to api-backend on port 8080."
-          cel: |
-            answer.contains('kind: HTTPRoute') &&
-            answer.contains('api.example.com') &&
-            answer.contains('api-backend') &&
-            answer.contains('port: 8080') &&
-            answer.contains('main-gw') &&
-            answer.contains('sectionName')
-          expectedAnswer: |
-            apiVersion: gateway.networking.k8s.io/v1
-            kind: HTTPRoute
-            metadata:
-              name: api-route
-              namespace: default
-            spec:
-              parentRefs:
-                - name: main-gw
-                  sectionName: api-https
-              hostnames:
-                - api.example.com
-              rules:
-                - backendRefs:
-                    - name: api-backend
-                      port: 8080
+          expectedFields:
+            - path: metadata.name
+              expectedValue: api-route
+            - path: metadata.namespace
+              expectedValue: default
+            - path: spec.parentRefs.0.name
+              expectedValue: main-gw
+            - path: spec.parentRefs.0.sectionName
+              expectedValue: api-https
+            - path: spec.hostnames.0
+              expectedValue: api.example.com
+            - path: spec.rules.0.backendRefs.0.name
+              expectedValue: api-backend
+            - path: spec.rules.0.backendRefs.0.port
+              expectedValue: 8080
     explanation:
       elements:
         - type: context
@@ -476,7 +443,7 @@ scenarios:
             - path: spec.ingress.0.from.0.podSelector.matchLabels.tier
               expectedValue: frontend
             - path: spec.ingress.0.ports.0.port
-              expectedValue: "8080"
+              expectedValue: 8080
       - type: question
         question:
           questionType: manifest
@@ -494,7 +461,7 @@ scenarios:
             - path: spec.ingress.0.from.0.podSelector.matchLabels.tier
               expectedValue: backend
             - path: spec.ingress.0.ports.0.port
-              expectedValue: "5432"
+              expectedValue: 5432
     explanation:
       elements:
         - type: context
@@ -553,7 +520,7 @@ scenarios:
             - path: metadata.namespace
               expectedValue: default
             - path: spec.replicas
-              expectedValue: "3"
+              expectedValue: 3
             - path: spec.template.spec.affinity.podAntiAffinity.requiredDuringSchedulingIgnoredDuringExecution.0.topologyKey
               expectedValue: kubernetes.io/hostname
     explanation:

@@ -62,3 +62,22 @@ sets:
       - NetworkPolicy
       - Scheduling
       - Hard
+  - name: "CKA: Linux Operations for Exam Tasks"
+    filename: cka-linux-ops-for-cka.yaml
+    description: "Hard Linux command practice for CKA host-level operations: privilege escalation, systemd service control, journald inspection, filesystem discovery, CRI runtime inspection, archive extraction, and permission hardening."
+    tags:
+      - Linux
+      - Systemd
+      - Troubleshooting
+      - Runtime
+      - Security
+      - Hard
+  - name: "CKA: Vim Speed Essentials for Exam Tasks"
+    filename: cka-vim-for-cka.yaml
+    description: "Hard Vim-only speed training for CKA editing workflows: mode control, save/quit safety, undo/redo, fast navigation, search, substitution, indentation repair, and line targeting."
+    tags:
+      - Vim
+      - Editing
+      - Productivity
+      - Troubleshooting
+      - Hard
