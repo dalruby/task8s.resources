@@ -318,18 +318,45 @@ scenarios:
           header: "Write the Gateway manifest for main-gw"
           hint: "Each HTTPS listener needs its own tls block with mode: Terminate and a certificateRefs entry. Per-hostname listeners on the same port require the hostname field on each listener."
           correctAnswerInfo: "The Gateway needs three listeners: http on port 80 with no TLS, and two HTTPS listeners each with a distinct hostname and a tls block specifying mode: Terminate and the matching Secret in certificateRefs. Both HTTPS listeners share port 443 but are distinguished by their hostname field."
-          cel: |
-            answer.contains('kind: Gateway') &&
-            answer.contains('main-gw') &&
-            answer.contains('name: http') &&
-            answer.contains('port: 80') &&
-            answer.contains('shop-https') &&
-            answer.contains('api-https') &&
-            answer.contains('port: 443') &&
-            answer.contains('certificateRefs') &&
-            answer.contains('shop-tls') &&
-            answer.contains('api-tls') &&
-            answer.contains('mode: Terminate')
+          expectedFields:
+            - path: metadata.name
+              expectedValue: main-gw
+            - path: metadata.namespace
+              expectedValue: default
+            - path: spec.listeners.0.name
+              expectedValue: http
+            - path: spec.listeners.0.port
+              expectedValue: 80
+            - path: spec.listeners.0.protocol
+              expectedValue: HTTP
+            - path: spec.listeners.1.name
+              expectedValue: shop-https
+            - path: spec.listeners.1.port
+              expectedValue: 443
+            - path: spec.listeners.1.protocol
+              expectedValue: HTTPS
+            - path: spec.listeners.1.hostname
+              expectedValue: shop.example.com
+            - path: spec.listeners.1.tls.mode
+              expectedValue: Terminate
+            - path: spec.listeners.1.tls.certificateRefs.0.kind
+              expectedValue: Secret
+            - path: spec.listeners.1.tls.certificateRefs.0.name
+              expectedValue: shop-tls
+            - path: spec.listeners.2.name
+              expectedValue: api-https
+            - path: spec.listeners.2.port
+              expectedValue: 443
+            - path: spec.listeners.2.protocol
+              expectedValue: HTTPS
+            - path: spec.listeners.2.hostname
+              expectedValue: api.example.com
+            - path: spec.listeners.2.tls.mode
+              expectedValue: Terminate
+            - path: spec.listeners.2.tls.certificateRefs.0.kind
+              expectedValue: Secret
+            - path: spec.listeners.2.tls.certificateRefs.0.name
+              expectedValue: api-tls
       - type: question
         question:
           questionType: manifest
