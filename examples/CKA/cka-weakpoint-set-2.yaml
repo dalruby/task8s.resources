@@ -1,0 +1,930 @@
+apiVersion: v1alpha1
+name: "CKA Weakpoint Set 2"
+k8sVersion: "1.34.0"
+
+timing:
+  enabled: true
+  limitSeconds: 9000
+
+introduction:
+  elements:
+    - type: context
+      text: |
+        This set is a hard, exam-style drill focused on high-friction CKA tasks under time pressure.
+
+        Conditions:
+          - no multiple choice
+          - multiple tasks per scenario
+          - minimal guidance in scenario text
+          - hints enabled, but still exam-oriented
+          - full-manifest authoring where applicable
+
+        Treat each scenario as a live ticket with production pressure.
+    - type: references
+      links:
+        - url: https://training.linuxfoundation.org/certification/certified-kubernetes-administrator-cka/
+          text: CKA Certification Overview
+        - url: https://github.com/cncf/curriculum/blob/master/CKA_Curriculum_v1.35.pdf
+          text: CKA Curriculum v1.35
+
+manifestDefinitions:
+  - id: storageclass-storage-k8s-io-v1
+    kind: StorageClass
+    apiVersion: storage.k8s.io/v1
+    autoLoad: true
+  - id: hpa-autoscaling-v2
+    kind: HorizontalPodAutoscaler
+    apiVersion: autoscaling/v2
+    autoLoad: true
+  - id: deployment-apps-v1
+    kind: Deployment
+    apiVersion: apps/v1
+    autoLoad: true
+  - id: csr-certificates-k8s-io-v1
+    kind: CertificateSigningRequest
+    apiVersion: certificates.k8s.io/v1
+    autoLoad: true
+  - id: networkpolicy-networking-k8s-io-v1
+    kind: NetworkPolicy
+    apiVersion: networking.k8s.io/v1
+    autoLoad: true
+
+scenarios:
+  - title: "Install and Validate Calico CNI"
+    category: "Cluster Architecture"
+    hintsEnabled: true
+    elements:
+      - type: context
+        text: |
+          A new kubeadm cluster is up, but pods stay Pending because no CNI is installed.
+          The Calico manifest is already present at `/opt/cni/calico.yaml` on the control-plane node.
+
+          Complete installation and verify that Calico components are running in `kube-system`.
+      - type: question
+        question:
+          questionType: command
+          header: "Apply the provided Calico manifest file."
+          hint: "Use kubectl to apply a manifest from a local file path."
+          correctAnswerInfo: "CNI installation is usually done by applying the vendor manifest once from a control-plane host with cluster-admin access."
+          command:
+            executable: kubectl
+            subcommands:
+              - name: apply
+            flags:
+              - name: filename
+                short: f
+                required: true
+                value: /opt/cni/calico.yaml
+      - type: table
+        style: terminal
+        columns: ["KIND", "NAME", "STATUS"]
+        rows:
+          - ["Namespace", "kube-system", "unchanged"]
+          - ["DaemonSet", "calico-node", "created"]
+          - ["Deployment", "calico-kube-controllers", "created"]
+      - type: question
+        question:
+          questionType: command
+          header: "Check that calico-node DaemonSet is available in kube-system."
+          hint: "Use rollout status against the DaemonSet in kube-system."
+          correctAnswerInfo: "If the DaemonSet does not become available, inspect node taints, CNI files, and kubelet/container runtime logs."
+          command:
+            executable: kubectl
+            subcommands:
+              - name: rollout
+              - name: status
+            positionals:
+              - index: 0
+                required: true
+                value: daemonset/calico-node
+                description: workload reference
+            flags:
+              - name: namespace
+                short: n
+                required: true
+                value: kube-system
+      - type: table
+        style: terminal
+        columns: ["OUTPUT"]
+        rows:
+          - ["daemon set \"calico-node\" successfully rolled out"]
+      - type: question
+        question:
+          questionType: command
+          header: "List pods in kube-system to confirm Calico control components are running."
+          hint: "Get pods from kube-system and include component names in your checks."
+          correctAnswerInfo: "For exam speed, quickly scan for calico-node and calico-kube-controllers readiness and restarts."
+          command:
+            executable: kubectl
+            subcommands:
+              - name: get
+              - name: pods
+            flags:
+              - name: namespace
+                short: n
+                required: true
+                value: kube-system
+      - type: table
+        style: terminal
+        columns: ["NAME", "READY", "STATUS", "RESTARTS", "AGE"]
+        rows:
+          - ["calico-kube-controllers-7f7b9f5c7d-7dj9z", "1/1", "Running", "0", "56s"]
+          - ["calico-node-6l24m", "1/1", "Running", "0", "56s"]
+          - ["calico-node-d9w8r", "1/1", "Running", "0", "56s"]
+    explanation:
+      elements:
+        - type: context
+          text: |
+            In kubeadm workflows, CNI install timing is critical: nodes can report Ready only after networking is functional.
+
+            For Calico, the practical verification pattern is:
+              - apply manifest
+              - wait for calico-node DaemonSet availability
+              - confirm controller and node pods are healthy in kube-system
+        - type: references
+          links:
+            - url: https://docs.tigera.io/calico/latest/getting-started/kubernetes/self-managed-onprem/onpremises
+              text: Calico on Kubernetes (self-managed)
+            - url: https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/create-cluster-kubeadm/
+              text: kubeadm cluster creation and CNI notes
+
+  - title: "Move Files Between Nodes with scp"
+    category: "Troubleshooting"
+    hintsEnabled: true
+    elements:
+      - type: context
+        text: |
+          During an exam task, artifacts must be moved between hosts over SSH quickly and correctly.
+          You have key-based access and must avoid interactive prompts where possible.
+      - type: question
+        question:
+          questionType: single-line
+          header: "Copy /etc/kubernetes/admin.conf from host cp-1 to your current local directory using user exam and key /home/exam/.ssh/id_rsa."
+          expectedAnswer: "scp -i /home/exam/.ssh/id_rsa exam@cp-1:/etc/kubernetes/admin.conf ."
+          hint: "For remote-to-local copy, the source is user@host:path and the destination is local path dot."
+          correctAnswerInfo: "scp supports direct remote path syntax in one command; key selection avoids password prompts."
+      - type: question
+        question:
+          questionType: single-line
+          header: "Copy local file /tmp/backup/etcd.db to host cp-2 at /var/lib/etcd-backups/ using user exam and the same SSH key."
+          expectedAnswer: "scp -i /home/exam/.ssh/id_rsa /tmp/backup/etcd.db exam@cp-2:/var/lib/etcd-backups/"
+          hint: "For local-to-remote copy, place local source first and remote target second."
+          correctAnswerInfo: "Remember directionality under pressure: source then destination, regardless of local or remote side."
+      - type: question
+        question:
+          questionType: single-line
+          header: "Recursively copy local directory /opt/manifests to host worker-1 path /tmp/ using user exam and key /home/exam/.ssh/id_rsa."
+          expectedAnswer: "scp -i /home/exam/.ssh/id_rsa -r /opt/manifests exam@worker-1:/tmp/"
+          hint: "Directory copy requires the recursive option."
+          correctAnswerInfo: "Missing recursive mode is a common failure when transferring manifest trees during troubleshooting tasks."
+    explanation:
+      elements:
+        - type: context
+          text: |
+            File transfer speed matters in practical exams, especially for moving kubeconfig files, backups, and manifests.
+
+            A reliable mental model:
+              - remote source syntax: user@host:path
+              - key pinning with -i
+              - add -r for directories
+        - type: references
+          links:
+            - url: https://man.openbsd.org/scp
+              text: scp manual page
+            - url: https://linux.die.net/man/1/scp
+              text: scp usage reference
+
+  - title: "Use KUBECONFIG Correctly Under Pressure"
+    category: "Cluster Architecture"
+    hintsEnabled: true
+    elements:
+      - type: context
+        text: |
+          You are in a shell with no valid default kubeconfig. Commands fail until the correct environment variable is set.
+          Use `/root/.kube/prod-config` for this session and confirm context access.
+      - type: question
+        question:
+          questionType: command
+          header: "Set the kubeconfig environment variable for the current shell session."
+          hint: "Use the exact Kubernetes client environment variable name, then assign the file path."
+          correctAnswerInfo: "A misspelled variable silently causes kubectl to fall back to default config locations."
+          command:
+            executable: export
+            positionals:
+              - index: 0
+                required: true
+                value: KUBECONFIG=/root/.kube/prod-config
+                description: environment assignment
+      - type: table
+        style: terminal
+        columns: ["OUTPUT"]
+        rows:
+          - [""]
+      - type: question
+        question:
+          questionType: command
+          header: "Verify that kubectl can read cluster context after setting the variable."
+          hint: "Use a kubectl config subcommand that prints the active context."
+          correctAnswerInfo: "Fast sanity checks after context switches prevent running destructive commands in the wrong cluster."
+          command:
+            executable: kubectl
+            subcommands:
+              - name: config
+              - name: current-context
+      - type: table
+        style: terminal
+        columns: ["CURRENT-CONTEXT"]
+        rows:
+          - ["prod-admin@prod-cluster"]
+      - type: question
+        question:
+          questionType: single-line
+          header: "Write the exact variable name only (case-sensitive) that kubectl reads for alternate config path."
+          expectedAnswer: "KUBECONFIG"
+          hint: "It is one word in uppercase, and contains no underscore."
+          correctAnswerInfo: "The expected variable is KUBECONFIG. KUBE_CONFIG is ignored by kubectl."
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Context errors in CKA attempts are often not Kubernetes failures, but shell environment mistakes.
+
+            Always verify the active context immediately after setting KUBECONFIG.
+            This catches typos before any cluster-impacting action.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/concepts/configuration/organize-cluster-access-kubeconfig/
+              text: Organizing Cluster Access Using kubeconfig Files
+            - url: https://kubernetes.io/docs/reference/kubectl/
+              text: kubectl reference
+
+  - title: "Launch and Tear Down an Ephemeral Debug Pod"
+    category: "Troubleshooting"
+    hintsEnabled: true
+    elements:
+      - type: context
+        text: |
+          A support task requires a throwaway interactive pod to test DNS and egress.
+          The pod must be removed automatically when you exit.
+          Namespace: `ops`.
+          Pod name: `net-debug`.
+          Image: `busybox:1.36`.
+      - type: question
+        question:
+          questionType: command
+          header: "Start the interactive temporary pod with automatic deletion on exit and no controller management."
+          hint: "Use kubectl run with interactive terminal flags, remove-on-exit behavior, and restart policy set to Never."
+          correctAnswerInfo: "This pattern is a standard exam-time debug primitive for one-off shell access inside the cluster network."
+          command:
+            executable: kubectl
+            subcommands:
+              - name: run
+            positionals:
+              - index: 0
+                required: true
+                value: net-debug
+                description: pod name
+            flags:
+              - name: namespace
+                short: n
+                required: true
+                value: ops
+              - name: image
+                required: true
+                value: busybox:1.36
+              - name: restart
+                required: true
+                value: Never
+              - name: rm
+                boolean: true
+                required: true
+              - name: stdin
+                short: i
+                boolean: true
+                required: true
+              - name: tty
+                short: t
+                boolean: true
+                required: true
+      - type: table
+        style: terminal
+        columns: ["OUTPUT"]
+        rows:
+          - ["If no command is provided, an interactive shell opens; on exit, pod/net-debug is deleted."]
+      - type: question
+        question:
+          questionType: command
+          header: "While the pod is running, list pods in ops namespace to confirm it is present."
+          hint: "Use kubectl get pods scoped to the namespace."
+          correctAnswerInfo: "Quick visibility checks avoid debugging in the wrong namespace during exam tasks."
+          command:
+            executable: kubectl
+            subcommands:
+              - name: get
+              - name: pods
+            flags:
+              - name: namespace
+                short: n
+                required: true
+                value: ops
+      - type: table
+        style: terminal
+        columns: ["NAME", "READY", "STATUS", "RESTARTS", "AGE"]
+        rows:
+          - ["net-debug", "1/1", "Running", "0", "10s"]
+    explanation:
+      elements:
+        - type: context
+          text: |
+            The key exam behavior here is combining interactivity with deterministic cleanup.
+
+            `--restart=Never` ensures a Pod object (not a Deployment), and `--rm` removes it after session exit.
+            This avoids residual resources that can interfere with later tasks.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/reference/generated/kubectl/kubectl-commands#run
+              text: kubectl run reference
+
+  - title: "Resolve a Pod by Dashed IP DNS Name"
+    category: "Services & Networking"
+    hintsEnabled: true
+    elements:
+      - type: context
+        text: |
+          You are troubleshooting name resolution for direct Pod addressing inside the cluster.
+
+          Target details:
+            - Pod namespace: `qa`
+            - Pod IP: `10.244.2.17`
+
+          Build the DNS name form used for Pod-IP-style records and validate from inside the cluster.
+      - type: question
+        question:
+          questionType: single-line
+          header: "Write the full FQDN that represents this Pod IP in cluster DNS form."
+          expectedAnswer: "10-244-2-17.qa.pod.cluster.local"
+          hint: "Convert IP octet separators and append namespace plus pod DNS suffix."
+          correctAnswerInfo: "Dashed IP hostnames are generated by replacing dots with hyphens in the Pod IP before the namespace and pod zone suffix."
+      - type: question
+        question:
+          questionType: command
+          header: "From your temporary debug pod shell, resolve that FQDN using nslookup."
+          hint: "Use nslookup followed by the computed Pod-IP FQDN."
+          correctAnswerInfo: "Successful lookup confirms CoreDNS is serving Pod DNS records for your cluster domain and namespace scope."
+          command:
+            executable: nslookup
+            positionals:
+              - index: 0
+                required: true
+                value: 10-244-2-17.qa.pod.cluster.local
+                description: pod-ip fqdn
+      - type: table
+        style: terminal
+        columns: ["OUTPUT"]
+        rows:
+          - ["Name: 10-244-2-17.qa.pod.cluster.local  Address: 10.244.2.17"]
+      - type: question
+        question:
+          questionType: single-line
+          header: "Write only the transformation rule applied to Pod IP text before namespace in this DNS form."
+          expectedAnswer: "replace dots with hyphens"
+          hint: "Think string conversion of IPv4 separators."
+          correctAnswerInfo: "The host label uses the Pod IP with dot separators converted to hyphens."
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Pod DNS records vary by cluster DNS configuration, but the dashed-IP form is a recurring troubleshooting pattern.
+
+            When direct Pod access tests fail, validating both DNS transformation and namespace suffix quickly separates name issues from network policy or routing issues.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/concepts/services-networking/dns-pod-service/
+              text: DNS for Services and Pods
+
+  - title: "Set the Default StorageClass"
+    category: "Storage"
+    hintsEnabled: true
+    elements:
+      - type: context
+        text: |
+          A cluster has a functioning CSI provisioner, but no default StorageClass is set.
+          Create a new StorageClass named `fast-ssd` with provisioner `csi.example.com` and mark it as default.
+          Reclaim policy must be `Delete`, volume binding mode must be `WaitForFirstConsumer`.
+      - type: question
+        question:
+          questionType: manifest
+          header: "Write the complete StorageClass manifest meeting all requirements."
+          hint: "Use StorageClass metadata annotations for default-class behavior, and include all requested spec fields."
+          correctAnswerInfo: "The default StorageClass is selected for PVCs that omit storageClassName."
+          manifestDefinitionId: storageclass-storage-k8s-io-v1
+          expectedFields:
+            - path: apiVersion
+              expectedValue: storage.k8s.io/v1
+            - path: kind
+              expectedValue: StorageClass
+            - path: metadata.name
+              expectedValue: fast-ssd
+            - path: metadata.annotations.storageclass.kubernetes.io/is-default-class
+              expectedValue: "true"
+            - path: provisioner
+              expectedValue: csi.example.com
+            - path: reclaimPolicy
+              expectedValue: Delete
+            - path: volumeBindingMode
+              expectedValue: WaitForFirstConsumer
+      - type: manifest
+        header: "Reference manifest"
+        content: |
+          apiVersion: storage.k8s.io/v1
+          kind: StorageClass
+          metadata:
+            name: fast-ssd
+            annotations:
+              storageclass.kubernetes.io/is-default-class: "true"
+          provisioner: csi.example.com
+          reclaimPolicy: Delete
+          volumeBindingMode: WaitForFirstConsumer
+      - type: question
+        question:
+          questionType: command
+          header: "List storage classes to verify which class is currently default."
+          hint: "Use kubectl get on storage classes and inspect the default marker in output."
+          correctAnswerInfo: "The default class is marked in kubectl output, allowing fast post-change validation."
+          command:
+            executable: kubectl
+            subcommands:
+              - name: get
+              - name: storageclass
+      - type: table
+        style: terminal
+        columns: ["NAME", "PROVISIONER", "RECLAIMPOLICY", "VOLUMEBINDINGMODE", "ALLOWVOLUMEEXPANSION", "AGE"]
+        rows:
+          - ["fast-ssd (default)", "csi.example.com", "Delete", "WaitForFirstConsumer", "false", "9s"]
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Default StorageClass selection is driven by annotation, not by a dedicated boolean field.
+
+            In real clusters, accidental multiple defaults can occur; always verify output after changes.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/concepts/storage/storage-classes/
+              text: Storage Classes
+            - url: https://kubernetes.io/docs/tasks/administer-cluster/change-default-storage-class/
+              text: Change the default StorageClass
+
+  - title: "Author and Verify HPA with Resource Targets"
+    category: "Workloads & Scheduling"
+    hintsEnabled: true
+    elements:
+      - type: context
+        text: |
+          Namespace: `autoscale`.
+          A Deployment named `api` already exists.
+
+          Create an HPA named `api-hpa` targeting that Deployment with:
+            - minReplicas: 2
+            - maxReplicas: 12
+            - CPU average utilization: 65
+            - memory average utilization: 70
+      - type: question
+        question:
+          questionType: manifest
+          header: "Write the complete HPA manifest for this workload."
+          hint: "Use autoscaling/v2 and define two resource metrics in the metrics list."
+          correctAnswerInfo: "autoscaling/v2 allows multiple resource metrics so scaling can respond to either constrained dimension."
+          manifestDefinitionId: hpa-autoscaling-v2
+          expectedFields:
+            - path: apiVersion
+              expectedValue: autoscaling/v2
+            - path: kind
+              expectedValue: HorizontalPodAutoscaler
+            - path: metadata.name
+              expectedValue: api-hpa
+            - path: metadata.namespace
+              expectedValue: autoscale
+            - path: spec.scaleTargetRef.apiVersion
+              expectedValue: apps/v1
+            - path: spec.scaleTargetRef.kind
+              expectedValue: Deployment
+            - path: spec.scaleTargetRef.name
+              expectedValue: api
+            - path: spec.minReplicas
+              expectedValue: 2
+            - path: spec.maxReplicas
+              expectedValue: 12
+            - path: spec.metrics.0.type
+              expectedValue: Resource
+            - path: spec.metrics.0.resource.name
+              expectedValue: cpu
+            - path: spec.metrics.0.resource.target.type
+              expectedValue: Utilization
+            - path: spec.metrics.0.resource.target.averageUtilization
+              expectedValue: 65
+            - path: spec.metrics.1.type
+              expectedValue: Resource
+            - path: spec.metrics.1.resource.name
+              expectedValue: memory
+            - path: spec.metrics.1.resource.target.type
+              expectedValue: Utilization
+            - path: spec.metrics.1.resource.target.averageUtilization
+              expectedValue: 70
+      - type: manifest
+        header: "Reference manifest"
+        content: |
+          apiVersion: autoscaling/v2
+          kind: HorizontalPodAutoscaler
+          metadata:
+            name: api-hpa
+            namespace: autoscale
+          spec:
+            scaleTargetRef:
+              apiVersion: apps/v1
+              kind: Deployment
+              name: api
+            minReplicas: 2
+            maxReplicas: 12
+            metrics:
+              - type: Resource
+                resource:
+                  name: cpu
+                  target:
+                    type: Utilization
+                    averageUtilization: 65
+              - type: Resource
+                resource:
+                  name: memory
+                  target:
+                    type: Utilization
+                    averageUtilization: 70
+      - type: question
+        question:
+          questionType: command
+          header: "Check current HPA status in namespace autoscale."
+          hint: "Use kubectl get for HPA objects in the target namespace."
+          correctAnswerInfo: "Status output immediately shows min/max, current metrics, and replica decisions for quick triage."
+          command:
+            executable: kubectl
+            subcommands:
+              - name: get
+              - name: hpa
+            flags:
+              - name: namespace
+                short: n
+                required: true
+                value: autoscale
+      - type: table
+        style: terminal
+        columns: ["NAME", "REFERENCE", "TARGETS", "MINPODS", "MAXPODS", "REPLICAS", "AGE"]
+        rows:
+          - ["api-hpa", "Deployment/api", "52%/65%, 61%/70%", "2", "12", "3", "18s"]
+      - type: question
+        question:
+          questionType: command
+          header: "Describe the HPA to inspect metric and event details."
+          hint: "Use kubectl describe against the HPA resource in autoscale namespace."
+          correctAnswerInfo: "Describe output is the fastest way to catch missing requests, failed metric fetches, or scaling throttles."
+          command:
+            executable: kubectl
+            subcommands:
+              - name: describe
+              - name: hpa
+            positionals:
+              - index: 0
+                required: true
+                value: api-hpa
+                description: hpa name
+            flags:
+              - name: namespace
+                short: n
+                required: true
+                value: autoscale
+      - type: table
+        style: terminal
+        columns: ["EVENT", "MESSAGE"]
+        rows:
+          - ["SuccessfulRescale", "New size: 3; reason: cpu resource utilization above target"]
+    explanation:
+      elements:
+        - type: context
+          text: |
+            HPA tasks are high-yield in CKA because they combine manifest fluency with runtime interpretation.
+
+            Under exam conditions, validate in this order:
+              1. manifest correctness (apiVersion, target ref, metrics)
+              2. `kubectl get hpa` summary
+              3. `kubectl describe hpa` events and metric health
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/
+              text: Horizontal Pod Autoscaling
+            - url: https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale-walkthrough/
+              text: HPA walkthrough
+
+  - title: "Create a Client Certificate and User Credential"
+    category: "Security"
+    hintsEnabled: true
+    elements:
+      - type: context
+        text: |
+          You must onboard user `dev-anna` with organization `team-blue` using Kubernetes certificate authentication.
+
+          Files already exist in your working directory:
+            - `dev-anna.key`
+            - `dev-anna.csr`
+            - `dev-anna.csr.base64` (single-line base64 of CSR content)
+
+          Build and approve the Kubernetes CSR object, then register kubectl credentials from issued cert/key files.
+      - type: question
+        question:
+          questionType: manifest
+          header: "Write the complete CertificateSigningRequest manifest for dev-anna."
+          hint: "Use certificates.k8s.io/v1, include signer, usages for client auth, and place base64 CSR string in request."
+          correctAnswerInfo: "CSR subjects (CN/O) become username and groups for RBAC matching after certificate issuance."
+          manifestDefinitionId: csr-certificates-k8s-io-v1
+          expectedFields:
+            - path: apiVersion
+              expectedValue: certificates.k8s.io/v1
+            - path: kind
+              expectedValue: CertificateSigningRequest
+            - path: metadata.name
+              expectedValue: dev-anna
+            - path: spec.signerName
+              expectedValue: kubernetes.io/kube-apiserver-client
+            - path: spec.expirationSeconds
+              expectedValue: 86400
+            - path: spec.usages.0
+              expectedValue: client auth
+      - type: manifest
+        header: "Reference manifest"
+        content: |
+          apiVersion: certificates.k8s.io/v1
+          kind: CertificateSigningRequest
+          metadata:
+            name: dev-anna
+          spec:
+            request: <BASE64_CSR_CONTENT>
+            signerName: kubernetes.io/kube-apiserver-client
+            expirationSeconds: 86400
+            usages:
+              - client auth
+        footer: "In a real task, replace <BASE64_CSR_CONTENT> with the exact encoded CSR string."
+      - type: question
+        question:
+          questionType: command
+          header: "Approve the certificate signing request named dev-anna."
+          hint: "Use kubectl certificate approval workflow for CSR resources."
+          correctAnswerInfo: "Approval marks the request as allowed for signing; issuance depends on signer/controller behavior."
+          command:
+            executable: kubectl
+            subcommands:
+              - name: certificate
+              - name: approve
+            positionals:
+              - index: 0
+                required: true
+                value: dev-anna
+                description: csr name
+      - type: table
+        style: terminal
+        columns: ["OUTPUT"]
+        rows:
+          - ["certificatesigningrequest.certificates.k8s.io/dev-anna approved"]
+      - type: question
+        question:
+          questionType: command
+          header: "Configure kubectl credentials named dev-anna using cert file dev-anna.crt and key file dev-anna.key with embedded cert data."
+          hint: "Use kubectl config set-credentials with client certificate, key, and embed-certs."
+          correctAnswerInfo: "User identities in kubeconfig are just named credential entries; RBAC bindings decide their permissions."
+          command:
+            executable: kubectl
+            subcommands:
+              - name: config
+              - name: set-credentials
+            positionals:
+              - index: 0
+                required: true
+                value: dev-anna
+                description: credential name
+            flags:
+              - name: client-certificate
+                required: true
+                value: dev-anna.crt
+              - name: client-key
+                required: true
+                value: dev-anna.key
+              - name: embed-certs
+                required: true
+                value: "true"
+      - type: table
+        style: terminal
+        columns: ["OUTPUT"]
+        rows:
+          - ["User \"dev-anna\" set."]
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Kubernetes does not create "users" as API objects; user identity is asserted by external auth material, such as client certs.
+
+            For certificate auth:
+              - certificate subject CN maps to username
+              - subject O entries map to groups
+              - RBAC binds permissions to those identities
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/reference/access-authn-authz/certificate-signing-requests/
+              text: Certificate Signing Requests
+            - url: https://kubernetes.io/docs/reference/access-authn-authz/authentication/
+              text: Authentication in Kubernetes
+
+  - title: "Persist Kernel Tuning via sysctl.conf"
+    category: "Cluster Architecture"
+    hintsEnabled: true
+    elements:
+      - type: context
+        text: |
+          A node preparation checklist requires persistent kernel networking settings.
+
+          Ensure the following key is persisted in `/etc/sysctl.conf` and loaded immediately:
+            - net.ipv4.ip_forward = 1
+      - type: question
+        question:
+          questionType: command
+          header: "Append the required key/value to /etc/sysctl.conf in one command."
+          hint: "Use a shell command that writes the exact line and appends to the file with elevated permissions."
+          correctAnswerInfo: "Persistent sysctl edits survive reboot only when written into config files under /etc."
+          command:
+            executable: sh
+            strictness: permissive
+            flags:
+              - name: c
+                short: c
+                required: true
+      - type: table
+        style: terminal
+        columns: ["OUTPUT"]
+        rows:
+          - [""]
+      - type: question
+        question:
+          questionType: command
+          header: "Reload kernel parameters from configuration files."
+          hint: "Use the sysctl command variant that applies all configured files."
+          correctAnswerInfo: "Applying all config sources catches include files and drop-ins, not only /etc/sysctl.conf."
+          command:
+            executable: sysctl
+            flags:
+              - name: system
+                required: true
+                boolean: true
+      - type: table
+        style: terminal
+        columns: ["KEY", "VALUE"]
+        rows:
+          - ["net.ipv4.ip_forward", "1"]
+      - type: question
+        question:
+          questionType: command
+          header: "Print the effective runtime value for net.ipv4.ip_forward."
+          hint: "Query a single sysctl key directly."
+          correctAnswerInfo: "Runtime validation ensures the setting is active now, not just persisted for reboot."
+          command:
+            executable: sysctl
+            positionals:
+              - index: 0
+                required: true
+                value: net.ipv4.ip_forward
+                description: key name
+      - type: table
+        style: terminal
+        columns: ["OUTPUT"]
+        rows:
+          - ["net.ipv4.ip_forward = 1"]
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Node-level preparation issues frequently break networking or forwarding assumptions in CKA tasks.
+
+            Best practice under pressure:
+              - persist setting
+              - apply immediately
+              - verify runtime value
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/setup/production-environment/container-runtimes/
+              text: Production environment prerequisites
+            - url: https://www.kernel.org/doc/html/latest/admin-guide/sysctl/index.html
+              text: Linux sysctl documentation
+
+  - title: "Enforce Namespace Traffic Rules with NetworkPolicy"
+    category: "Services & Networking"
+    hintsEnabled: true
+    elements:
+      - type: context
+        text: |
+          Namespace: `payments`.
+          You have two app groups:
+            - frontend pods: label `role=frontend`
+            - api pods: label `role=api`
+
+          Requirement:
+            - allow ingress to `role=api` only from pods with `role=frontend`
+            - only allow TCP port 8443
+            - all other ingress to api must be denied
+      - type: question
+        question:
+          questionType: manifest
+          header: "Write the complete NetworkPolicy manifest enforcing this requirement."
+          hint: "Select api pods with podSelector, set Ingress policy type, then constrain from and ports in ingress rules."
+          correctAnswerInfo: "Any traffic path not explicitly allowed by matching ingress rules is denied for selected pods."
+          manifestDefinitionId: networkpolicy-networking-k8s-io-v1
+          expectedFields:
+            - path: apiVersion
+              expectedValue: networking.k8s.io/v1
+            - path: kind
+              expectedValue: NetworkPolicy
+            - path: metadata.name
+              expectedValue: api-ingress-allow-frontend
+            - path: metadata.namespace
+              expectedValue: payments
+            - path: spec.policyTypes.0
+              expectedValue: Ingress
+            - path: spec.podSelector.matchLabels.role
+              expectedValue: api
+            - path: spec.ingress.0.from.0.podSelector.matchLabels.role
+              expectedValue: frontend
+            - path: spec.ingress.0.ports.0.protocol
+              expectedValue: TCP
+            - path: spec.ingress.0.ports.0.port
+              expectedValue: 8443
+      - type: manifest
+        header: "Reference manifest"
+        content: |
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: api-ingress-allow-frontend
+            namespace: payments
+          spec:
+            podSelector:
+              matchLabels:
+                role: api
+            policyTypes:
+              - Ingress
+            ingress:
+              - from:
+                  - podSelector:
+                      matchLabels:
+                        role: frontend
+                ports:
+                  - protocol: TCP
+                    port: 8443
+      - type: question
+        question:
+          questionType: command
+          header: "List network policies in payments namespace to confirm policy presence."
+          hint: "Use kubectl get networkpolicy scoped to the namespace."
+          correctAnswerInfo: "Resource existence is only step one; policy behavior still depends on selectors and ports."
+          command:
+            executable: kubectl
+            subcommands:
+              - name: get
+              - name: networkpolicy
+            flags:
+              - name: namespace
+                short: n
+                required: true
+                value: payments
+      - type: table
+        style: terminal
+        columns: ["NAME", "POD-SELECTOR", "AGE"]
+        rows:
+          - ["api-ingress-allow-frontend", "role=api", "14s"]
+      - type: question
+        question:
+          questionType: single-line
+          header: "A frontend pod still cannot connect. Write the first field you should verify in the policy when symptoms suggest a wrong service target."
+          expectedAnswer: "ports"
+          hint: "If selectors are correct but traffic still fails, check destination protocol/port alignment first."
+          correctAnswerInfo: "Port mismatch is one of the most common causes of failed NetworkPolicy tests even with correct selectors."
+    explanation:
+      elements:
+        - type: context
+          text: |
+            NetworkPolicy failures are often subtle: labels, namespace scope, and especially port mismatches.
+
+            A repeatable debug order is:
+              1. policy selected pods
+              2. source selector match
+              3. protocol and destination port alignment
+              4. CNI policy enforcement capability
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/concepts/services-networking/network-policies/
+              text: Network Policies
+            - url: https://projectcalico.docs.tigera.io/security/kubernetes-network-policy
+              text: Calico Kubernetes Network Policy

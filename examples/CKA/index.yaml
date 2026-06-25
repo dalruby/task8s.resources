@@ -62,6 +62,21 @@ sets:
       - NetworkPolicy
       - Scheduling
       - Hard
+  - name: "CKA Weakpoint Set 2"
+    filename: cka-weakpoint-set-2.yaml
+    description: "Hard exam-style rescue drills for Calico install validation, scp host-to-host transfers, KUBECONFIG correctness, ephemeral debug pods, dashed-IP pod DNS, default StorageClass setup, HPA authoring/verification, CSR user onboarding, sysctl persistence, and NetworkPolicy port-precision troubleshooting."
+    tags:
+      - Calico
+      - Linux Operations
+      - KUBECONFIG
+      - kubectl run
+      - Pod DNS
+      - StorageClass
+      - HPA
+      - CSR
+      - sysctl
+      - NetworkPolicy
+      - Hard
   - name: "CKA: Linux Operations for Exam Tasks"
     filename: cka-linux-ops-for-cka.yaml
     description: "Hard Linux command practice for CKA host-level operations: privilege escalation, systemd service control, journald inspection, filesystem discovery, CRI runtime inspection, archive extraction, and permission hardening."
