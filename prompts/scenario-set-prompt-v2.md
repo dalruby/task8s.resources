@@ -45,6 +45,8 @@ Default to **medium** unless the user specifies otherwise.
 **Manifest questions**
 - Use `autoLoad: true` for standard Kubernetes resources. Set `k8sVersion` at the top level when doing so.
 - After every manifest question, add a `manifest` display element showing the complete correct manifest.
+- `expectedFields` paths use dot notation. For keys that contain literal dots (e.g. Kubernetes annotations), wrap that segment in square brackets: `metadata.annotations[storageclass.kubernetes.io/is-default-class]`.
+- In `cel` expressions, two variables are available: `answer` (the raw YAML string) and `manifest` (the parsed object). Use `answer.contains(...)` for substring checks on dotted annotation keys; use `manifest.metadata.name == 'foo'` for structural field checks.
 
 **`multiple-choice`**
 - Tests recognition, not recall. Only use it when no typed answer type fits, of when explicitly requested by the user.

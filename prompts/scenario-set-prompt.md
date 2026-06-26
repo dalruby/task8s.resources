@@ -574,6 +574,12 @@ expectedFields:
 ```
 
 - `path` uses dot notation. Array indices are numeric (e.g. `spec.containers.0.name`).
+- For keys that contain literal dots — such as Kubernetes annotations — wrap that segment in square brackets:
+  ```yaml
+  - path: "metadata.annotations[storageclass.kubernetes.io/is-default-class]"
+    expectedValue: "true"
+  ```
+  Plain dot-separated paths continue to work as before; brackets are only needed when a key contains a literal `.` (or `/`).
 - `expectedValue` can be any YAML scalar (string, number, boolean).
 
 **Guidance:** Whether to provide `initialContent` is a deliberate difficulty choice. Providing a scaffold (with the required fields left blank) reduces friction and guides the user toward the correct structure. Omitting it entirely requires the user to recall and type the full manifest from memory, which is harder and more realistic for advanced sets. Match the difficulty to the intent of the scenario.
@@ -844,6 +850,20 @@ Any question except `sequence` can define a `cel` field. The behavior differs sl
 - **`single-line` / `multiline`**: CEL *replaces* the default `expectedAnswer` check entirely.
 - **`command`**: CEL runs *after* the structural validator passes. Both must succeed — the structural check validates executable, subcommands, positionals, and flags first; CEL is an additional gate for logic the structural validator cannot express. If the structural check fails, CEL is never evaluated.
 - **`manifest`**: CEL runs alongside `expectedFields` checks (both must pass).
+
+For `manifest` questions, CEL receives two variables:
+
+| Variable | Type | Description |
+|---|---|---|
+| `answer` | string | The raw YAML string the user submitted. Use `answer.contains(...)` or `answer.matches(...)` to search the text directly — useful when a field key contains characters (like dots) that would be ambiguous in a path. |
+| `manifest` | map | The parsed YAML object. Use it to traverse the object graph: `manifest.metadata.name == 'foo'`. |
+
+Both are available simultaneously, so you can combine them:
+```yaml
+cel: >
+  answer.contains('storageclass.kubernetes.io/is-default-class: "true"') ||
+  answer.contains('storageclass.kubernetes.io/is-default-class: true')
+```
 
 For `command` questions, CEL receives a rich context — not just `answer`:
 

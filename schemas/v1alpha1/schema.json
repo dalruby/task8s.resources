@@ -352,7 +352,7 @@
         "path": {
           "type": "string",
           "minLength": 1,
-          "description": "Dot-notation path to the field within the manifest (e.g. 'metadata.name', 'spec.containers.0.image'). Array indices are numeric."
+          "description": "Path to the field within the manifest. Uses dot notation for nested fields and numeric segments for array indices (e.g. 'metadata.name', 'spec.containers.0.image'). For keys that contain literal dots — such as Kubernetes annotations like 'storageclass.kubernetes.io/is-default-class' — wrap that segment in square brackets: 'metadata.annotations[storageclass.kubernetes.io/is-default-class]'."
         },
         "expectedValue": {
           "description": "The value the field must equal. Can be a string, number, or boolean."
@@ -377,7 +377,7 @@
         },
         "cel": {
           "type": "string",
-          "description": "CEL (Common Expression Language) expression for custom validation logic. For single-line and multiline questions, replaces the expectedAnswer check entirely. For command questions, runs as an additional gate after structural validation passes. For manifest questions, runs alongside expectedFields. The bound variable 'answer' always contains the raw input string. Command questions also expose: executable, subcommands, positionals, flags, unknownFlags, extras."
+          "description": "CEL (Common Expression Language) expression for custom validation logic. For single-line and multiline questions, replaces the expectedAnswer check entirely. For command questions, runs as an additional gate after structural validation passes. For manifest questions, runs alongside expectedFields. The bound variable 'answer' always contains the raw input string. For manifest questions, 'manifest' is also bound to the parsed YAML object, so you can traverse fields (e.g. manifest.metadata.name == 'foo') in addition to string-searching the raw YAML with answer.contains(...). Command questions also expose: executable, subcommands, positionals, flags, unknownFlags, extras."
         }
       }
     },
