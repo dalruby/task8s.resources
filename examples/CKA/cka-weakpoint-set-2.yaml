@@ -158,25 +158,57 @@ scenarios:
           You have key-based access and must avoid interactive prompts where possible.
       - type: question
         question:
-          questionType: single-line
+          questionType: command
           header: "Copy /etc/kubernetes/admin.conf from host cp-1 to your current local directory using user exam and key /home/exam/.ssh/id_rsa."
-          expectedAnswer: "scp -i /home/exam/.ssh/id_rsa exam@cp-1:/etc/kubernetes/admin.conf ."
           hint: "For remote-to-local copy, the source is user@host:path and the destination is local path dot."
           correctAnswerInfo: "scp supports direct remote path syntax in one command; key selection avoids password prompts."
+          command:
+            executable: scp
+            flags:
+              - flag: "-i"
+                value: /home/exam/.ssh/id_rsa
+                required: true
+            positionals:
+              - index: 0
+                value: exam@cp-1:/etc/kubernetes/admin.conf
+              - index: 1
+                value: "."
       - type: question
         question:
-          questionType: single-line
+          questionType: command
           header: "Copy local file /tmp/backup/etcd.db to host cp-2 at /var/lib/etcd-backups/ using user exam and the same SSH key."
-          expectedAnswer: "scp -i /home/exam/.ssh/id_rsa /tmp/backup/etcd.db exam@cp-2:/var/lib/etcd-backups/"
           hint: "For local-to-remote copy, place local source first and remote target second."
           correctAnswerInfo: "Remember directionality under pressure: source then destination, regardless of local or remote side."
+          command:
+            executable: scp
+            flags:
+              - flag: "-i"
+                value: /home/exam/.ssh/id_rsa
+                required: true
+            positionals:
+              - index: 0
+                value: /tmp/backup/etcd.db
+              - index: 1
+                value: exam@cp-2:/var/lib/etcd-backups/
       - type: question
         question:
-          questionType: single-line
+          questionType: command
           header: "Recursively copy local directory /opt/manifests to host worker-1 path /tmp/ using user exam and key /home/exam/.ssh/id_rsa."
-          expectedAnswer: "scp -i /home/exam/.ssh/id_rsa -r /opt/manifests exam@worker-1:/tmp/"
           hint: "Directory copy requires the recursive option."
           correctAnswerInfo: "Missing recursive mode is a common failure when transferring manifest trees during troubleshooting tasks."
+          command:
+            executable: scp
+            flags:
+              - flag: "-i"
+                value: /home/exam/.ssh/id_rsa
+                required: true
+              - flag: "-r"
+                required: true
+            positionals:
+              - index: 0
+                value: /opt/manifests
+              - index: 1
+                value: exam@worker-1:/tmp/
     explanation:
       elements:
         - type: context
@@ -425,7 +457,7 @@ scenarios:
               expectedValue: StorageClass
             - path: metadata.name
               expectedValue: fast-ssd
-            - path: metadata.annotations.storageclass.kubernetes.io/is-default-class
+            - path: "metadata.annotations[storageclass.kubernetes.io/is-default-class]"
               expectedValue: "true"
             - path: provisioner
               expectedValue: csi.example.com
