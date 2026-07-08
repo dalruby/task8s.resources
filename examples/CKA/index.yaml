@@ -96,3 +96,12 @@ sets:
       - Productivity
       - Troubleshooting
       - Hard
+  - name: "CKA: Pod Security Admission & Standards"
+    filename: pod-security-admission.yaml
+    description: "Hard practice for the 2026 CKA curriculum's Pod admission objective: why PodSecurityPolicy is gone, configuring Pod Security Standards (privileged/baseline/restricted) via Namespace labels, independently tuning enforce/warn/audit modes, fixing Pods rejected by the restricted and baseline standards, and verifying admission with server-side dry-run."
+    tags:
+      - Pod Security
+      - Security Context
+      - Cluster Architecture
+      - Troubleshooting
+      - Hard

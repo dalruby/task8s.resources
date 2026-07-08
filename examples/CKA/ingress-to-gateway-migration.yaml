@@ -90,8 +90,8 @@ scenarios:
                - listener http:  port 80,  protocol HTTP,  hostname "*.example.com"
                - listener https: port 443, protocol HTTPS, hostname "*.example.com"
                - https listener TLS terminate with Secret shop-example-tls
-            2. Create one HTTPRoute for shop.example.com attached to https listener.
-            3. Create one HTTPRoute for admin.example.com attached to https listener.
+            2. Create one HTTPRoute named `shop-route` for shop.example.com attached to https listener.
+            3. Create one HTTPRoute named `admin-route` for admin.example.com attached to https listener.
       - type: manifest
         header: "Current Ingress configuration"
         content: |
@@ -176,7 +176,7 @@ scenarios:
       - type: question
         question:
           questionType: manifest
-          header: "Write the full HTTPRoute for host shop.example.com attached to the https listener."
+          header: "Write the full HTTPRoute named shop-route for host shop.example.com attached to the https listener."
           manifestDefinitionId: httproute-v1
           expectedFields:
             - path: apiVersion
@@ -212,7 +212,7 @@ scenarios:
       - type: question
         question:
           questionType: manifest
-          header: "Write the full HTTPRoute for host admin.example.com attached to the https listener."
+          header: "Write the full HTTPRoute named admin-route for host admin.example.com attached to the https listener."
           manifestDefinitionId: httproute-v1
           expectedFields:
             - path: apiVersion
@@ -530,7 +530,8 @@ scenarios:
 
           Create both resources:
             1. Gateway edge/corp-gw with HTTPS listener and certificateRefs namespace certs
-            2. ReferenceGrant in namespace certs allowing Gateway from namespace edge to reference Secret
+            2. ReferenceGrant named `allow-edge-gateway-secret-ref` in namespace certs allowing Gateway
+               from namespace edge to reference Secret
       - type: question
         question:
           questionType: manifest
@@ -566,7 +567,7 @@ scenarios:
       - type: question
         question:
           questionType: manifest
-          header: "Write the full ReferenceGrant manifest required in namespace certs."
+          header: "Write the full ReferenceGrant manifest named allow-edge-gateway-secret-ref required in namespace certs."
           manifestDefinitionId: referencegrant-v1
           expectedFields:
             - path: apiVersion
@@ -617,7 +618,7 @@ scenarios:
           Existing Gateway in namespace edge:
             - listener https hostname: "*.corp.example.com"
 
-          Write a correct HTTPRoute in namespace edge for service `reports-svc:8080` that:
+          Write a correct HTTPRoute named `reports-route` in namespace edge for service `reports-svc:8080` that:
             - attaches to parent shared-gw sectionName https
             - uses hostname reports.corp.example.com
             - routes /reports prefix to reports-svc:8080
@@ -631,7 +632,7 @@ scenarios:
       - type: question
         question:
           questionType: manifest
-          header: "Write the full corrected HTTPRoute manifest."
+          header: "Write the full corrected HTTPRoute manifest named reports-route."
           manifestDefinitionId: httproute-v1
           expectedFields:
             - path: apiVersion

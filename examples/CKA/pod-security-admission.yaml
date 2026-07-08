@@ -1,0 +1,357 @@
+apiVersion: v1alpha1
+name: "CKA: Pod Security Admission & Standards"
+k8sVersion: "1.35.0"
+
+timing:
+  enabled: true
+  limitSeconds: 5400
+
+introduction:
+  elements:
+    - type: context
+      text: |
+        This scenario set targets the CKA Cluster Architecture, Installation and Configuration
+        domain objective to "Configure Pod admission and scheduling," specifically the Pod
+        security portion of that objective.
+
+        Scope covered:
+          - why PodSecurityPolicy is no longer part of the exam's mental model
+          - the three Pod Security Standards: privileged, baseline, restricted
+          - configuring Pod Security Admission per-Namespace via labels
+          - independently tuning enforce, warn, and audit modes
+          - fixing Pods rejected by the restricted and baseline standards
+          - verifying admission outcomes without creating real objects
+
+        The exam is hands-on and time-bound. All manifest questions in this set require full
+        manifests from memory, including metadata. No syntax scaffolding is provided.
+    - type: break
+    - type: context
+      text: |
+        Important assumptions:
+          - Pod Security Admission is a built-in, always-on admission controller — there is
+            nothing to install or enable
+          - no PodSecurityPolicy objects, webhooks, or third-party policy engines are involved
+            in this set
+    - type: references
+      links:
+        - url: https://training.linuxfoundation.org/certification/certified-kubernetes-administrator-cka/
+          text: CKA Domains and Competencies
+        - url: https://kubernetes.io/docs/concepts/security/pod-security-standards/
+          text: Pod Security Standards - Kubernetes Docs
+        - url: https://kubernetes.io/docs/concepts/security/pod-security-admission/
+          text: Pod Security Admission - Kubernetes Docs
+        - url: https://kubernetes.io/docs/tutorials/security/cluster-level-pss/
+          text: Apply Pod Security Standards at the Cluster Level
+
+manifestDefinitions:
+  - id: namespace-v1
+    kind: Namespace
+    apiVersion: v1
+    autoLoad: true
+  - id: pod-v1
+    kind: Pod
+    apiVersion: v1
+    autoLoad: true
+
+scenarios:
+  - title: "Know Your History: PodSecurityPolicy Is Gone"
+    category: "Pod Security Fundamentals"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          Older study material still teaches PodSecurityPolicy as the way to restrict what Pods
+          are allowed to do. That object and its admission controller no longer exist in any
+          currently supported Kubernetes release, and relying on it will cost you time on exam day.
+      - type: question
+        question:
+          questionType: single-line
+          header: "In which Kubernetes minor version was PodSecurityPolicy completely removed?"
+          expectedAnswer: "1.25"
+          cel: "answer.contains('1.25')"
+    explanation:
+      elements:
+        - type: context
+          text: |
+            PodSecurityPolicy was deprecated in v1.21 and fully removed in v1.25. Its replacement,
+            Pod Security Admission, evaluates Pods against the Pod Security Standards (privileged,
+            baseline, restricted) using labels on the Pod's Namespace — no separate policy object
+            to author, bind, or troubleshoot RBAC access for.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/concepts/security/pod-security-policy/
+              text: PodSecurityPolicy (Deprecated/Removed)
+            - url: https://kubernetes.io/docs/concepts/security/pod-security-standards/
+              text: Pod Security Standards
+
+  - title: "Enforce the Restricted Standard on a Namespace"
+    category: "Pod Security Admission"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          Namespace `team-falcon` will host a new set of workloads that must never run with
+          elevated privileges, host access, or unconfined capabilities. You need Kubernetes
+          itself to outright reject any Pod submitted to this Namespace that doesn't meet the
+          strictest Pod Security Standard, and you want that decision pinned so it doesn't
+          silently change behavior on a future cluster upgrade.
+      - type: question
+        question:
+          questionType: manifest
+          header: "Write the full Namespace manifest for team-falcon meeting these requirements."
+          manifestDefinitionId: namespace-v1
+          expectedFields:
+            - path: apiVersion
+              expectedValue: v1
+            - path: kind
+              expectedValue: Namespace
+            - path: metadata.name
+              expectedValue: team-falcon
+            - path: "metadata.labels[pod-security.kubernetes.io/enforce]"
+              expectedValue: restricted
+            - path: "metadata.labels[pod-security.kubernetes.io/enforce-version]"
+              expectedValue: latest
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Pod Security Admission is configured entirely through labels on the Namespace object —
+            there is no separate policy resource to create. `pod-security.kubernetes.io/enforce`
+            selects the standard that blocks non-compliant Pods at admission time, and the matching
+            `-version` label pins which version of that standard's rule set applies, so an upgrade
+            to a newer Kubernetes release does not silently tighten or loosen enforcement.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/concepts/security/pod-security-admission/
+              text: Pod Security Admission
+            - url: https://kubernetes.io/docs/tutorials/security/cluster-level-pss/
+              text: Apply Pod Security Standards at the Cluster Level
+
+  - title: "Configure Independent Enforce, Warn, and Audit Modes"
+    category: "Pod Security Admission"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          Namespace `team-hawk` is mid-migration toward stricter security. Workloads that don't
+          even meet the minimum baseline expectations must still be blocked outright. However,
+          for the stricter tier the team is aiming for next, you only want visibility for now:
+          non-compliant submissions should be flagged back to the submitting client and recorded
+          in the API audit log, without being blocked yet.
+      - type: question
+        question:
+          questionType: manifest
+          header: "Write the full Namespace manifest for team-hawk meeting these requirements."
+          manifestDefinitionId: namespace-v1
+          expectedFields:
+            - path: apiVersion
+              expectedValue: v1
+            - path: kind
+              expectedValue: Namespace
+            - path: metadata.name
+              expectedValue: team-hawk
+            - path: "metadata.labels[pod-security.kubernetes.io/enforce]"
+              expectedValue: baseline
+            - path: "metadata.labels[pod-security.kubernetes.io/warn]"
+              expectedValue: restricted
+            - path: "metadata.labels[pod-security.kubernetes.io/audit]"
+              expectedValue: restricted
+    explanation:
+      elements:
+        - type: context
+          text: |
+            The three modes operate independently and can each target a different standard:
+              - enforce blocks non-compliant Pods outright
+              - warn returns a client-visible warning but still admits the Pod
+              - audit adds an annotation to the audit log entry, with no client-visible effect
+            Setting enforce to a looser standard than warn/audit is the standard way to preview
+            the effect of a future tightening before actually blocking anything.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/concepts/security/pod-security-admission/#pod-security-admission-labels-for-namespaces
+              text: Pod Security Admission Labels for Namespaces
+
+  - title: "Fix a Pod Rejected by the Restricted Standard"
+    category: "Pod Security Admission"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          Namespace `team-falcon-workloads` enforces the restricted Pod Security Standard, pinned
+          to latest. A teammate submitted the Pod below and the API server rejected it, citing
+          several restricted-profile violations. Fix the security-related fields only — the
+          container name, image, and command must stay exactly as shown.
+      - type: manifest
+        header: "Rejected Pod manifest"
+        content: |
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: worker
+            namespace: team-falcon-workloads
+          spec:
+            containers:
+              - name: worker
+                image: busybox:1.36
+                command: ["sleep", "3600"]
+      - type: question
+        question:
+          questionType: manifest
+          header: "Write the corrected Pod manifest so it is admitted by the restricted standard."
+          manifestDefinitionId: pod-v1
+          expectedFields:
+            - path: metadata.name
+              expectedValue: worker
+            - path: metadata.namespace
+              expectedValue: team-falcon-workloads
+            - path: spec.securityContext.runAsNonRoot
+              expectedValue: true
+            - path: spec.securityContext.runAsUser
+              expectedValue: 1000
+            - path: spec.containers.0.name
+              expectedValue: worker
+            - path: spec.containers.0.image
+              expectedValue: busybox:1.36
+            - path: spec.containers.0.securityContext.allowPrivilegeEscalation
+              expectedValue: false
+            - path: spec.containers.0.securityContext.capabilities.drop.0
+              expectedValue: ALL
+            - path: spec.containers.0.securityContext.seccompProfile.type
+              expectedValue: RuntimeDefault
+      - type: table
+        style: terminal
+        columns: [REQUIREMENT, WHY THE ORIGINAL FAILED]
+        rows:
+          - ["run as UID 1000, not root", "no securityContext at all defaults to running as the image's root user"]
+          - ["allowPrivilegeEscalation: false", "unset is treated as escalation-capable"]
+          - ["capabilities.drop: [ALL]", "unset containers retain the full default capability set"]
+          - ["seccompProfile.type: RuntimeDefault", "unset leaves the syscall filter unconfined"]
+    explanation:
+      elements:
+        - type: context
+          text: |
+            The restricted standard is the strictest tier and requires all of the following to be
+            explicit — omission is treated as non-compliant, not as an acceptable default:
+              - the effective user must not be root (runAsNonRoot: true, typically paired with a
+                fixed runAsUser)
+              - allowPrivilegeEscalation must be false
+              - all Linux capabilities must be dropped, with only NET_BIND_SERVICE addable back
+              - a seccomp profile of RuntimeDefault or Localhost must be set
+
+            This is also why restricted is rarely applied retroactively to legacy workloads without
+            first testing in warn/audit mode, as shown in the previous scenario.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/concepts/security/pod-security-standards/#restricted
+              text: Pod Security Standards - Restricted
+            - url: https://kubernetes.io/docs/tasks/configure-pod-container/security-context/
+              text: Configure a Security Context for a Pod or Container
+
+  - title: "Diagnose a Baseline Violation from Host Namespaces"
+    category: "Pod Security Admission"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          Namespace `edge-baseline` enforces the baseline Pod Security Standard — the minimally
+          restrictive tier that still blocks well-known privilege-escalation vectors. A teammate's
+          debugging Pod below was rejected on submission. Fix the security-related fields only —
+          the container name and image must stay exactly as shown.
+      - type: manifest
+        header: "Rejected Pod manifest"
+        content: |
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: netdebug
+            namespace: edge-baseline
+          spec:
+            hostNetwork: true
+            hostPID: true
+            containers:
+              - name: netdebug
+                image: nicolaka/netshoot
+                securityContext:
+                  privileged: true
+      - type: question
+        question:
+          questionType: manifest
+          header: "Write the corrected Pod manifest so it is admitted by the baseline standard."
+          manifestDefinitionId: pod-v1
+          expectedFields:
+            - path: metadata.name
+              expectedValue: netdebug
+            - path: metadata.namespace
+              expectedValue: edge-baseline
+            - path: spec.hostNetwork
+              expectedValue: false
+            - path: spec.hostPID
+              expectedValue: false
+            - path: spec.containers.0.name
+              expectedValue: netdebug
+            - path: spec.containers.0.image
+              expectedValue: nicolaka/netshoot
+            - path: spec.containers.0.securityContext.privileged
+              expectedValue: false
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Baseline blocks the coarse, well-known escalation paths: sharing the host's network,
+            PID, or IPC namespace, running privileged containers, mounting hostPath volumes, and a
+            handful of dangerous capabilities and sysctls. It does not require the fine-grained
+            controls that restricted does, such as mandatory seccomp profiles or a specific
+            non-root UID — this is what makes it a realistic default for workloads that aren't
+            fully hardened yet.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/concepts/security/pod-security-standards/#baseline
+              text: Pod Security Standards - Baseline
+
+  - title: "Verify Admission Without Creating a Real Object"
+    category: "Troubleshooting"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          Before rolling out a new base image to the `team-falcon` Namespace, which enforces the
+          restricted standard, you want to confirm the API server would accept a bare Pod named
+          `probe` running the `nginx` image — without actually creating any object in the cluster,
+          and without relying on client-side manifest linting alone.
+      - type: question
+        question:
+          questionType: command
+          header: "Run the command that answers this, testing against the real API server."
+          command:
+            executable: kubectl
+            subcommands:
+              - name: run
+            positionals:
+              - index: 0
+                required: true
+                value: probe
+                description: pod name
+            flags:
+              - name: image
+                required: true
+                value: nginx
+              - name: namespace
+                short: "n"
+                required: true
+                value: team-falcon
+              - name: dry-run
+                required: true
+                value: server
+    explanation:
+      elements:
+        - type: context
+          text: |
+            `--dry-run=server` sends the request all the way to the API server — including
+            admission control — and reports the result without persisting anything. This is the
+            only dry-run mode that actually exercises Pod Security Admission; `--dry-run=client`
+            only validates the manifest shape locally and would not catch a restricted-standard
+            rejection at all.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/reference/using-api/api-concepts/#dry-run
+              text: API Concepts - Dry-Run
