@@ -105,3 +105,17 @@ sets:
       - Cluster Architecture
       - Troubleshooting
       - Hard
+  - name: "CKA-PREP 2025: Community Practice Set"
+    filename: cka-prep-2025-conversion.yaml
+    description: "All 19 questions from the community CKA-PREP-2025-v2 practice repository, one scenario per question in original order: persistent volumes, Helm-based Argo CD install, sidecar containers, resource sizing, HPA, CRDs, PriorityClass, CNI install, cri-dockerd, taints/tolerations, Gateway API migration, Ingress, NetworkPolicy least-privilege selection, StorageClass defaulting, an etcd port misconfiguration fix, NodePort services, TLS ConfigMap rotation, kubectl patch, and node-aware resource requests."
+    tags:
+      - Storage
+      - Workloads
+      - Autoscaling
+      - Scheduling
+      - Networking
+      - Gateway API
+      - Services & Networking
+      - Troubleshooting
+      - TLS
+      - Community

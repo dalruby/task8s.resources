@@ -1,0 +1,1371 @@
+apiVersion: v1alpha1
+name: "CKA-PREP 2025: Community Practice Set"
+k8sVersion: "1.34.0"
+
+timing:
+  enabled: true
+  limitSeconds: 7200
+
+introduction:
+  elements:
+    - type: context
+      text: |
+        This set adapts all 19 questions from the community practice repository
+        [markdjones82/CKA-PREP-2025-v2](https://github.com/markdjones82/CKA-PREP-2025-v2), one
+        scenario per question, in the same order as the original repository.
+
+        Each original question is a live-cluster lab: a setup script creates starting resources
+        (sometimes intentionally broken or incomplete), and a validation script checks the real
+        cluster state afterward. task8s can't run a live cluster, so every question here is
+        translated into what it actually tests: either the exact manifest you'd write/fix, or the
+        exact command you'd type. Where the original question showed you a starting manifest to
+        edit, that manifest is shown here too, exactly as the setup script created it.
+    - type: break
+    - type: context
+      text: |
+        A few of the original questions (installing Argo CD via Helm, installing a CNI, installing
+        cri-dockerd) are fundamentally "run this real installation and let it converge" tasks with
+        no meaningful manifest to grade. Those are kept as command questions testing the exact
+        command line you'd type — the same thing the original repo's own validate.bash scripts
+        ultimately check for (that the right thing was installed with the right flags), just without
+        the live cluster underneath.
+    - type: references
+      links:
+        - url: https://github.com/markdjones82/CKA-PREP-2025-v2
+          text: Source repository - CKA-PREP-2025-v2
+
+manifestDefinitions:
+  - id: pvc-v1
+    kind: PersistentVolumeClaim
+    apiVersion: v1
+    autoLoad: true
+  - id: deployment-v1
+    kind: Deployment
+    apiVersion: apps/v1
+    autoLoad: true
+  - id: hpa-v2
+    kind: HorizontalPodAutoscaler
+    apiVersion: autoscaling/v2
+    autoLoad: true
+  - id: priorityclass-v1
+    kind: PriorityClass
+    apiVersion: scheduling.k8s.io/v1
+    autoLoad: true
+  - id: pod-v1
+    kind: Pod
+    apiVersion: v1
+    autoLoad: true
+  - id: gateway-v1
+    kind: Gateway
+    apiVersion: gateway.networking.k8s.io/v1
+    schema:
+      type: object
+  - id: httproute-v1
+    kind: HTTPRoute
+    apiVersion: gateway.networking.k8s.io/v1
+    schema:
+      type: object
+  - id: ingress-v1
+    kind: Ingress
+    apiVersion: networking.k8s.io/v1
+    autoLoad: true
+  - id: service-v1
+    kind: Service
+    apiVersion: v1
+    autoLoad: true
+  - id: storageclass-v1
+    kind: StorageClass
+    apiVersion: storage.k8s.io/v1
+    autoLoad: true
+  - id: configmap-v1
+    kind: ConfigMap
+    apiVersion: v1
+    autoLoad: true
+
+scenarios:
+  # ── Question 1: MariaDB Persistent Volume ──────────────────────────────────
+  - title: "Question 1: MariaDB — Persistent Volume"
+    category: "Storage"
+    elements:
+      - type: context
+        text: |
+          A user accidentally deleted the MariaDB Deployment in the `mariadb` namespace. The
+          Deployment was configured with persistent storage. A single PersistentVolume named
+          `mariadb-pv` already exists, retained and ready for reuse — do not create another one.
+      - type: question
+        question:
+          questionType: manifest
+          header: "Create a PersistentVolumeClaim named mariadb in the mariadb namespace: accessMode ReadWriteOnce, storage 250Mi."
+          manifestDefinitionId: pvc-v1
+          expectedFields:
+            - path: metadata.name
+              expectedValue: mariadb
+            - path: metadata.namespace
+              expectedValue: mariadb
+            - path: spec.accessModes.0
+              expectedValue: ReadWriteOnce
+            - path: spec.resources.requests.storage
+              expectedValue: 250Mi
+      - type: manifest
+        header: "The Deployment file at ~/mariadb-deploy.yaml, left with the claimName blank for you to fill in:"
+        content: |
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: mariadb
+            namespace: mariadb
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: mariadb
+            template:
+              metadata:
+                labels:
+                  app: mariadb
+              spec:
+                containers:
+                - name: mariadb
+                  image: mariadb:10.6
+                  env:
+                  - name: MYSQL_ROOT_PASSWORD
+                    value: rootpass
+                  volumeMounts:
+                  - name: mariadb-storage
+                    mountPath: /var/lib/mysql
+                volumes:
+                - name: mariadb-storage
+                  persistentVolumeClaim:
+                    claimName: ""
+      - type: question
+        question:
+          questionType: manifest
+          header: "Edit the Deployment above so it mounts the PVC you just created, then this would be applied."
+          manifestDefinitionId: deployment-v1
+          expectedFields:
+            - path: metadata.name
+              expectedValue: mariadb
+            - path: metadata.namespace
+              expectedValue: mariadb
+            - path: spec.template.spec.volumes.0.persistentVolumeClaim.claimName
+              expectedValue: mariadb
+    explanation:
+      elements:
+        - type: context
+          text: |
+            The PV already exists and is Retained, so only the PVC needs creating — a PVC without
+            an explicit `storageClassName` or `volumeName` binds to any PV whose access modes,
+            capacity, and storage class match. Setting `claimName` on the Deployment's volume is
+            what actually connects the running Pod to that claim; nothing else about the Deployment
+            needed to change.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/concepts/storage/persistent-volumes/
+              text: Persistent Volumes
+            - url: https://youtu.be/aXvvc1EB1zg
+              text: "Video walkthrough"
+
+  # ── Question 2: ArgoCD via Helm ─────────────────────────────────────────────
+  - title: "Question 2: ArgoCD — Install via Helm (No CRDs)"
+    category: "GitOps"
+    elements:
+      - type: context
+        text: |
+          Argo CD's CRDs are already pre-installed in this cluster. You must install Argo CD via
+          Helm while explicitly preventing the chart from installing its own CRDs a second time.
+      - type: question
+        question:
+          questionType: command
+          header: "Add the official Argo CD Helm repository under the name argocd."
+          command:
+            executable: helm
+            subcommands:
+              - name: repo
+              - name: add
+            positionals:
+              - index: 0
+                required: true
+                value: argocd
+                description: repo name
+              - index: 1
+                required: true
+                value: https://argoproj.github.io/argo-helm
+                description: repo URL
+      - type: question
+        question:
+          questionType: command
+          header: "Generate the rendered manifest for chart version 7.7.3 into the argocd namespace, with CRD installation disabled via the chart's own value (not --skip-crds)."
+          hint: "Search the chart's default values for a value named 'crds' — set it to false."
+          command:
+            executable: helm
+            subcommands:
+              - name: template
+            positionals:
+              - index: 0
+                required: true
+                value: argocd
+                description: release name
+              - index: 1
+                required: true
+                value: argocd/argo-cd
+                description: chart reference
+            flags:
+              - name: version
+                required: true
+                value: "7.7.3"
+              - name: namespace
+                required: true
+                value: argocd
+              - name: set
+                required: true
+                regex: 'crds\.install\s*=\s*false'
+    explanation:
+      elements:
+        - type: context
+          text: |
+            `--skip-crds` only works for charts that ship CRDs through Helm's dedicated `crds/`
+            directory. Some charts, including argo-cd, install their CRDs as regular templates
+            gated by a chart value instead — `--skip-crds` has no effect on those, and you have to
+            find and disable the specific value (`crds.install` for argo-cd) via `--set`.
+        - type: references
+          links:
+            - url: https://helm.sh/docs/helm/helm_template/
+              text: helm template
+            - url: https://youtu.be/e0YGRSjb8CU
+              text: "Video walkthrough"
+
+  # ── Question 3: Sidecar Container ───────────────────────────────────────────
+  - title: "Question 3: Sidecar Container"
+    category: "Workloads"
+    elements:
+      - type: context
+        text: |
+          The existing `wordpress` Deployment below writes its own log lines to
+          `/var/log/wordpress.log` inside the container, but nothing else can see that file — it
+          isn't on a shared volume.
+      - type: manifest
+        header: "Existing wordpress Deployment:"
+        content: |
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: wordpress
+            namespace: default
+            labels:
+              app: wordpress
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: wordpress
+            template:
+              metadata:
+                labels:
+                  app: wordpress
+              spec:
+                containers:
+                - name: wordpress
+                  image: wordpress:php8.2-apache
+                  command: ["/bin/sh", "-c", "while true; do echo 'WordPress is running...' >> /var/log/wordpress.log; sleep 5; done"]
+                  ports:
+                  - containerPort: 80
+      - type: question
+        question:
+          questionType: manifest
+          header: "Add a co-located sidecar container named sidecar (image busybox:stable) that tails that log file, sharing it with the main container via an emptyDir volume mounted at /var/log in both containers."
+          hint: "Use tail -F (capital F), not tail -f — it survives log rotation, which -f does not."
+          manifestDefinitionId: deployment-v1
+          expectedFields:
+            - path: metadata.name
+              expectedValue: wordpress
+            - path: spec.template.spec.volumes.0.name
+              expectedValue: logs
+            - path: spec.template.spec.volumes.0.emptyDir
+              expectedValue: {}
+            - path: spec.template.spec.containers.0.name
+              expectedValue: wordpress
+            - path: spec.template.spec.containers.0.volumeMounts.0.mountPath
+              expectedValue: /var/log
+            - path: spec.template.spec.containers.1.name
+              expectedValue: sidecar
+            - path: spec.template.spec.containers.1.image
+              expectedValue: busybox:stable
+            - path: spec.template.spec.containers.1.command.0
+              expectedValue: sh
+            - path: spec.template.spec.containers.1.command.1
+              expectedValue: "-c"
+            - path: spec.template.spec.containers.1.command.2
+              expectedValue: tail -F /var/log/wordpress.log
+            - path: spec.template.spec.containers.1.volumeMounts.0.mountPath
+              expectedValue: /var/log
+    explanation:
+      elements:
+        - type: context
+          text: |
+            This is the exam-preferred pattern: a regular co-located container added alongside the
+            main container (n+1 containers in one Pod), not a Kubernetes 1.29+ native sidecar
+            (`initContainers` with `restartPolicy: Always`) — that native form exists mainly for
+            Jobs, where a normal extra container would keep the Job alive forever. For a
+            Deployment, a plain second container in `containers[]` is what's expected.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/concepts/workloads/pods/sidecar-containers/
+              text: Sidecar Containers
+            - url: https://youtu.be/3xraEGGQJDY
+              text: "Video walkthrough"
+
+  # ── Question 4: Resource Allocation ─────────────────────────────────────────
+  - title: "Question 4: Resource Allocation"
+    category: "Workloads"
+    elements:
+      - type: context
+        text: |
+          The single node in this cluster reports exactly 1000m CPU and 1800Mi memory allocatable
+          (`kubectl describe node` under `Allocatable:`). The `wordpress` Deployment below has 3
+          replicas, and each Pod runs an init container plus a main container — six containers
+          total across the Deployment, all needing to fit within that one node's capacity with
+          headroom to spare.
+      - type: manifest
+        header: "Existing wordpress Deployment (no resources set):"
+        content: |
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: wordpress
+          spec:
+            replicas: 3
+            selector:
+              matchLabels:
+                app: wordpress
+            template:
+              metadata:
+                labels:
+                  app: wordpress
+              spec:
+                initContainers:
+                - name: init-setup
+                  image: busybox
+                  command: ["sh", "-c", "echo 'Preparing environment...' && sleep 5"]
+                containers:
+                - name: wordpress
+                  image: wordpress:6.2-apache
+                  ports:
+                  - containerPort: 80
+      - type: question
+        question:
+          questionType: command
+          header: "Pause the workload before editing it: scale wordpress to 0 replicas."
+          command:
+            executable: kubectl
+            subcommands:
+              - name: scale
+            positionals:
+              - index: 0
+                required: true
+                value: deployment/wordpress
+                description: target
+            flags:
+              - name: replicas
+                required: true
+                value: "0"
+      - type: question
+        question:
+          questionType: manifest
+          header: "Divide the node's resources evenly across all six containers (both init and main, same value for both), leaving scheduling headroom."
+          hint: "1000m / 6 and 1800Mi / 6, then round down slightly for headroom."
+          manifestDefinitionId: deployment-v1
+          expectedFields:
+            - path: metadata.name
+              expectedValue: wordpress
+            - path: spec.template.spec.initContainers.0.resources.requests.cpu
+              expectedValue: 150m
+            - path: spec.template.spec.initContainers.0.resources.requests.memory
+              expectedValue: 250Mi
+            - path: spec.template.spec.initContainers.0.resources.limits.cpu
+              expectedValue: 160m
+            - path: spec.template.spec.initContainers.0.resources.limits.memory
+              expectedValue: 300Mi
+            - path: spec.template.spec.containers.0.resources.requests.cpu
+              expectedValue: 150m
+            - path: spec.template.spec.containers.0.resources.requests.memory
+              expectedValue: 250Mi
+            - path: spec.template.spec.containers.0.resources.limits.cpu
+              expectedValue: 160m
+            - path: spec.template.spec.containers.0.resources.limits.memory
+              expectedValue: 300Mi
+      - type: question
+        question:
+          questionType: command
+          header: "Resume the workload: scale wordpress back to 3 replicas."
+          command:
+            executable: kubectl
+            subcommands:
+              - name: scale
+            positionals:
+              - index: 0
+                required: true
+                value: deployment/wordpress
+                description: target
+            flags:
+              - name: replicas
+                required: true
+                value: "3"
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Both the init container and the main container occupy the node "simultaneously" from a
+            scheduling standpoint for this exercise — Kubernetes sums the highest of (max init
+            container request, sum of main container requests) per Pod, but treating every
+            container identically here keeps the arithmetic exam-safe: 1000m / 6 ≈ 166m and
+            1800Mi / 6 = 300Mi, then requests are set a little under that split (150m / 250Mi) to
+            leave scheduling headroom, with limits closer to the raw split (160m / 300Mi).
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+              text: Resource Management for Pods and Containers
+            - url: https://youtu.be/ZqGDdETii8c
+              text: "Video walkthrough"
+
+  # ── Question 5: HPA ─────────────────────────────────────────────────────────
+  - title: "Question 5: HorizontalPodAutoscaler"
+    category: "Autoscaling"
+    elements:
+      - type: context
+        text: |
+          The `apache-deployment` Deployment already exists in the `autoscale` namespace. It needs
+          an HPA that reacts to average CPU utilization across its Pods.
+      - type: question
+        question:
+          questionType: manifest
+          header: "Create an HPA named apache-server targeting apache-deployment: 50% CPU target, 1-4 replicas, 30s downscale stabilization window."
+          manifestDefinitionId: hpa-v2
+          expectedFields:
+            - path: metadata.name
+              expectedValue: apache-server
+            - path: metadata.namespace
+              expectedValue: autoscale
+            - path: spec.scaleTargetRef.kind
+              expectedValue: Deployment
+            - path: spec.scaleTargetRef.name
+              expectedValue: apache-deployment
+            - path: spec.minReplicas
+              expectedValue: 1
+            - path: spec.maxReplicas
+              expectedValue: 4
+            - path: spec.metrics.0.resource.name
+              expectedValue: cpu
+            - path: spec.metrics.0.resource.target.averageUtilization
+              expectedValue: 50
+            - path: spec.behavior.scaleDown.stabilizationWindowSeconds
+              expectedValue: 30
+    explanation:
+      elements:
+        - type: context
+          text: |
+            `autoscaling/v2` is required for the `behavior` block — `v1`/`v2beta1`/`v2beta2` either
+            don't support it or are deprecated. The stabilization window on `scaleDown` specifically
+            prevents flapping: the HPA waits for the specified period of consistently-low usage
+            before actually removing replicas, even though it can scale up immediately.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale-walkthrough/
+              text: HorizontalPodAutoscaler Walkthrough
+            - url: https://kubernetes.io/docs/concepts/workloads/autoscaling/horizontal-pod-autoscale/
+              text: Horizontal Pod Autoscaling
+            - url: https://youtu.be/YGkARVFKtmM
+              text: "Video walkthrough"
+
+  # ── Question 6: CRDs (cert-manager) ─────────────────────────────────────────
+  - title: "Question 6: CRDs — cert-manager"
+    category: "CRDs"
+    elements:
+      - type: context
+        text: |
+          cert-manager is already installed in this cluster, including its CRDs. You need to
+          produce two reference files from the live API: a list of cert-manager's CRDs, and the
+          built-in field documentation for one specific field on one of them.
+      - type: question
+        question:
+          questionType: command
+          header: "List every CustomResourceDefinition currently in the cluster (you'll filter for cert-manager's afterward)."
+          command:
+            executable: kubectl
+            subcommands:
+              - name: get
+            positionals:
+              - index: 0
+                required: true
+                value: crd
+                description: resource type
+      - type: question
+        question:
+          questionType: command
+          header: "Show the built-in documentation for the spec.subject field on the Certificate custom resource."
+          command:
+            executable: kubectl
+            subcommands:
+              - name: explain
+            positionals:
+              - index: 0
+                required: true
+                value: certificate.spec.subject
+                description: field path
+    explanation:
+      elements:
+        - type: context
+          text: |
+            `kubectl explain` works against any registered CRD exactly like a built-in type,
+            because it reads the field documentation straight from the CRD's OpenAPI schema — no
+            separate cert-manager-specific tooling needed to answer "what does this field mean and
+            what shape does it expect."
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/reference/kubectl/generated/kubectl_explain/
+              text: kubectl explain
+            - url: https://youtu.be/SA1DzLQaDJs
+              text: "Video walkthrough"
+
+  # ── Question 7: PriorityClass ───────────────────────────────────────────────
+  - title: "Question 7: PriorityClass"
+    category: "Scheduling"
+    elements:
+      - type: context
+        text: |
+          The cluster already has one user-defined PriorityClass, `user-critical`, with value 1000.
+          The `busybox-logger` Deployment in the `priority` namespace currently has no
+          PriorityClass at all.
+      - type: question
+        question:
+          questionType: manifest
+          header: "Create a PriorityClass named high-priority valued exactly one less than the highest existing user-defined PriorityClass. It must not be the global default."
+          manifestDefinitionId: priorityclass-v1
+          expectedFields:
+            - path: metadata.name
+              expectedValue: high-priority
+            - path: value
+              expectedValue: 999
+            - path: globalDefault
+              expectedValue: false
+      - type: question
+        question:
+          questionType: command
+          header: "Patch the busybox-logger Deployment in the priority namespace to use the new PriorityClass."
+          command:
+            executable: kubectl
+            subcommands:
+              - name: patch
+              - name: deployment
+                aliases: [deploy, deployments]
+            positionals:
+              - index: 0
+                required: true
+                value: busybox-logger
+                description: deployment name
+            flags:
+              - name: namespace
+                short: "n"
+                required: true
+                value: priority
+              - name: patch
+                short: "p"
+                required: true
+                regex: 'priorityClassName["'']?\s*:\s*["'']?high-priority'
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Priority values are just integers you define — there's no automatic "next available"
+            value, you compute it yourself from what's already registered (`kubectl get
+            priorityclass`). Keeping it below the existing user-defined maximum, and well below the
+            reserved `system-*` range, ensures it can't preempt cluster-critical workloads.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/reference/kubectl/generated/kubectl_create/kubectl_create_priorityclass/
+              text: kubectl create priorityclass
+            - url: https://kubernetes.io/docs/tasks/manage-kubernetes-objects/update-api-object-kubectl-patch/
+              text: Update API Objects In Place Using kubectl patch
+            - url: https://youtu.be/CZzxGyF6OHc
+              text: "Video walkthrough"
+
+  # ── Question 8: CNI & Network Policy ────────────────────────────────────────
+  - title: "Question 8: CNI Installation"
+    category: "Networking"
+    elements:
+      - type: context
+        text: |
+          This cluster has no CNI installed yet — nodes are NotReady and no pod-to-pod networking
+          works. You need a CNI that also supports NetworkPolicy enforcement, installed straight
+          from its release manifest (no Helm).
+      - type: question
+        question:
+          questionType: command
+          header: "Install Calico v3.28.2 from its official tigera-operator manifest."
+          command:
+            executable: kubectl
+            subcommands:
+              - name: apply
+                aliases: [create]
+            flags:
+              - name: filename
+                short: "f"
+                required: true
+                value: https://raw.githubusercontent.com/projectcalico/calico/v3.28.2/manifests/tigera-operator.yaml
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Flannel is simpler to install but does not enforce NetworkPolicy on its own — it needs
+            to be paired with a separate policy engine (like Calico running in policy-only mode).
+            Calico installed via the operator manifest gives you pod networking and NetworkPolicy
+            enforcement from a single install, which is why it's the safer default choice when a
+            question requires both.
+        - type: references
+          links:
+            - url: https://docs.tigera.io/calico/latest/getting-started/kubernetes/
+              text: Install Calico
+            - url: https://youtu.be/Uc04Ui4x3EM
+              text: "Video walkthrough"
+
+  # ── Question 9: cri-dockerd ──────────────────────────────────────────────────
+  - title: "Question 9: cri-dockerd"
+    category: "Node Configuration"
+    elements:
+      - type: context
+        text: |
+          A `cri-dockerd.deb` package is present at `~/cri-dockerd.deb` on this node, but the
+          service isn't installed or running, and the kernel networking parameters a CRI needs
+          haven't been configured yet.
+      - type: question
+        question:
+          questionType: command
+          header: "Install the cri-dockerd package from that local .deb file."
+          command:
+            executable: dpkg
+            flags:
+              - name: install
+                short: "i"
+                required: true
+                regex: 'cri-dockerd\.deb$'
+      - type: question
+        question:
+          questionType: command
+          header: "Enable the cri-docker service so it starts now and on every future boot."
+          command:
+            executable: systemctl
+            subcommands:
+              - name: enable
+            positionals:
+              - index: 0
+                required: true
+                value: cri-docker.service
+                description: unit name
+            flags:
+              - name: now
+                boolean: true
+                required: true
+      - type: question
+        question:
+          questionType: multiline
+          header: "Write the sysctl settings you'd persist to /etc/sysctl.d/kube.conf: bridge-nf-call-iptables, ipv6 forwarding, ipv4 forwarding, and a conntrack table max of 131072."
+          expectedAnswer: |
+            net.bridge.bridge-nf-call-iptables=1
+            net.ipv6.conf.all.forwarding=1
+            net.ipv4.ip_forward=1
+            net.netfilter.nf_conntrack_max=131072
+          cel: >
+            answer.contains('net.bridge.bridge-nf-call-iptables=1') &&
+            answer.contains('net.ipv6.conf.all.forwarding=1') &&
+            answer.contains('net.ipv4.ip_forward=1') &&
+            answer.contains('net.netfilter.nf_conntrack_max=131072')
+    explanation:
+      elements:
+        - type: context
+          text: |
+            `systemctl enable --now` is the one-flag shortcut for "enable and start immediately" —
+            without `--now` the service would only start on the next reboot. The sysctl values
+            written to a file under `/etc/sysctl.d/` survive a reboot; setting them with `sysctl -w`
+            alone would not.
+        - type: references
+          links:
+            - url: https://mirantis.github.io/cri-dockerd/usage/install/
+              text: cri-dockerd Installation
+            - url: https://youtu.be/ybzo1vXiqjU
+              text: "Video walkthrough"
+
+  # ── Question 10: Taints & Tolerations ───────────────────────────────────────
+  - title: "Question 10: Taints & Tolerations"
+    category: "Scheduling"
+    elements:
+      - type: context
+        text: |
+          `node01` currently accepts any Pod. You need to lock it down so only Pods that
+          explicitly opt in can land there.
+      - type: question
+        question:
+          questionType: command
+          header: "Taint node01 so ordinary Pods can no longer be scheduled on it: key PERMISSION, value granted, effect NoSchedule."
+          command:
+            executable: kubectl
+            subcommands:
+              - name: taint
+              - name: nodes
+                aliases: [node]
+            positionals:
+              - index: 0
+                required: true
+                value: node01
+                description: node name
+              - index: 1
+                required: true
+                value: "PERMISSION=granted:NoSchedule"
+                description: taint spec
+      - type: question
+        question:
+          questionType: manifest
+          header: "Write a Pod manifest with the toleration needed to still be scheduled on node01."
+          manifestDefinitionId: pod-v1
+          expectedFields:
+            - path: spec.tolerations.0.key
+              expectedValue: PERMISSION
+            - path: spec.tolerations.0.operator
+              expectedValue: Equal
+            - path: spec.tolerations.0.value
+              expectedValue: granted
+            - path: spec.tolerations.0.effect
+              expectedValue: NoSchedule
+    explanation:
+      elements:
+        - type: context
+          text: |
+            A taint alone only repels Pods — it never attracts them. Tolerating the taint just
+            makes this Pod eligible to land on node01 among other eligible nodes; if you need it
+            to land there specifically, that still requires a separate mechanism like
+            `nodeSelector` or node affinity.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/
+              text: Taints and Tolerations
+            - url: https://youtu.be/oy6Mdqt1-jk
+              text: "Video walkthrough"
+
+  # ── Question 11: Gateway API ────────────────────────────────────────────────
+  - title: "Question 11: Ingress to Gateway API Migration"
+    category: "Gateway API"
+    elements:
+      - type: context
+        text: |
+          The existing Ingress below serves `gateway.web.k8s.local` over HTTPS, terminating TLS
+          with the `web-tls` Secret and forwarding to `web-service` on port 80. A GatewayClass
+          named `nginx-class` is already installed. Migrate this to the Gateway API without
+          changing the externally visible behavior.
+      - type: manifest
+        header: "Existing Ingress named web:"
+        content: |
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: web
+            annotations:
+              nginx.ingress.kubernetes.io/rewrite-target: /
+          spec:
+            tls:
+            - hosts:
+              - gateway.web.k8s.local
+              secretName: web-tls
+            rules:
+            - host: gateway.web.k8s.local
+              http:
+                paths:
+                - path: /
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: web-service
+                      port:
+                        number: 80
+      - type: question
+        question:
+          questionType: manifest
+          header: "Write the full Gateway manifest named web-gateway that mirrors this Ingress's TLS and hostname."
+          manifestDefinitionId: gateway-v1
+          expectedFields:
+            - path: metadata.name
+              expectedValue: web-gateway
+            - path: spec.gatewayClassName
+              expectedValue: nginx-class
+            - path: spec.listeners.0.protocol
+              expectedValue: HTTPS
+            - path: spec.listeners.0.port
+              expectedValue: 443
+            - path: spec.listeners.0.hostname
+              expectedValue: gateway.web.k8s.local
+            - path: spec.listeners.0.tls.certificateRefs.0.name
+              expectedValue: web-tls
+      - type: question
+        question:
+          questionType: manifest
+          header: "Write the full HTTPRoute manifest named web-route that mirrors this Ingress's routing rule."
+          manifestDefinitionId: httproute-v1
+          expectedFields:
+            - path: metadata.name
+              expectedValue: web-route
+            - path: spec.parentRefs.0.name
+              expectedValue: web-gateway
+            - path: spec.hostnames.0
+              expectedValue: gateway.web.k8s.local
+            - path: spec.rules.0.backendRefs.0.name
+              expectedValue: web-service
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Every piece of the Ingress maps onto a Gateway API concept: the TLS block and host
+            become a `listeners` entry on the Gateway, and the routing rule becomes an `HTTPRoute`
+            rule with a `backendRef`. The GatewayClass plays the role the IngressClass or ingress
+            controller annotation used to play — it's what wires the abstract Gateway resource to
+            an actual controller implementation.
+        - type: references
+          links:
+            - url: https://gateway-api.sigs.k8s.io/guides/migrating-from-ingress/
+              text: Migrating from Ingress
+            - url: https://youtu.be/G9zispvOCHE
+              text: "Video walkthrough"
+
+  # ── Question 12: Ingress ────────────────────────────────────────────────────
+  - title: "Question 12: Ingress"
+    category: "Services & Networking"
+    elements:
+      - type: context
+        text: |
+          The `echo` Deployment already exists in the `echo-sound` namespace, listening on
+          container port 8080. It needs to be reachable both via NodePort and via a path-based
+          Ingress rule.
+      - type: question
+        question:
+          questionType: manifest
+          header: "Expose the echo Deployment as a Service named echo-service, type NodePort, port 8080."
+          manifestDefinitionId: service-v1
+          expectedFields:
+            - path: metadata.name
+              expectedValue: echo-service
+            - path: metadata.namespace
+              expectedValue: echo-sound
+            - path: spec.type
+              expectedValue: NodePort
+            - path: spec.ports.0.port
+              expectedValue: 8080
+      - type: question
+        question:
+          questionType: manifest
+          header: "Create an Ingress named echo in echo-sound for host example.org, path /echo, backed by echo-service:8080."
+          manifestDefinitionId: ingress-v1
+          expectedFields:
+            - path: metadata.name
+              expectedValue: echo
+            - path: metadata.namespace
+              expectedValue: echo-sound
+            - path: spec.rules.0.host
+              expectedValue: example.org
+            - path: spec.rules.0.http.paths.0.path
+              expectedValue: /echo
+            - path: spec.rules.0.http.paths.0.backend.service.name
+              expectedValue: echo-service
+            - path: spec.rules.0.http.paths.0.backend.service.port.number
+              expectedValue: 8080
+      - type: table
+        style: terminal
+        columns: [CHECK, COMMAND]
+        rows:
+          - ["direct NodePort", 'curl NODEIP:NODEPORT/echo']
+          - ["through Ingress controller", 'curl -o /dev/null -s -w "%{http_code}\n" http://example.org/echo']
+    explanation:
+      elements:
+        - type: context
+          text: |
+            The exam frequently expects both an access path to exist simultaneously: NodePort as a
+            direct, controller-independent path to the Service, and Ingress as the
+            controller-mediated, hostname-based path. Testing through the Ingress controller
+            requires an `/etc/hosts` entry pointing the test hostname at a node IP, since there's no
+            real DNS for `example.org` in the cluster.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/concepts/services-networking/ingress/
+              text: Ingress
+            - url: https://youtu.be/sy9zABvDedQ
+              text: "Video walkthrough"
+
+  # ── Question 13: Network Policy ─────────────────────────────────────────────
+  - title: "Question 13: Network Policy"
+    category: "Networking"
+    elements:
+      - type: context
+        text: |
+          A `frontend` Deployment lives in namespace `frontend`; a `backend` Deployment lives in
+          namespace `backend`. Three candidate NetworkPolicy files below were drafted for the
+          `backend` namespace. Exactly one of them lets frontend reach backend while being the
+          *least* permissive of the three — the others either allow more than necessary or don't
+          restrict traffic meaningfully at all.
+      - type: manifest
+        header: "policy-x"
+        content: |
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: policy-x
+            namespace: backend
+          spec:
+            podSelector: {}
+            ingress:
+            - {}
+            policyTypes:
+            - Ingress
+      - type: manifest
+        header: "policy-y"
+        content: |
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: policy-y
+            namespace: backend
+          spec:
+            podSelector:
+              matchLabels:
+                app: backend
+            ingress:
+            - from:
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: frontend
+              - ipBlock:
+                  cidr: 172.16.0.0/16
+              ports:
+              - protocol: TCP
+                port: 80
+            policyTypes:
+            - Ingress
+      - type: manifest
+        header: "policy-z"
+        content: |
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: policy-z
+            namespace: backend
+          spec:
+            podSelector:
+              matchLabels:
+                app: backend
+            ingress:
+            - from:
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: frontend
+                podSelector:
+                  matchLabels:
+                    app: frontend
+              ports:
+              - protocol: TCP
+                port: 80
+            policyTypes:
+            - Ingress
+      - type: question
+        question:
+          questionType: single-line
+          header: "Which policy (by its metadata.name) should be deployed?"
+          expectedAnswer: policy-z
+    explanation:
+      elements:
+        - type: context
+          text: |
+            policy-x allows all ingress from anywhere — it isn't really a restriction. policy-y's
+            `from` list has two *separate* entries (namespaceSelector, then ipBlock); separate
+            entries in a `from` list are OR'd together, so it admits all of the frontend namespace
+            **or** an entire /16 CIDR block, either of which is broader than needed. policy-z
+            combines `namespaceSelector` and `podSelector` inside the *same* `from` entry, which
+            Kubernetes AND's together — only Pods labeled `app: frontend` that are also in the
+            `frontend` namespace are allowed, which is the narrowest rule that still satisfies the
+            requirement.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/concepts/services-networking/network-policies/
+              text: Network Policies
+            - url: https://youtu.be/rA8mXYTU0W8
+              text: "Video walkthrough"
+
+  # ── Question 14: Storage Class ──────────────────────────────────────────────
+  - title: "Question 14: Storage Class"
+    category: "Storage"
+    elements:
+      - type: context
+        text: |
+          The cluster's current default StorageClass is named `local-path`. You must introduce a
+          new StorageClass and make it the default instead, without disturbing any existing
+          Deployments or PersistentVolumeClaims.
+      - type: question
+        question:
+          questionType: manifest
+          header: "Create a StorageClass named local-storage: provisioner rancher.io/local-path, volumeBindingMode WaitForFirstConsumer. Do not make it default yet."
+          manifestDefinitionId: storageclass-v1
+          expectedFields:
+            - path: metadata.name
+              expectedValue: local-storage
+            - path: provisioner
+              expectedValue: rancher.io/local-path
+            - path: volumeBindingMode
+              expectedValue: WaitForFirstConsumer
+      - type: question
+        question:
+          questionType: command
+          header: "Patch local-storage to become the default StorageClass."
+          command:
+            executable: kubectl
+            subcommands:
+              - name: patch
+              - name: storageclass
+                aliases: [sc]
+            positionals:
+              - index: 0
+                required: true
+                value: local-storage
+                description: storage class name
+            flags:
+              - name: patch
+                short: "p"
+                required: true
+                regex: 'is-default-class["'']?\s*:\s*["'']?true'
+      - type: question
+        question:
+          questionType: command
+          header: "Patch the old default, local-path, so it is no longer marked default."
+          command:
+            executable: kubectl
+            subcommands:
+              - name: patch
+              - name: storageclass
+                aliases: [sc]
+            positionals:
+              - index: 0
+                required: true
+                value: local-path
+                description: storage class name
+            flags:
+              - name: patch
+                short: "p"
+                required: true
+                regex: 'is-default-class["'']?\s*:\s*["'']?false'
+    explanation:
+      elements:
+        - type: context
+          text: |
+            "Default" is just an annotation (`storageclass.kubernetes.io/is-default-class`), not a
+            unique field the API enforces — Kubernetes will happily let two StorageClasses claim to
+            be default at once, which makes PVCs without an explicit `storageClassName` pick one
+            unpredictably. You always have to explicitly demote the old default when promoting a
+            new one.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/concepts/storage/storage-classes/#default-storageclass
+              text: Default StorageClass
+            - url: https://youtu.be/di7X7OHn2fc
+              text: "Video walkthrough"
+
+  # ── Question 15: Etcd Fix ───────────────────────────────────────────────────
+  - title: "Question 15: Etcd Fix"
+    category: "Troubleshooting"
+    elements:
+      - type: context
+        text: |
+          After a cluster migration, the control-plane kube-apiserver is not coming up. Before the
+          migration, etcd was external and highly available on the standard client port; something
+          in the migration changed the API server to point at etcd's *peer* port instead of its
+          *client* port.
+      - type: manifest
+        header: "Relevant excerpt of /etc/kubernetes/manifests/kube-apiserver.yaml:"
+        content: |
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: kube-apiserver
+            namespace: kube-system
+          spec:
+            containers:
+            - name: kube-apiserver
+              command:
+              - kube-apiserver
+              - --etcd-servers=https://127.0.0.1:2380
+              - --advertise-address=192.168.1.10
+              - --allow-privileged=true
+      - type: question
+        question:
+          questionType: single-line
+          header: "What should the --etcd-servers value be corrected to?"
+          expectedAnswer: "https://127.0.0.1:2379"
+          cel: "answer.contains('2379') && !answer.contains('2380')"
+    explanation:
+      elements:
+        - type: context
+          text: |
+            2379 is etcd's client port, used by anything talking to etcd as a key-value store —
+            including the kube-apiserver. 2380 is the peer port, used only for communication
+            *between* etcd members in a cluster. Pointing the API server at the peer port means it
+            is speaking the wrong protocol to the wrong port entirely, so it fails to establish a
+            working connection and the whole control plane goes down with it.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/tasks/administer-cluster/configure-upgrade-etcd/
+              text: Operating etcd clusters for Kubernetes
+            - url: https://youtu.be/IL448T6r8H4
+              text: "Video walkthrough"
+
+  # ── Question 16: NodePort ───────────────────────────────────────────────────
+  - title: "Question 16: NodePort Service"
+    category: "Services & Networking"
+    elements:
+      - type: context
+        text: |
+          The `nodeport-deployment` Deployment already exists in the `relative` namespace
+          (created imperatively, image nginx, no container port declared yet).
+      - type: question
+        question:
+          questionType: command
+          header: "Patch the deployment so its container declares port 80, name http, protocol TCP."
+          command:
+            executable: kubectl
+            subcommands:
+              - name: patch
+              - name: deployment
+                aliases: [deploy, deployments]
+            positionals:
+              - index: 0
+                required: true
+                value: nodeport-deployment
+                description: deployment name
+            flags:
+              - name: namespace
+                short: "n"
+                required: true
+                value: relative
+              - name: patch
+                short: "p"
+                required: true
+                regex: '"containerPort":\s*80'
+      - type: question
+        question:
+          questionType: manifest
+          header: "Create a Service named nodeport-service: type NodePort, port 80, targetPort 80, protocol TCP, nodePort 30080."
+          manifestDefinitionId: service-v1
+          expectedFields:
+            - path: metadata.name
+              expectedValue: nodeport-service
+            - path: metadata.namespace
+              expectedValue: relative
+            - path: spec.type
+              expectedValue: NodePort
+            - path: spec.ports.0.port
+              expectedValue: 80
+            - path: spec.ports.0.targetPort
+              expectedValue: 80
+            - path: spec.ports.0.protocol
+              expectedValue: TCP
+            - path: spec.ports.0.nodePort
+              expectedValue: 30080
+    explanation:
+      elements:
+        - type: context
+          text: |
+            A container port declaration is purely documentation as far as the Service is
+            concerned — Services select by Pod label and target port number, not by the presence of
+            a matching `containerPort` entry. But the exam still expects it declared, since it's
+            what makes `kubectl describe pod` and the container spec accurately reflect reality.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/concepts/services-networking/service/#type-nodeport
+              text: "Service — Type NodePort"
+
+  # ── Question 17: TLS Config ─────────────────────────────────────────────────
+  - title: "Question 17: TLS Config"
+    category: "TLS"
+    elements:
+      - type: context
+        text: |
+          The `nginx-static` Deployment in namespace `nginx-static` is fronted by a ConfigMap
+          allowing both TLSv1.2 and TLSv1.3. You must drop support for TLSv1.2 entirely, leaving
+          only TLSv1.3.
+      - type: manifest
+        header: "Existing ConfigMap nginx-config:"
+        content: |
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: nginx-config
+            namespace: nginx-static
+          data:
+            nginx.conf: |
+              events {}
+              http {
+                server {
+                  listen 443 ssl;
+                  ssl_certificate /etc/nginx/tls/tls.crt;
+                  ssl_certificate_key /etc/nginx/tls/tls.key;
+                  ssl_protocols TLSv1.2 TLSv1.3;
+                  location / {
+                    return 200 "Hello TLS\n";
+                  }
+                }
+              }
+      - type: question
+        question:
+          questionType: manifest
+          header: "Rewrite the ConfigMap so ssl_protocols only lists TLSv1.3."
+          manifestDefinitionId: configmap-v1
+          expectedFields:
+            - path: metadata.name
+              expectedValue: nginx-config
+            - path: metadata.namespace
+              expectedValue: nginx-static
+          cel: "answer.contains('TLSv1.3') && !answer.contains('TLSv1.2')"
+      - type: question
+        question:
+          questionType: command
+          header: "ConfigMap changes don't take effect on their own — restart the deployment so the running Pods pick up the new config."
+          command:
+            executable: kubectl
+            subcommands:
+              - name: rollout
+              - name: restart
+            positionals:
+              - index: 0
+                required: true
+                value: deployment/nginx-static
+                description: target
+            flags:
+              - name: namespace
+                short: "n"
+                required: true
+                value: nginx-static
+      - type: question
+        question:
+          questionType: single-line
+          header: "What file would you edit locally to resolve the hostname ckaquestion.k8s.local to the Service's ClusterIP for testing, without real DNS?"
+          expectedAnswer: /etc/hosts
+    explanation:
+      elements:
+        - type: context
+          text: |
+            A ConfigMap mounted into a Pod is only read at container start — editing the ConfigMap
+            does not push the change into already-running Pods. `kubectl rollout restart` is the
+            standard way to force new Pods (and therefore a fresh mount) without changing anything
+            else about the Deployment. This is the single most common gotcha in TLS/ConfigMap-style
+            exam tasks: a technically-correct ConfigMap edit that appears to do nothing until the
+            workload is restarted.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/reference/kubectl/generated/kubectl_rollout_restart/
+              text: kubectl rollout restart
+
+  # ── Question 18: kubectl patch ──────────────────────────────────────────────
+  - title: "Question 18: kubectl patch — Resource Limits"
+    category: "kubectl Patch"
+    elements:
+      - type: context
+        text: |
+          The `resource-app` Deployment in namespace `patch-ns` (2 replicas) currently has a CPU
+          limit of 200m and a memory limit of 256Mi on its nginx container — too low for the
+          expected load. Using only `kubectl patch` — not `edit`, not `apply` — raise the CPU limit
+          to 500m and the memory limit to 512Mi. Requests, replica count, and everything else must
+          stay untouched.
+      - type: question
+        question:
+          questionType: command
+          header: "Patch resource-app so the nginx container's limits become cpu 500m, memory 512Mi."
+          command:
+            executable: kubectl
+            subcommands:
+              - name: patch
+              - name: deployment
+                aliases: [deploy, deployments]
+            positionals:
+              - index: 0
+                required: true
+                value: resource-app
+                description: deployment name
+            flags:
+              - name: namespace
+                short: "n"
+                required: true
+                value: patch-ns
+              - name: type
+                required: false
+                oneOf: [strategic, merge]
+              - name: patch
+                short: "p"
+                required: true
+                regex: '(?=.*500m)(?=.*512Mi)'
+    explanation:
+      elements:
+        - type: context
+          text: |
+            A strategic merge patch (kubectl's default) matches list items like containers by their
+            `name` key and merges only the fields you specify, leaving `requests` and every other
+            field on that container untouched. A plain JSON merge patch (`--type=merge`) replaces
+            the entire `limits` map wholesale, so with that type you'd have needed to restate any
+            limits you wanted to keep — here there weren't any others, so both types happen to work.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/tasks/manage-kubernetes-objects/update-api-object-kubectl-patch/
+              text: Update API Objects In Place Using kubectl patch
+
+  # ── Question 19: Resource Allocation v2 ─────────────────────────────────────
+  - title: "Question 19: WordPress — Properly Size Resource Requests"
+    category: "Workloads"
+    elements:
+      - type: context
+        text: |
+          The `wordpress` Deployment in namespace `relative-fawn` has 3 replicas, each currently
+          requesting only 100m CPU / 100Mi memory — far too conservative. The single node reports
+          1000m CPU and 1800Mi memory allocatable, with roughly 150m CPU / 250Mi memory already
+          consumed by system Pods (kube-proxy, CoreDNS, etc). The existing memory limit of 500Mi
+          per Pod must not change.
+      - type: question
+        question:
+          questionType: command
+          header: "Set each wordpress Pod's CPU and memory requests to evenly divide the remaining allocatable capacity across all 3 replicas, without touching limits."
+          hint: "(1000m - 150m) / 3 for CPU; for memory, stay under the existing 500Mi limit."
+          command:
+            executable: kubectl
+            subcommands:
+              - name: set
+              - name: resources
+            positionals:
+              - index: 0
+                required: true
+                value: deployment/wordpress
+                description: target
+            flags:
+              - name: namespace
+                short: "n"
+                required: true
+                value: relative-fawn
+              - name: containers
+                required: true
+                value: wordpress
+              - name: requests
+                required: true
+                value: "cpu=250m,memory=300Mi"
+    explanation:
+      elements:
+        - type: context
+          text: |
+            The formula is `(allocatable - system overhead) / replica count`, applied only to
+            requests — requests are what the scheduler actually reserves per Pod, while limits
+            just cap runtime usage and don't factor into whether a new Pod can be scheduled at all.
+            (1000m - 150m) / 3 ≈ 283m, rounded down to a safer 250m; the equivalent memory
+            calculation comes out above the 500Mi limit, so it's capped at 300Mi to stay under it
+            rather than following the raw division.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/reference/kubectl/generated/kubectl_set_resources/
+              text: kubectl set resources
+            - url: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+              text: Resource Management for Pods and Containers
