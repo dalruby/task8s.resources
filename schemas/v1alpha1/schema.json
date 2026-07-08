@@ -269,6 +269,10 @@
           "items": { "type": "string", "minLength": 1 },
           "description": "Additional accepted long-form names without leading dashes. Use for flags that have multiple valid names beyond the canonical name."
         },
+        "singleDash": {
+          "type": "boolean",
+          "description": "When true, 'name' (and 'aliases') are matched against a single leading dash instead of the default double dash — e.g. find's -type, -name, -delete. Without this, a multi-character token after one dash is parsed as a bundle of single-char boolean flags (GNU short-option style, e.g. tar -xvf). Set this for commands whose long-form flags conventionally use one dash instead of two. Defaults to false."
+        },
         "required": {
           "type": "boolean",
           "description": "Whether the flag must appear in the user's answer. Defaults to false."

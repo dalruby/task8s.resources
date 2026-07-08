@@ -283,9 +283,11 @@ scenarios:
                 description: search root
             flags:
               - name: maxdepth
+                singleDash: true
                 required: true
                 value: "2"
               - name: type
+                singleDash: true
                 required: true
                 value: f
       - type: table

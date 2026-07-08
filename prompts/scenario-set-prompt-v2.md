@@ -41,6 +41,7 @@ Default to **medium** unless the user specifies otherwise.
 
 **Command questions**
 - After every command question, add a `table` element (`style: terminal`) showing realistic kubectl-style output, if applicable.
+- For commands whose long-form flags conventionally use a single dash (e.g. `find -type`, `-name`, `-delete`), set `singleDash: true` on each such `FlagSpec`. Without it, a multi-character single-dash token is parsed as a bundle of single-char boolean flags.
 
 **Manifest questions**
 - Use `autoLoad: true` for standard Kubernetes resources. Set `k8sVersion` at the top level when doing so.

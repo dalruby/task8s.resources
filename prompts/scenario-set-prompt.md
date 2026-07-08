@@ -375,6 +375,7 @@ Each entry in `flags` describes one flag the validator checks for.
 | `name` | yes | The canonical long-form name **without dashes** (e.g. `namespace`, not `--namespace`). |
 | `short` | no | Single-character short form **without dash** (e.g. `n` for `-n`). |
 | `aliases` | no | Additional accepted long-form names (without dashes). |
+| `singleDash` | no | When `true`, `name` (and `aliases`) are matched against a **single** leading dash instead of the default double dash. Use this for commands whose long-form flags conventionally take one dash, like `find`'s `-type`, `-name`, `-delete`. Without it, a multi-character token after one dash is parsed as a bundle of single-char boolean flags. Defaults to `false`. |
 | `required` | no | When `true`, the flag must be present. Defaults to `false`. |
 | `boolean` | no | When `true`, the flag takes no value (e.g. `--all-namespaces`). Defaults to `false`. |
 | `value` | no | When set, the flag's value must exactly equal this string. |
@@ -514,6 +515,35 @@ command:
   flags:
     - name: all-namespaces
       short: "A"
+      boolean: true
+      required: true
+```
+
+**Example 5 — `find . -type f -name "*.log" -delete`** (single-dash long flags)
+
+`find`'s flags conventionally use one dash, not two. Mark each with `singleDash: true` so `-type` and `-name` are matched as whole-word flags instead of being parsed as a bundle of single-char short flags:
+
+```yaml
+questionType: command
+header: "Find and delete all .log files in the current directory"
+command:
+  executable: find
+  positionals:
+    - index: 0
+      required: true
+      value: "."
+      description: search path
+  flags:
+    - name: type
+      singleDash: true
+      required: true
+      value: "f"
+    - name: name
+      singleDash: true
+      required: true
+      value: "*.log"
+    - name: delete
+      singleDash: true
       boolean: true
       required: true
 ```
@@ -1161,6 +1191,7 @@ Before producing the final YAML, verify:
 - [ ] Every scenario has `title`, `category`, `elements` (≥ 1), and `explanation`
 - [ ] Every `explanation` has at least one element
 - [ ] Every `command` question has `executable`; `subcommands` are `SubcommandToken` objects (with `name`, not bare strings); no `subcommandAliases` or `shortForm` fields (use `aliases` and `short` respectively)
+- [ ] For commands whose flags conventionally use one dash (e.g. `find`), each such `FlagSpec` has `singleDash: true` — otherwise multi-character single-dash tokens will be misparsed as bundled short flags
 - [ ] Every `manifest` question has `manifestDefinitionId`
 - [ ] Every `sequence` has at least 2 `steps`
 - [ ] Every `multiple-choice` question has at least 2 `choices`; each choice has `text` and `answerType`; `PartOfSolution` and `Solution` are not mixed in the same question
