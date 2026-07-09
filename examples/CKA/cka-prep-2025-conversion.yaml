@@ -65,6 +65,16 @@ manifestDefinitions:
     apiVersion: gateway.networking.k8s.io/v1
     schema:
       type: object
+  - id: installation-v1
+    kind: Installation
+    apiVersion: operator.tigera.io/v1
+    schema:
+      type: object
+  - id: apiserver-v1
+    kind: APIServer
+    apiVersion: operator.tigera.io/v1
+    schema:
+      type: object
   - id: ingress-v1
     kind: Ingress
     apiVersion: networking.k8s.io/v1
@@ -173,10 +183,13 @@ scenarios:
         text: |
           Argo CD's CRDs are already pre-installed in this cluster. You must install Argo CD via
           Helm while explicitly preventing the chart from installing its own CRDs a second time.
+
+          The official Argo CD Helm repository is at `https://argoproj.github.io/argo-helm`, and
+          within it the chart is named `argo-cd`.
       - type: question
         question:
           questionType: command
-          header: "Add the official Argo CD Helm repository under the name argocd."
+          header: "Add that Helm repository under the name argocd."
           command:
             executable: helm
             subcommands:
@@ -194,7 +207,7 @@ scenarios:
       - type: question
         question:
           questionType: command
-          header: "Generate the rendered manifest for chart version 7.7.3 into the argocd namespace, with CRD installation disabled via the chart's own value (not --skip-crds)."
+          header: "Generate the rendered manifest for the argo-cd chart, version 7.7.3, into the argocd namespace, with CRD installation disabled via the chart's own value (not --skip-crds)."
           hint: "Search the chart's default values for a value named 'crds' — set it to false."
           command:
             executable: helm
@@ -272,7 +285,7 @@ scenarios:
       - type: question
         question:
           questionType: manifest
-          header: "Add a co-located sidecar container named sidecar (image busybox:stable) that tails that log file, sharing it with the main container via an emptyDir volume mounted at /var/log in both containers."
+          header: "Add a sidecar container named sidecar (image busybox:stable) that tails that log file, sharing it with the main container via an emptyDir volume named logs, mounted at /var/log in both containers."
           hint: "Use tail -F (capital F), not tail -f — it survives log rotation, which -f does not."
           manifestDefinitionId: deployment-v1
           expectedFields:
@@ -286,27 +299,30 @@ scenarios:
               expectedValue: wordpress
             - path: spec.template.spec.containers.0.volumeMounts.0.mountPath
               expectedValue: /var/log
-            - path: spec.template.spec.containers.1.name
+            - path: spec.template.spec.initContainers.0.name
               expectedValue: sidecar
-            - path: spec.template.spec.containers.1.image
+            - path: spec.template.spec.initContainers.0.image
               expectedValue: busybox:stable
-            - path: spec.template.spec.containers.1.command.0
+            - path: spec.template.spec.initContainers.0.restartPolicy
+              expectedValue: Always
+            - path: spec.template.spec.initContainers.0.command.0
               expectedValue: sh
-            - path: spec.template.spec.containers.1.command.1
+            - path: spec.template.spec.initContainers.0.command.1
               expectedValue: "-c"
-            - path: spec.template.spec.containers.1.command.2
+            - path: spec.template.spec.initContainers.0.command.2
               expectedValue: tail -F /var/log/wordpress.log
-            - path: spec.template.spec.containers.1.volumeMounts.0.mountPath
+            - path: spec.template.spec.initContainers.0.volumeMounts.0.mountPath
               expectedValue: /var/log
     explanation:
       elements:
         - type: context
           text: |
-            This is the exam-preferred pattern: a regular co-located container added alongside the
-            main container (n+1 containers in one Pod), not a Kubernetes 1.29+ native sidecar
-            (`initContainers` with `restartPolicy: Always`) — that native form exists mainly for
-            Jobs, where a normal extra container would keep the Job alive forever. For a
-            Deployment, a plain second container in `containers[]` is what's expected.
+            Since Kubernetes 1.33, this is the exam-correct pattern: a native sidecar is an
+            `initContainer` with `restartPolicy: Always`, not a second entry in `containers[]`.
+            Kubernetes starts it before the main container and keeps it running for the Pod's
+            entire lifetime — including restarting it if it crashes — while still letting the
+            main container's readiness/liveness gate on it starting first, which a plain co-located
+            container in `containers[]` cannot do.
         - type: references
           links:
             - url: https://kubernetes.io/docs/concepts/workloads/pods/sidecar-containers/
@@ -550,7 +566,8 @@ scenarios:
       - type: question
         question:
           questionType: command
-          header: "Patch the busybox-logger Deployment in the priority namespace to use the new PriorityClass."
+          header: "Patch the busybox-logger Deployment in the priority namespace to use the new PriorityClass, using a JSON Patch (--type=json) that targets the field's exact path on the Pod template."
+          hint: "priorityClassName lives at spec.template.spec.priorityClassName on a Deployment, not at the Deployment's own top level — the JSON Patch path must spell that full path out."
           command:
             executable: kubectl
             subcommands:
@@ -567,10 +584,13 @@ scenarios:
                 short: "n"
                 required: true
                 value: priority
+              - name: type
+                required: true
+                value: json
               - name: patch
                 short: "p"
                 required: true
-                regex: 'priorityClassName["'']?\s*:\s*["'']?high-priority'
+                regex: '(?=.*"op"\s*:\s*"add")(?=.*"path"\s*:\s*"/spec/template/spec/priorityClassName")(?=.*"value"\s*:\s*"high-priority")'
     explanation:
       elements:
         - type: context
@@ -579,6 +599,13 @@ scenarios:
             value, you compute it yourself from what's already registered (`kubectl get
             priorityclass`). Keeping it below the existing user-defined maximum, and well below the
             reserved `system-*` range, ensures it can't preempt cluster-critical workloads.
+
+            `priorityClassName` is not a field of Deployment itself — it lives on the Pod template,
+            at `spec.template.spec.priorityClassName`. A strategic merge patch (the default
+            `kubectl patch` type) hides that nesting behind matching braces, which makes it easy to
+            misplace the field. A JSON Patch (`--type=json`) forces you to spell out the full path
+            as a string (`/spec/template/spec/priorityClassName`), which is exactly why it was used
+            here — the path itself is the proof you targeted the right field.
         - type: references
           links:
             - url: https://kubernetes.io/docs/reference/kubectl/generated/kubectl_create/kubectl_create_priorityclass/
@@ -596,11 +623,12 @@ scenarios:
         text: |
           This cluster has no CNI installed yet — nodes are NotReady and no pod-to-pod networking
           works. You need a CNI that also supports NetworkPolicy enforcement, installed straight
-          from its release manifest (no Helm).
+          from its release manifests (no Helm). The cluster was bootstrapped with
+          `kubeadm init --pod-network-cidr=10.244.0.0/16`.
       - type: question
         question:
           questionType: command
-          header: "Install Calico v3.28.2 from its official tigera-operator manifest."
+          header: "Install Calico v3.28.2's CRDs and operator from the official tigera-operator manifest."
           command:
             executable: kubectl
             subcommands:
@@ -611,19 +639,56 @@ scenarios:
                 short: "f"
                 required: true
                 value: https://raw.githubusercontent.com/projectcalico/calico/v3.28.2/manifests/tigera-operator.yaml
+      - type: question
+        question:
+          questionType: manifest
+          header: "The operator alone doesn't deploy Calico — write the Installation custom resource that actually does, with its pod IP pool matching this cluster's real pod network CIDR."
+          hint: "The manifest you'd download for this (custom-resources.yaml) defaults its ipPools CIDR to 192.168.0.0/16 — that has to be changed to match kubeadm's --pod-network-cidr."
+          manifestDefinitionId: installation-v1
+          expectedFields:
+            - path: metadata.name
+              expectedValue: default
+            - path: spec.calicoNetwork.ipPools.0.cidr
+              expectedValue: 10.244.0.0/16
+      - type: question
+        question:
+          questionType: manifest
+          header: "custom-resources.yaml also includes an APIServer resource alongside the Installation — write it too."
+          manifestDefinitionId: apiserver-v1
+          expectedFields:
+            - path: metadata.name
+              expectedValue: default
+            - path: spec
+              expectedValue: {}
     explanation:
       elements:
         - type: context
           text: |
             Flannel is simpler to install but does not enforce NetworkPolicy on its own — it needs
             to be paired with a separate policy engine (like Calico running in policy-only mode).
-            Calico installed via the operator manifest gives you pod networking and NetworkPolicy
-            enforcement from a single install, which is why it's the safer default choice when a
-            question requires both.
+            Calico installed via the operator gives you pod networking and NetworkPolicy enforcement
+            from one install, which is why it's the safer default choice when a question requires
+            both.
+
+            Installing Calico is a three-step process, and it's easy to stop after step one:
+              1. `tigera-operator.yaml` installs the operator's CRDs (`Installation`, `APIServer`,
+                 etc.) and the operator Deployment itself — but the operator does nothing until
+                 you give it a resource to act on.
+              2. The operator's own quickstart manifest (`custom-resources.yaml`) supplies exactly
+                 that: an `Installation` and an `APIServer` resource. Applying it is what actually
+                 deploys Calico's pods.
+              3. That downloaded `Installation` defaults its pod IP pool to `192.168.0.0/16`,
+                 which has nothing to do with your cluster unless you happen to match it. It must
+                 be edited to match whatever pod network CIDR the cluster's control plane was
+                 actually initialized with (`kubeadm init --pod-network-cidr=...`) — a mismatch
+                 here means Calico allocates Pod IPs the rest of the cluster (kube-proxy, routes,
+                 NetworkPolicy) was never configured to expect.
         - type: references
           links:
-            - url: https://docs.tigera.io/calico/latest/getting-started/kubernetes/
-              text: Install Calico
+            - url: https://docs.tigera.io/calico/latest/getting-started/kubernetes/quickstart
+              text: Calico Quickstart
+            - url: https://docs.tigera.io/calico/latest/getting-started/kubernetes/self-managed-onprem/config-options
+              text: Customizing the Calico Installation resource
             - url: https://youtu.be/Uc04Ui4x3EM
               text: "Video walkthrough"
 
