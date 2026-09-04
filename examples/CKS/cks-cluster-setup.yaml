@@ -1,0 +1,261 @@
+apiVersion: v1alpha1
+name: "CKS: Cluster Setup"
+k8sVersion: "1.34.0"
+
+timing:
+  enabled: true
+  limitSeconds: 5400
+
+introduction:
+  elements:
+    - type: context
+      text: |
+        Covers the CKS "Cluster Setup" domain (15% of the exam): restricting cluster-level access
+        with NetworkPolicy, auditing component configuration against the CIS Benchmark, TLS-terminated
+        Ingress, protecting node metadata endpoints, and verifying platform binaries before deploying
+        them.
+
+        All manifest and command questions require full recall — no syntax scaffolding is provided.
+    - type: references
+      links:
+        - url: https://training.linuxfoundation.org/certification/certified-kubernetes-security-specialist-cks/
+          text: CKS Domains and Competencies
+        - url: https://kubernetes.io/docs/concepts/security/
+          text: Kubernetes Security Concepts
+
+manifestDefinitions:
+  - id: networkpolicy-v1
+    kind: NetworkPolicy
+    apiVersion: networking.k8s.io/v1
+    autoLoad: true
+  - id: ingress-v1
+    kind: Ingress
+    apiVersion: networking.k8s.io/v1
+    autoLoad: true
+
+scenarios:
+  - title: "Default-Deny Ingress in a Sensitive Namespace"
+    category: "Network Security Policies"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          Namespace `billing` currently has no NetworkPolicy at all — every Pod in the cluster can
+          reach every Pod in `billing`. As a baseline, all ingress traffic into this namespace must
+          be blocked by default, before any explicit allows are layered on top.
+      - type: question
+        question:
+          questionType: manifest
+          header: "Write a NetworkPolicy named default-deny-ingress in billing that blocks all ingress traffic to every Pod in the namespace."
+          manifestDefinitionId: networkpolicy-v1
+          expectedFields:
+            - path: metadata.name
+              expectedValue: default-deny-ingress
+            - path: metadata.namespace
+              expectedValue: billing
+            - path: spec.podSelector
+              expectedValue: {}
+            - path: spec.policyTypes.0
+              expectedValue: Ingress
+      - type: question
+        question:
+          questionType: manifest
+          header: "Now allow ingress to Pods labeled app=invoicer in billing, but only from Pods labeled app=gateway in namespace edge, on TCP port 8443."
+          manifestDefinitionId: networkpolicy-v1
+          expectedFields:
+            - path: metadata.namespace
+              expectedValue: billing
+            - path: spec.podSelector.matchLabels.app
+              expectedValue: invoicer
+            - path: "spec.ingress.0.from.0.namespaceSelector.matchLabels[kubernetes.io/metadata.name]"
+              expectedValue: edge
+            - path: spec.ingress.0.from.0.podSelector.matchLabels.app
+              expectedValue: gateway
+            - path: spec.ingress.0.ports.0.protocol
+              expectedValue: TCP
+            - path: spec.ingress.0.ports.0.port
+              expectedValue: 8443
+            - path: spec.policyTypes.0
+              expectedValue: Ingress
+    explanation:
+      elements:
+        - type: context
+          text: |
+            An empty `podSelector: {}` matches every Pod in the NetworkPolicy's namespace, and an
+            empty (or absent) `ingress` list with `policyTypes: [Ingress]` means "no ingress rule
+            admits anything" — that combination is the standard default-deny pattern. Layering a
+            second, narrower policy on top is additive: NetworkPolicies never subtract from each
+            other, so the deny-all baseline stays in force everywhere the allow rule doesn't apply.
+            Selecting the source namespace by its automatic `kubernetes.io/metadata.name` label is
+            more precise than a custom label, since it can't be accidentally removed by whoever
+            owns that namespace.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/concepts/services-networking/network-policies/
+              text: Network Policies
+            - url: https://kubernetes.io/docs/concepts/services-networking/network-policies/#default-deny-all-ingress-traffic
+              text: Default Deny All Ingress Traffic
+
+  - title: "CIS Benchmark Audit of the Control Plane"
+    category: "CIS Benchmarks"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          You need to audit this control-plane node's Kubernetes component configuration
+          (kube-apiserver, kube-controller-manager, kube-scheduler, etcd) against the CIS
+          Kubernetes Benchmark, using the standard tool for this rather than checking each flag by
+          hand.
+      - type: question
+        question:
+          questionType: command
+          header: "Run the CIS benchmark check scoped to the control-plane checks only."
+          command:
+            executable: kube-bench
+            subcommands:
+              - name: run
+            flags:
+              - name: targets
+                required: true
+                value: master
+      - type: question
+        question:
+          questionType: single-line
+          header: "In the kube-bench output, which of the three result markers means a check could not be automatically evaluated and needs manual review?"
+          expectedAnswer: "WARN"
+          cel: "answer.upperAscii() == 'WARN'"
+    explanation:
+      elements:
+        - type: context
+          text: |
+            `kube-bench run --targets=master` runs only the control-plane section of the benchmark
+            (there's a separate `node` target for kubelet/kube-proxy checks). Results come back as
+            PASS, FAIL, or WARN — WARN means the check needs a value only a human can judge (e.g.
+            "ensure an appropriate value is set", where "appropriate" depends on your environment),
+            not that it's already known to be wrong.
+        - type: references
+          links:
+            - url: https://github.com/aquasecurity/kube-bench
+              text: kube-bench
+            - url: https://www.cisecurity.org/benchmark/kubernetes
+              text: CIS Kubernetes Benchmark
+
+  - title: "TLS-Terminated Ingress"
+    category: "Ingress TLS"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          Service `checkout-svc` in namespace `shop` (port 443) needs to be reachable at
+          `checkout.shop.example.com` over HTTPS only, terminating TLS with an existing Secret
+          named `checkout-tls`.
+      - type: question
+        question:
+          questionType: manifest
+          header: "Write the Ingress that terminates TLS for this host using the existing Secret."
+          manifestDefinitionId: ingress-v1
+          expectedFields:
+            - path: metadata.namespace
+              expectedValue: shop
+            - path: spec.tls.0.hosts.0
+              expectedValue: checkout.shop.example.com
+            - path: spec.tls.0.secretName
+              expectedValue: checkout-tls
+            - path: spec.rules.0.host
+              expectedValue: checkout.shop.example.com
+            - path: spec.rules.0.http.paths.0.backend.service.name
+              expectedValue: checkout-svc
+            - path: spec.rules.0.http.paths.0.backend.service.port.number
+              expectedValue: 443
+    explanation:
+      elements:
+        - type: context
+          text: |
+            The `spec.tls` block and the routing `spec.rules` block are independent — TLS just
+            tells the controller which certificate Secret to present for which host(s); it doesn't
+            imply an ingress rule on its own, and an ingress rule without a matching `tls` entry
+            for its host is served in plaintext even if a `tls` block exists for other hosts.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/concepts/services-networking/ingress/#tls
+              text: "Ingress — TLS"
+
+  - title: "Blocking Access to Node Metadata"
+    category: "Node Metadata Protection"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          This cluster runs on a cloud provider whose instance metadata service answers on
+          `169.254.169.254`. Any compromised Pod that can reach that address can potentially read
+          node IAM credentials. Pods in namespace `workloads` must be blocked from reaching it,
+          while all other egress traffic for those Pods continues to work normally.
+      - type: question
+        question:
+          questionType: manifest
+          header: "Write a NetworkPolicy in workloads that blocks egress to the metadata IP for every Pod in the namespace, without otherwise restricting egress."
+          manifestDefinitionId: networkpolicy-v1
+          expectedFields:
+            - path: metadata.namespace
+              expectedValue: workloads
+            - path: spec.podSelector
+              expectedValue: {}
+            - path: spec.policyTypes.0
+              expectedValue: Egress
+            - path: spec.egress.0.to.0.ipBlock.cidr
+              expectedValue: 0.0.0.0/0
+            - path: spec.egress.0.to.0.ipBlock.except.0
+              expectedValue: 169.254.169.254/32
+    explanation:
+      elements:
+        - type: context
+          text: |
+            NetworkPolicy has no explicit "deny" rule type — every rule is an allow, so blocking one
+            destination while permitting everything else means allowing the entire address space
+            *except* that one address, via `ipBlock.except`. A policy that only lists the metadata
+            IP as a destination would flip the intent entirely: with `policyTypes: [Egress]` and
+            just one egress rule, any destination not listed becomes unreachable, not the other way
+            around.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/concepts/services-networking/network-policies/#networkpolicy-resource
+              text: NetworkPolicy Resource — ipBlock
+
+  - title: "Verifying Platform Binaries Before Deploying"
+    category: "Binary Verification"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          You downloaded `kubelet` (v1.34.0, linux/amd64) from the official Kubernetes release
+          server, along with its published SHA-512 checksum in a file named `kubelet.sha512`. You
+          must confirm the binary hasn't been tampered with before installing it.
+      - type: question
+        question:
+          questionType: command
+          header: "Verify the downloaded kubelet binary against its published checksum file."
+          command:
+            executable: sha512sum
+            flags:
+              - name: check
+                short: "c"
+                boolean: true
+                required: true
+            positionals:
+              - index: 0
+                required: true
+                value: kubelet.sha512
+                description: checksum file
+    explanation:
+      elements:
+        - type: context
+          text: |
+            `sha512sum -c <file>` reads a checksum file (in the `<hash>  <filename>` format the
+            Kubernetes release process publishes) and re-hashes the named file(s) in the current
+            directory, printing `OK` or `FAILED` per entry — you never have to manually copy a hash
+            out of a webpage and compare it by eye. Skipping this step means installing a binary
+            purely on the trust that the download wasn't tampered with in transit or at the mirror.
+        - type: references
+          links:
+            - url: https://kubernetes.io/releases/download/
+              text: Kubernetes Release Downloads

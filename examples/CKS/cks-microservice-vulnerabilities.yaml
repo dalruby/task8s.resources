@@ -1,0 +1,269 @@
+apiVersion: v1alpha1
+name: "CKS: Minimize Microservice Vulnerabilities"
+k8sVersion: "1.34.0"
+
+timing:
+  enabled: true
+  limitSeconds: 6300
+
+introduction:
+  elements:
+    - type: context
+      text: |
+        Covers the CKS "Minimize Microservice Vulnerabilities" domain (20% of the exam): Pod
+        Security Standards, managing Secrets safely, sandboxed-container isolation for
+        multi-tenancy, and Pod-to-Pod encryption.
+
+        Pod Security Admission itself (the enforce/warn/audit labels and the restricted/baseline
+        profiles) is covered in depth in the separate CKA set "Pod Security Admission &
+        Standards" — this set assumes that knowledge and focuses on what's specific to CKS:
+        Secrets handling, sandboxing, and service-mesh-level encryption.
+
+        All manifest and command questions require full recall — no syntax scaffolding is provided.
+    - type: references
+      links:
+        - url: https://training.linuxfoundation.org/certification/certified-kubernetes-security-specialist-cks/
+          text: CKS Domains and Competencies
+        - url: https://kubernetes.io/docs/concepts/security/pod-security-standards/
+          text: Pod Security Standards
+
+manifestDefinitions:
+  - id: networkpolicy-v1
+    kind: NetworkPolicy
+    apiVersion: networking.k8s.io/v1
+    autoLoad: true
+  - id: namespace-v1
+    kind: Namespace
+    apiVersion: v1
+    autoLoad: true
+  - id: pod-v1
+    kind: Pod
+    apiVersion: v1
+    autoLoad: true
+  - id: deployment-v1
+    kind: Deployment
+    apiVersion: apps/v1
+    autoLoad: true
+  - id: secret-v1
+    kind: Secret
+    apiVersion: v1
+    autoLoad: true
+  - id: runtimeclass-v1
+    kind: RuntimeClass
+    apiVersion: node.k8s.io/v1
+    autoLoad: true
+  - id: peerauthentication-v1
+    kind: PeerAuthentication
+    apiVersion: security.istio.io/v1
+    schema:
+      type: object
+
+scenarios:
+  - title: "Enforcing the Restricted Pod Security Standard"
+    category: "Pod Security Standards"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          Namespace `payments-svc` will host newly-written microservices with no legacy compliance
+          concerns. Every Pod submitted to it must meet the restricted Pod Security Standard,
+          pinned so an upgrade to a newer Kubernetes release doesn't silently change the enforced
+          rule set.
+      - type: question
+        question:
+          questionType: manifest
+          header: "Write the Namespace manifest enforcing this."
+          manifestDefinitionId: namespace-v1
+          expectedFields:
+            - path: metadata.name
+              expectedValue: payments-svc
+            - path: "metadata.labels[pod-security.kubernetes.io/enforce]"
+              expectedValue: restricted
+            - path: "metadata.labels[pod-security.kubernetes.io/enforce-version]"
+              expectedValue: latest
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Pod Security Admission is configured entirely through Namespace labels — see the
+            dedicated "Pod Security Admission & Standards" CKA set for the full breakdown of
+            enforce/warn/audit modes and exactly what the restricted profile requires from a Pod's
+            securityContext.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/concepts/security/pod-security-admission/
+              text: Pod Security Admission
+
+  - title: "Removing a Hardcoded Secret from a Deployment"
+    category: "Secrets Management"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          The Deployment below embeds its database password directly as a plaintext environment
+          variable — visible to anyone with `kubectl get deployment -o yaml` access, logged
+          wherever the Pod spec is logged, and impossible to rotate without a new Deployment
+          rollout.
+      - type: manifest
+        header: "Existing db-worker Deployment:"
+        content: |
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: db-worker
+            namespace: payments-svc
+          spec:
+            replicas: 2
+            selector:
+              matchLabels:
+                app: db-worker
+            template:
+              metadata:
+                labels:
+                  app: db-worker
+              spec:
+                containers:
+                - name: db-worker
+                  image: db-worker:3.1
+                  env:
+                  - name: DB_PASSWORD
+                    value: "Sup3rSecret!"
+      - type: question
+        question:
+          questionType: manifest
+          header: "Create a Secret named db-worker-creds in payments-svc holding key password with value Sup3rSecret!."
+          manifestDefinitionId: secret-v1
+          expectedFields:
+            - path: metadata.name
+              expectedValue: db-worker-creds
+            - path: metadata.namespace
+              expectedValue: payments-svc
+            - path: stringData.password
+              expectedValue: "Sup3rSecret!"
+      - type: question
+        question:
+          questionType: manifest
+          header: "Rewrite the Deployment so DB_PASSWORD is sourced from that Secret instead of a literal value."
+          manifestDefinitionId: deployment-v1
+          expectedFields:
+            - path: metadata.name
+              expectedValue: db-worker
+            - path: metadata.namespace
+              expectedValue: payments-svc
+            - path: spec.template.spec.containers.0.name
+              expectedValue: db-worker
+            - path: spec.template.spec.containers.0.env.0.name
+              expectedValue: DB_PASSWORD
+            - path: spec.template.spec.containers.0.env.0.valueFrom.secretKeyRef.name
+              expectedValue: db-worker-creds
+            - path: spec.template.spec.containers.0.env.0.valueFrom.secretKeyRef.key
+              expectedValue: password
+    explanation:
+      elements:
+        - type: context
+          text: |
+            A `Secret` isn't encrypted by the API server unless an `EncryptionConfiguration` is
+            explicitly configured for it (etcd stores it base64-encoded, which is encoding, not
+            encryption) — but even without that, referencing one via `secretKeyRef` is strictly
+            better than a literal value: it can be rotated by updating one object instead of every
+            Deployment that used the old value, it's excluded from `kubectl get deployment -o yaml`
+            output by reference, and RBAC can restrict who is allowed to read Secret contents
+            independently of who can read Deployments.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/concepts/configuration/secret/
+              text: Secrets
+            - url: https://kubernetes.io/docs/tasks/administer-cluster/encrypt-data/
+              text: Encrypting Confidential Data at Rest
+
+  - title: "Sandboxing an Untrusted Multi-Tenant Workload"
+    category: "Isolation Techniques"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          Namespace `tenant-uploads` runs a workload that processes user-uploaded files from
+          multiple untrusted external tenants — a container-escape exploit here is a materially
+          worse outcome than in first-party workloads, so it needs stronger isolation than the
+          default container runtime provides. A `RuntimeClass` handler named `gvisor` is already
+          registered on every node.
+      - type: question
+        question:
+          questionType: manifest
+          header: "Register a RuntimeClass named sandboxed pointing at that handler."
+          manifestDefinitionId: runtimeclass-v1
+          expectedFields:
+            - path: metadata.name
+              expectedValue: sandboxed
+            - path: handler
+              expectedValue: gvisor
+      - type: question
+        question:
+          questionType: manifest
+          header: "Write a Pod named file-scanner (image virus-scan:1.4) in tenant-uploads that runs under that sandboxed RuntimeClass."
+          manifestDefinitionId: pod-v1
+          expectedFields:
+            - path: metadata.name
+              expectedValue: file-scanner
+            - path: metadata.namespace
+              expectedValue: tenant-uploads
+            - path: spec.containers.0.image
+              expectedValue: virus-scan:1.4
+            - path: spec.runtimeClassName
+              expectedValue: sandboxed
+    explanation:
+      elements:
+        - type: context
+          text: |
+            A `RuntimeClass` doesn't implement sandboxing itself — it's an indirection layer that
+            lets a Pod request a named container runtime configuration (gVisor, Kata Containers,
+            etc.) that must already be installed and registered with the container runtime on every
+            node the Pod could land on. Sandboxed runtimes like gVisor intercept syscalls in
+            userspace rather than passing them straight to the host kernel, which contains a
+            container-escape exploit that would otherwise compromise the node itself.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/concepts/containers/runtime-class/
+              text: Runtime Class
+            - url: https://gvisor.dev/docs/user_guide/quick_start/kubernetes/
+              text: gVisor with Kubernetes
+
+  - title: "Enforcing Strict mTLS Between Services"
+    category: "Pod-to-Pod Encryption"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          A service mesh (Istio) is already installed in this cluster with sidecar injection
+          enabled. Namespace `payments-svc` currently allows both plaintext and mTLS traffic between
+          its Pods — any Pod that can reach another on the network can talk to it without a
+          certificate. All Pod-to-Pod traffic in this namespace must be forced onto mutual TLS.
+      - type: question
+        question:
+          questionType: manifest
+          header: "Write the PeerAuthentication resource enforcing strict mTLS for the whole namespace."
+          manifestDefinitionId: peerauthentication-v1
+          expectedFields:
+            - path: metadata.name
+              expectedValue: default
+            - path: metadata.namespace
+              expectedValue: payments-svc
+            - path: spec.mtls.mode
+              expectedValue: STRICT
+    explanation:
+      elements:
+        - type: context
+          text: |
+            A `NetworkPolicy` controls *whether* traffic between two Pods is permitted at the
+            IP/port level — it says nothing about whether that traffic is encrypted once it's
+            allowed through. A service mesh's `PeerAuthentication` (Istio) or equivalent operates a
+            layer up: with `mode: STRICT`, the mesh's sidecar proxies reject any connection that
+            isn't mutually authenticated over TLS, closing the gap NetworkPolicy leaves — that a
+            permitted connection can still be observed or tampered with in transit if it's
+            unencrypted.
+        - type: references
+          links:
+            - url: https://istio.io/latest/docs/concepts/security/#peer-authentication
+              text: "Istio — Peer Authentication"
+            - url: https://istio.io/latest/docs/tasks/security/authentication/mtls-migration/
+              text: "Istio — Mutual TLS Migration"

@@ -1,0 +1,61 @@
+apiVersion: v1alpha1
+name: CKS
+subdirs: []
+sets:
+  - name: "CKS: Cluster Setup"
+    filename: cks-cluster-setup.yaml
+    description: "Covers the CKS Cluster Setup domain: default-deny and scoped NetworkPolicies, auditing components with kube-bench against the CIS Benchmark, TLS-terminated Ingress, blocking access to cloud node metadata endpoints, and verifying platform binaries with checksums before deploying."
+    tags:
+      - Network Policy
+      - CIS Benchmark
+      - Ingress TLS
+      - Node Metadata
+      - Binary Verification
+      - Hard
+  - name: "CKS: Cluster Hardening"
+    filename: cks-cluster-hardening.yaml
+    description: "Covers the CKS Cluster Hardening domain: minimal-permission RBAC Roles and RoleBindings, dedicated least-privilege ServiceAccounts, disabling default ServiceAccount token automount, restricting anonymous API access, and upgrading kubeadm clusters to patch known vulnerabilities."
+    tags:
+      - RBAC
+      - ServiceAccounts
+      - API Server
+      - kubeadm Upgrade
+      - Hard
+  - name: "CKS: System Hardening"
+    filename: cks-system-hardening.yaml
+    description: "Covers the CKS System Hardening domain: confining containers with seccomp and AppArmor profiles, ensuring container immutability at runtime with readOnlyRootFilesystem, and minimizing host OS footprint by purging unused packages."
+    tags:
+      - Seccomp
+      - AppArmor
+      - Immutability
+      - Host Hardening
+      - Hard
+  - name: "CKS: Minimize Microservice Vulnerabilities"
+    filename: cks-microservice-vulnerabilities.yaml
+    description: "Covers the CKS Minimize Microservice Vulnerabilities domain: enforcing Pod Security Standards, replacing hardcoded Secrets in Deployments with secretKeyRef, sandboxing untrusted multi-tenant workloads with RuntimeClass, and enforcing strict mTLS Pod-to-Pod encryption with Istio."
+    tags:
+      - Pod Security Standards
+      - Secrets
+      - RuntimeClass
+      - mTLS
+      - Hard
+  - name: "CKS: Supply Chain Security"
+    filename: cks-supply-chain-security.yaml
+    description: "Covers the CKS Supply Chain Security domain: minimizing base image footprint with multi-stage distroless Dockerfiles, restricting allowed image registries with OPA Gatekeeper, generating SBOMs and failing builds on vulnerabilities with Trivy, signing and verifying images with cosign, and static analysis with KubeLinter."
+    tags:
+      - Distroless
+      - OPA Gatekeeper
+      - Trivy
+      - SBOM
+      - cosign
+      - KubeLinter
+      - Hard
+  - name: "CKS: Monitoring, Logging and Runtime Security"
+    filename: cks-monitoring-logging-runtime-security.yaml
+    description: "Covers the CKS Monitoring, Logging and Runtime Security domain: writing Falco rules for shell-spawn and filesystem-tampering detection, configuring Kubernetes audit policy to log Secrets access, and investigating a suspicious kubectl exec through raw audit logs."
+    tags:
+      - Falco
+      - Audit Logs
+      - Runtime Security
+      - Investigation
+      - Hard

@@ -1,0 +1,281 @@
+apiVersion: v1alpha1
+name: "CKS: Cluster Hardening"
+k8sVersion: "1.34.0"
+
+timing:
+  enabled: true
+  limitSeconds: 5400
+
+introduction:
+  elements:
+    - type: context
+      text: |
+        Covers the CKS "Cluster Hardening" domain (15% of the exam): using RBAC to minimize
+        exposure, exercising caution with ServiceAccounts (disabling defaults, minimizing
+        permissions on new ones), restricting access to the Kubernetes API, and upgrading
+        Kubernetes to avoid known vulnerabilities.
+
+        All manifest and command questions require full recall — no syntax scaffolding is provided.
+    - type: references
+      links:
+        - url: https://training.linuxfoundation.org/certification/certified-kubernetes-security-specialist-cks/
+          text: CKS Domains and Competencies
+        - url: https://kubernetes.io/docs/reference/access-authn-authz/rbac/
+          text: Using RBAC Authorization
+
+manifestDefinitions:
+  - id: role-v1
+    kind: Role
+    apiVersion: rbac.authorization.k8s.io/v1
+    autoLoad: true
+  - id: rolebinding-v1
+    kind: RoleBinding
+    apiVersion: rbac.authorization.k8s.io/v1
+    autoLoad: true
+  - id: serviceaccount-v1
+    kind: ServiceAccount
+    apiVersion: v1
+    autoLoad: true
+  - id: pod-v1
+    kind: Pod
+    apiVersion: v1
+    autoLoad: true
+
+scenarios:
+  - title: "Minimal Role for a CI Deploy Bot"
+    category: "RBAC"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          A CI pipeline needs to roll out Deployments in namespace `staging` — it must be able to
+          read, create, update, and patch Deployments there, and nothing else. It must not be able
+          to delete them, and it must have no access to any other resource type.
+      - type: question
+        question:
+          questionType: manifest
+          header: "Write the Role granting exactly that access."
+          manifestDefinitionId: role-v1
+          expectedFields:
+            - path: metadata.name
+              expectedValue: deploy-bot
+            - path: metadata.namespace
+              expectedValue: staging
+            - path: rules.0.apiGroups.0
+              expectedValue: apps
+            - path: rules.0.resources.0
+              expectedValue: deployments
+    explanation:
+      elements:
+        - type: context
+          text: |
+            RBAC is allow-only and additive — there's no way to grant broad access and then
+            subtract `delete` from it. Listing exactly the verbs needed (`get`, `list`, `watch`,
+            `create`, `update`, `patch`) on exactly the one resource, in exactly the one namespace
+            via a `Role` rather than a `ClusterRole`, is what keeps this bot from being useful to an
+            attacker beyond its intended job even if its credentials leak.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/reference/access-authn-authz/rbac/#role-and-clusterrole
+              text: "RBAC — Role and ClusterRole"
+
+  - title: "Binding a ServiceAccount with Least Privilege"
+    category: "ServiceAccounts"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          A metrics-scraper Pod in namespace `monitoring` needs to list and get Pods in that same
+          namespace via the API — nothing else. It must not run under the namespace's `default`
+          ServiceAccount.
+      - type: question
+        question:
+          questionType: manifest
+          header: "Create a dedicated ServiceAccount named metrics-reader for this Pod."
+          manifestDefinitionId: serviceaccount-v1
+          expectedFields:
+            - path: metadata.name
+              expectedValue: metrics-reader
+            - path: metadata.namespace
+              expectedValue: monitoring
+      - type: question
+        question:
+          questionType: manifest
+          header: "Create the Role granting only get/list on pods in monitoring."
+          manifestDefinitionId: role-v1
+          expectedFields:
+            - path: metadata.namespace
+              expectedValue: monitoring
+            - path: rules.0.resources.0
+              expectedValue: pods
+            - path: rules.0.verbs.0
+              expectedValue: get
+            - path: rules.0.verbs.1
+              expectedValue: list
+      - type: question
+        question:
+          questionType: manifest
+          header: "Bind metrics-reader to that Role with a RoleBinding named metrics-reader-binding."
+          manifestDefinitionId: rolebinding-v1
+          expectedFields:
+            - path: metadata.name
+              expectedValue: metrics-reader-binding
+            - path: metadata.namespace
+              expectedValue: monitoring
+            - path: subjects.0.kind
+              expectedValue: ServiceAccount
+            - path: subjects.0.name
+              expectedValue: metrics-reader
+            - path: subjects.0.namespace
+              expectedValue: monitoring
+            - path: roleRef.kind
+              expectedValue: Role
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Every namespace gets a `default` ServiceAccount automatically, and every Pod that
+            doesn't explicitly request another one runs as it — which means an attacker who
+            compromises *any* unlabeled Pod in a namespace inherits whatever that namespace's
+            `default` SA can do. Creating a dedicated SA per workload, scoped by its own Role, means
+            a compromised metrics-scraper can only read Pods — not touch Secrets, Deployments, or
+            anything else that happened to accumulate on `default` over time.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/tasks/configure-pod-container/configure-service-account/
+              text: Configure Service Accounts for Pods
+
+  - title: "Disabling Default ServiceAccount Token Auto-Mount"
+    category: "ServiceAccounts"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          Namespace `reporting` runs several Pods that never call the Kubernetes API at all. Every
+          one of them is still getting a ServiceAccount token auto-mounted at
+          `/var/run/secrets/kubernetes.io/serviceaccount`, which is unnecessary attack surface if
+          any of those Pods is ever compromised.
+      - type: question
+        question:
+          questionType: manifest
+          header: "Patch the namespace's default ServiceAccount so tokens are no longer auto-mounted into new Pods by default."
+          manifestDefinitionId: serviceaccount-v1
+          expectedFields:
+            - path: metadata.name
+              expectedValue: default
+            - path: metadata.namespace
+              expectedValue: reporting
+            - path: automountServiceAccountToken
+              expectedValue: false
+    explanation:
+      elements:
+        - type: context
+          text: |
+            `automountServiceAccountToken: false` can be set on the ServiceAccount itself (applies
+            to every Pod using it, unless a Pod overrides the field locally) or on an individual
+            Pod's spec. Setting it at the ServiceAccount level is the safer default for a namespace
+            where most workloads don't need API access — a Pod that genuinely needs the token can
+            still request it explicitly by setting the field to `true` on itself.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/tasks/configure-pod-container/configure-service-account/#opt-out-of-api-credential-automounting
+              text: Opt Out of API Credential Automounting
+
+  - title: "Restricting Anonymous API Access"
+    category: "API Server Hardening"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          `kubectl get pods --insecure-skip-tls-verify --server=https://<apiserver-ip>:6443` without
+          any credentials currently returns a real (if limited) response instead of an
+          authentication error — this control plane still accepts anonymous requests, which must be
+          turned off.
+      - type: manifest
+        header: "Relevant excerpt of /etc/kubernetes/manifests/kube-apiserver.yaml:"
+        content: |
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: kube-apiserver
+            namespace: kube-system
+          spec:
+            containers:
+            - name: kube-apiserver
+              command:
+              - kube-apiserver
+              - --advertise-address=192.168.1.10
+              - --authorization-mode=Node,RBAC
+              - --allow-privileged=true
+      - type: question
+        question:
+          questionType: single-line
+          header: "What flag, added to this command list, disables anonymous authentication?"
+          expectedAnswer: "--anonymous-auth=false"
+          cel: "answer.contains('anonymous-auth') && answer.contains('false')"
+    explanation:
+      elements:
+        - type: context
+          text: |
+            `--anonymous-auth` defaults to `true`, mapping any unauthenticated request to the
+            `system:anonymous` user in the `system:unauthenticated` group. Because `RBAC` is an
+            authorization mode here (not the only line of defense), a request that fails to
+            authenticate as anyone in particular can still be authorized if that anonymous identity
+            happens to have a binding — which is exactly the gap `--anonymous-auth=false` closes by
+            rejecting the request before authorization is even considered.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/reference/command-line-tools-reference/kube-apiserver/
+              text: kube-apiserver Reference
+
+  - title: "Upgrading Kubernetes to Patch a Known Vulnerability"
+    category: "Cluster Upgrade"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          This kubeadm-managed control-plane node is running Kubernetes v1.33.4, which has a
+          disclosed CVE fixed in v1.33.5. The `kubeadm`, `kubelet`, and `kubectl` packages for
+          v1.33.5 are already available in the configured package repository, but not yet
+          installed.
+      - type: question
+        question:
+          questionType: command
+          header: "Upgrade the kubeadm tool itself to the patched version first."
+          command:
+            executable: apt-get
+            subcommands:
+              - name: install
+            positionals:
+              - index: 0
+                required: true
+                regex: '^kubeadm=1\.33\.5-'
+                description: pinned package version
+      - type: question
+        question:
+          questionType: command
+          header: "Apply the control-plane upgrade to the patched version."
+          command:
+            executable: kubeadm
+            subcommands:
+              - name: upgrade
+              - name: apply
+            positionals:
+              - index: 0
+                required: true
+                value: v1.33.5
+                description: target version
+    explanation:
+      elements:
+        - type: context
+          text: |
+            `kubeadm upgrade apply` refuses to run using a `kubeadm` binary older than the version
+            you're upgrading to, so the tool has to be upgraded (and pinned to an exact version,
+            since an unpinned install would pull whatever is newest) before it can drive the
+            control-plane upgrade. `kubelet` and `kubectl` on each node are upgraded and restarted
+            as a separate, later step — `kubeadm upgrade apply` only touches the control-plane
+            components themselves.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/kubeadm-upgrade/
+              text: Upgrading kubeadm Clusters

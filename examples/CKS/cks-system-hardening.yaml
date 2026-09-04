@@ -1,0 +1,195 @@
+apiVersion: v1alpha1
+name: "CKS: System Hardening"
+k8sVersion: "1.34.0"
+
+timing:
+  enabled: true
+  limitSeconds: 4500
+
+introduction:
+  elements:
+    - type: context
+      text: |
+        Covers the CKS "System Hardening" domain (10% of the exam): minimizing host OS footprint,
+        least-privilege identity and access management, minimizing external network access, kernel
+        hardening with AppArmor and seccomp, and ensuring container immutability at runtime.
+
+        All manifest and command questions require full recall — no syntax scaffolding is provided.
+    - type: references
+      links:
+        - url: https://training.linuxfoundation.org/certification/certified-kubernetes-security-specialist-cks/
+          text: CKS Domains and Competencies
+        - url: https://kubernetes.io/docs/tutorials/security/seccomp/
+          text: Restrict a Container's Syscalls with seccomp
+
+manifestDefinitions:
+  - id: pod-v1
+    kind: Pod
+    apiVersion: v1
+    autoLoad: true
+
+scenarios:
+  - title: "Confining a Container with a Custom Seccomp Profile"
+    category: "Kernel Hardening"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          A localhost seccomp profile named `audit-restrictive.json` is already present in the
+          kubelet's default seccomp root directory on every node. A new Pod, `log-shipper`, running
+          image `fluent-bit:2.2`, must be confined to that profile rather than running unconfined.
+      - type: question
+        question:
+          questionType: manifest
+          header: "Write the Pod manifest applying that seccomp profile."
+          manifestDefinitionId: pod-v1
+          expectedFields:
+            - path: metadata.name
+              expectedValue: log-shipper
+            - path: spec.containers.0.image
+              expectedValue: fluent-bit:2.2
+            - path: spec.securityContext.seccompProfile.type
+              expectedValue: Localhost
+            - path: spec.securityContext.seccompProfile.localhostProfile
+              expectedValue: audit-restrictive.json
+    explanation:
+      elements:
+        - type: context
+          text: |
+            `type: Localhost` tells the kubelet to load a specific profile file by name from its
+            seccomp root (`/var/lib/kubelet/seccomp/` by default) rather than using the container
+            runtime's built-in default filter (`type: RuntimeDefault`) or running fully unconfined
+            (`type: Unconfined`). `localhostProfile` is a path relative to that root, not an
+            absolute path — the profile file itself has to already exist there on every node the
+            Pod could be scheduled to, or the Pod fails to start.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/tutorials/security/seccomp/
+              text: Restrict a Container's Syscalls with seccomp
+
+  - title: "Confining a Container with AppArmor"
+    category: "Kernel Hardening"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          An AppArmor profile named `k8s-restrictive` is already loaded on every node. A Pod named
+          `edge-proxy` has a single container also named `edge-proxy` (image `nginx:1.27`) that
+          must run confined under that profile.
+      - type: question
+        question:
+          questionType: manifest
+          header: "Write the Pod manifest confining the edge-proxy container to that AppArmor profile."
+          manifestDefinitionId: pod-v1
+          expectedFields:
+            - path: metadata.name
+              expectedValue: edge-proxy
+            - path: spec.containers.0.name
+              expectedValue: edge-proxy
+            - path: spec.containers.0.image
+              expectedValue: nginx:1.27
+            - path: spec.containers.0.securityContext.appArmorProfile.type
+              expectedValue: Localhost
+            - path: spec.containers.0.securityContext.appArmorProfile.localhostProfile
+              expectedValue: k8s-restrictive
+    explanation:
+      elements:
+        - type: context
+          text: |
+            As of Kubernetes 1.30, AppArmor is configured per-container through
+            `securityContext.appArmorProfile` directly on the container — the older mechanism (a
+            `container.apparmor.security.beta.kubernetes.io/<container-name>` annotation on the Pod)
+            still works for compatibility but is deprecated. Either way, the profile is referenced
+            by name and must already be loaded into the kernel on the node (`aa-status` confirms
+            this) — Kubernetes has no way to load an AppArmor profile onto a node for you.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/tutorials/security/apparmor/
+              text: Restrict a Container's Access to Resources with AppArmor
+
+  - title: "Ensuring Container Immutability at Runtime"
+    category: "Container Immutability"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          Pod `report-generator` (image `report-gen:4.1`) writes its output only to
+          `/tmp/reports` and needs no other writable filesystem access. As it stands, an attacker
+          who gains code execution inside it could rewrite the application binary itself or drop a
+          persistence mechanism anywhere on disk.
+      - type: question
+        question:
+          questionType: manifest
+          header: "Write the Pod so its root filesystem is immutable at runtime, with only /tmp/reports writable via an emptyDir volume."
+          manifestDefinitionId: pod-v1
+          expectedFields:
+            - path: metadata.name
+              expectedValue: report-generator
+            - path: spec.containers.0.image
+              expectedValue: report-gen:4.1
+            - path: spec.containers.0.securityContext.readOnlyRootFilesystem
+              expectedValue: true
+            - path: spec.containers.0.volumeMounts.0.mountPath
+              expectedValue: /tmp/reports
+            - path: spec.volumes.0.emptyDir
+              expectedValue: {}
+    explanation:
+      elements:
+        - type: context
+          text: |
+            `readOnlyRootFilesystem: true` makes every path outside explicitly-mounted volumes
+            read-only at the kernel level — a process trying to write anywhere else gets a
+            permission error even running as root inside the container. This forces you to be
+            deliberate about exactly which paths a workload is allowed to persist to, which is why
+            it's paired with a scoped `emptyDir` for the one directory that legitimately needs to be
+            writable rather than leaving the whole filesystem open.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/tasks/configure-pod-container/security-context/
+              text: Configure a Security Context for a Pod or Container
+
+  - title: "Minimizing Host OS Footprint"
+    category: "Host Hardening"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          A worker node has `telnet`, `rsh-client`, and `nfs-common` installed from the base image
+          — none of them are used by anything running on this node, and each is a documented attack
+          surface expansion (unencrypted remote shells, an NFS client stack) that has no business
+          being present on a hardened Kubernetes node.
+      - type: question
+        question:
+          questionType: command
+          header: "Remove all three packages, purging their configuration files as well."
+          command:
+            executable: apt-get
+            subcommands:
+              - name: purge
+            positionals:
+              - index: 0
+                required: true
+                value: telnet
+                description: package
+              - index: 1
+                required: true
+                value: rsh-client
+                description: package
+              - index: 2
+                required: true
+                value: nfs-common
+                description: package
+    explanation:
+      elements:
+        - type: context
+          text: |
+            `apt-get remove` uninstalls the package's files but leaves its configuration behind
+            under `/etc`; `apt-get purge` also removes that configuration. For a hardening exercise
+            the distinction matters — a leftover, unused config file is a smaller risk than a
+            leftover binary, but the goal here is a minimal footprint, not just an inactive one.
+            Every package that isn't in active use widens the surface a local privilege-escalation
+            chain has to work with, even if nothing is currently listening or running.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/concepts/security/overview/
+              text: Cloud Native Security and Kubernetes

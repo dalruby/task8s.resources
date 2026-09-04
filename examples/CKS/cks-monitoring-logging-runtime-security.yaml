@@ -1,0 +1,236 @@
+apiVersion: v1alpha1
+name: "CKS: Monitoring, Logging and Runtime Security"
+k8sVersion: "1.34.0"
+
+timing:
+  enabled: true
+  limitSeconds: 6300
+
+introduction:
+  elements:
+    - type: context
+      text: |
+        Covers the CKS "Monitoring, Logging and Runtime Security" domain (20% of the exam):
+        behavioral analytics with Falco, threat detection across infrastructure/apps/data/users/
+        workloads, investigating attack phases, and Kubernetes audit logs.
+
+        All manifest and command questions require full recall — no syntax scaffolding is provided.
+    - type: references
+      links:
+        - url: https://training.linuxfoundation.org/certification/certified-kubernetes-security-specialist-cks/
+          text: CKS Domains and Competencies
+        - url: https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/
+          text: Auditing
+
+manifestDefinitions:
+  - id: auditpolicy-v1
+    kind: Policy
+    apiVersion: audit.k8s.io/v1
+    schema:
+      type: object
+
+scenarios:
+  - title: "Writing a Falco Rule to Detect a Shell in a Container"
+    category: "Behavioral Analytics"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          Falco is already running as a DaemonSet on every node. A shell process (`bash`, `sh`, or
+          equivalent) being spawned inside any container in this cluster is not expected behavior
+          for any of the workloads running here, and should raise a WARNING-priority alert
+          identifying the container and the command that ran.
+      - type: question
+        question:
+          questionType: multiline
+          header: "Write the Falco rule detecting this."
+          hint: "spawned_process is Falco's built-in macro for exec/clone syscalls; proc.name is the process name."
+          expectedAnswer: |
+            - rule: Shell Spawned In Container
+              desc: Detect a shell process spawned inside a container
+              condition: spawned_process and container and proc.name in (bash, sh, dash, zsh)
+              output: Shell spawned in container (container=%container.name command=%proc.cmdline)
+              priority: WARNING
+          cel: >
+            answer.contains('spawned_process') && answer.contains('container') &&
+            (answer.contains('proc.name') || answer.contains('proc.cmdline')) &&
+            answer.contains('priority') && answer.upperAscii().contains('WARNING')
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Falco rules match on a `condition` built from its syscall-event fields —
+            `spawned_process` is true on process-execution events, `container` restricts the
+            condition to events happening inside a container (excluding the host itself), and
+            `proc.name` is the field to check the spawned binary's name against. The `output`
+            template controls what shows up in the alert, and `priority` is what a downstream
+            alerting pipeline (Falcosidekick, a SIEM, etc.) would typically route on to decide how
+            urgently a human needs to look at it.
+        - type: references
+          links:
+            - url: https://falco.org/docs/rules/
+              text: Falco Rules
+            - url: https://falco.org/docs/reference/rules/supported-fields/
+              text: Falco Supported Fields
+
+  - title: "Auditing Access to Secrets"
+    category: "Audit Logs"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          There's currently no audit trail of who reads Secret contents in this cluster. Every
+          request that reads a Secret — `get`, `list`, or `watch`, in any namespace — must be logged
+          at the `Metadata` level (who, what, when — not the Secret's actual data, which would
+          defeat the purpose of a Secret in the first place). Everything else can be left unlogged.
+      - type: question
+        question:
+          questionType: manifest
+          header: "Write the audit policy file achieving this."
+          manifestDefinitionId: auditpolicy-v1
+          expectedFields:
+            - path: rules.0.level
+              expectedValue: Metadata
+            - path: rules.0.resources.0.resources.0
+              expectedValue: secrets
+            - path: rules.1.level
+              expectedValue: None
+      - type: question
+        question:
+          questionType: command
+          header: "What kube-apiserver flag points the API server at this policy file?"
+          command:
+            executable: kube-apiserver
+            flags:
+              - name: audit-policy-file
+                required: true
+                value: /etc/kubernetes/audit-policy.yaml
+    explanation:
+      elements:
+        - type: context
+          text: |
+            An audit `Policy` is an ordered list of rules — the API server uses the *first* rule
+            that matches a given request, so a specific rule (logging `secrets` at `Metadata`) has
+            to come before a catch-all (`level: None` for everything else) or the general rule would
+            shadow it. `Metadata` logs the request's user, verb, resource, and timestamp without the
+            request or response bodies; the higher levels (`Request`, `RequestResponse`) would
+            capture the Secret's actual decoded contents in the audit log itself — a bigger exposure
+            than the read they were meant to detect.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/
+              text: Auditing
+            - url: https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/#audit-policy
+              text: Audit Policy
+
+  - title: "Investigating a Suspicious kubectl exec"
+    category: "Attack Investigation"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          Audit logging at `RequestResponse` level is already enabled for the `pods/exec`
+          subresource, writing to `/var/log/kubernetes/audit.log` in JSON-lines format. A teammate
+          reports a Pod behaving strangely, and you need to find out who ran `kubectl exec` into it
+          and when — without a log aggregation platform, just the raw file on disk.
+      - type: manifest
+        header: "One matching line from /var/log/kubernetes/audit.log (formatted for readability):"
+        content: |
+          {
+            "kind": "Event",
+            "apiVersion": "audit.k8s.io/v1",
+            "level": "RequestResponse",
+            "auditID": "8f0e6c3a-1234-4a5b-9abc-1234567890ab",
+            "stage": "ResponseComplete",
+            "requestURI": "/api/v1/namespaces/prod/pods/web-7d9f/exec?command=%2Fbin%2Fsh&stdin=true&stdout=true&tty=true",
+            "verb": "create",
+            "user": {
+              "username": "system:serviceaccount:ci:deploy-bot"
+            },
+            "objectRef": {
+              "resource": "pods",
+              "namespace": "prod",
+              "name": "web-7d9f",
+              "subresource": "exec"
+            },
+            "requestReceivedTimestamp": "2026-03-14T02:11:07.442112Z"
+          }
+      - type: question
+        question:
+          questionType: single-line
+          header: "Which identity actually ran this exec?"
+          expectedAnswer: "system:serviceaccount:ci:deploy-bot"
+      - type: question
+        question:
+          questionType: command
+          header: "Write the grep command that would find every exec event against Pod web-7d9f in this log file, printed one JSON match per line."
+          command:
+            executable: grep
+            positionals:
+              - index: 0
+                required: true
+                regex: 'web-7d9f.*exec|exec.*web-7d9f'
+                description: search pattern
+              - index: 1
+                required: true
+                value: /var/log/kubernetes/audit.log
+                description: log file
+    explanation:
+      elements:
+        - type: context
+          text: |
+            A `pods/exec` audit event's `user.username` is the identity that actually issued the
+            request — here a ServiceAccount (`ci:deploy-bot`), not a human, which is itself a strong
+            investigative lead: a CI bot running an interactive shell (`tty: true`, `stdin: true`)
+            into a production Pod is not a normal CI action, and its credentials should be treated
+            as compromised until proven otherwise. The `requestURI`'s `subresource=exec` and its
+            query parameters (`command`, `stdin`, `tty`) are what distinguish an actual interactive
+            exec session from an unrelated request against the same Pod.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/#audit-policy
+              text: Audit Policy Reference
+
+  - title: "Detecting Runtime Filesystem Tampering"
+    category: "Runtime Security"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          Pod `checkout-api` should never write to `/usr/bin` or `/usr/sbin` at runtime — those
+          paths only ever change during an image build, so any write there afterward is a strong
+          signal of a dropped implant or an in-memory exploit persisting itself to disk. Falco is
+          already running; you need a rule that catches this specifically, independent of
+          `readOnlyRootFilesystem` (which may not be set on every workload yet).
+      - type: question
+        question:
+          questionType: multiline
+          header: "Write the Falco rule detecting a write to /usr/bin or /usr/sbin inside any container."
+          hint: "Falco's open_write macro matches file-open events requesting write access; fd.name is the path being opened."
+          expectedAnswer: |
+            - rule: Write Below Binary Dir
+              desc: Detect a write to /usr/bin or /usr/sbin at runtime inside a container
+              condition: open_write and container and (fd.name startswith /usr/bin or fd.name startswith /usr/sbin)
+              output: Write below binary dir (container=%container.name file=%fd.name command=%proc.cmdline)
+              priority: CRITICAL
+          cel: >
+            answer.contains('open_write') && answer.contains('container') &&
+            answer.contains('fd.name') &&
+            (answer.contains('/usr/bin') || answer.contains('/usr/sbin')) &&
+            answer.upperAscii().contains('CRITICAL')
+    explanation:
+      elements:
+        - type: context
+          text: |
+            `readOnlyRootFilesystem` prevents this class of tampering outright, but a runtime
+            detection rule is still valuable defense-in-depth: it catches the attempt on workloads
+            that can't yet run with a read-only root (a migration in progress, a legacy app that
+            writes to unexpected paths), and it gives you an audit trail of the attempt itself,
+            which a hard filesystem block doesn't. `priority: CRITICAL` here (versus `WARNING` for
+            the shell-spawn rule) reflects that this specific behavior has essentially no legitimate
+            explanation at runtime, unlike a shell spawn which — while suspicious — occasionally has
+            one.
+        - type: references
+          links:
+            - url: https://falco.org/docs/reference/rules/default-macros/
+              text: Falco Default Macros

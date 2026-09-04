@@ -1,0 +1,327 @@
+apiVersion: v1alpha1
+name: "CKS: Supply Chain Security"
+k8sVersion: "1.34.0"
+
+timing:
+  enabled: true
+  limitSeconds: 6300
+
+introduction:
+  elements:
+    - type: context
+      text: |
+        Covers the CKS "Supply Chain Security" domain (20% of the exam): minimizing base image
+        footprint, understanding the supply chain (SBOM, CI/CD, artifact repositories), securing it
+        (permitted registries, signing and validating artifacts), and static analysis of workloads
+        and images.
+
+        All manifest and command questions require full recall — no syntax scaffolding is provided.
+    - type: references
+      links:
+        - url: https://training.linuxfoundation.org/certification/certified-kubernetes-security-specialist-cks/
+          text: CKS Domains and Competencies
+        - url: https://kubernetes.io/docs/concepts/security/pod-security-standards/
+          text: Kubernetes Security Concepts
+
+manifestDefinitions:
+  - id: constrainttemplate-v1
+    kind: ConstraintTemplate
+    apiVersion: templates.gatekeeper.sh/v1
+    schema:
+      type: object
+  - id: k8sallowedrepos-v1
+    kind: K8sAllowedRepos
+    apiVersion: constraints.gatekeeper.sh/v1beta1
+    schema:
+      type: object
+
+scenarios:
+  - title: "Minimizing a Base Image with a Multi-Stage Build"
+    category: "Base Image Footprint"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          `report-gen` is a statically-linkable Go 1.22 binary built from `main.go` in the current
+          directory. The team's current Dockerfile builds and ships it on top of the full
+          `golang:1.22` image (which includes the entire Go toolchain, a shell, and package
+          managers) — none of that is needed to run the compiled binary, and all of it is
+          unnecessary attack surface and CVE exposure in the final image.
+      - type: question
+        question:
+          questionType: multiline
+          header: "Write a multi-stage Dockerfile that builds the binary in a golang:1.22 stage, then ships only the binary on a distroless static base, running as a non-root user."
+          hint: "gcr.io/distroless/static-debian12 has no shell and no package manager, and includes a nonroot user out of the box."
+          expectedAnswer: |
+            FROM golang:1.22 AS build
+            WORKDIR /src
+            COPY . .
+            RUN CGO_ENABLED=0 go build -o /report-gen main.go
+
+            FROM gcr.io/distroless/static-debian12:nonroot
+            COPY --from=build /report-gen /report-gen
+            USER nonroot:nonroot
+            ENTRYPOINT ["/report-gen"]
+          cel: >
+            answer.contains('FROM golang:1.22') &&
+            answer.contains('AS build') &&
+            answer.contains('COPY --from=build') &&
+            answer.contains('distroless') &&
+            (answer.contains('USER nonroot') || answer.contains('nonroot:nonroot'))
+    explanation:
+      elements:
+        - type: context
+          text: |
+            The `AS build` stage's entire filesystem — compiler, source tree, cached modules — is
+            discarded once the final stage is built; only files explicitly pulled forward with
+            `COPY --from=build` make it into the shipped image. A distroless base has no shell, no
+            package manager, and (in most cases) no libc beyond what's statically linked in, which
+            means there's no interactive shell for an attacker to drop into even after achieving
+            code execution inside the container — `kubectl exec ... -- /bin/sh` simply has nothing
+            to run.
+        - type: references
+          links:
+            - url: https://docs.docker.com/build/building/multi-stage/
+              text: Multi-Stage Builds
+            - url: https://github.com/GoogleContainerTools/distroless
+              text: Distroless Images
+
+  - title: "Restricting Which Registries Images Can Come From"
+    category: "Secure the Supply Chain"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          OPA Gatekeeper is already installed in this cluster. Only images from the internal
+          registry `registry.corp.internal/` are approved for production use — any Pod referencing
+          an image from anywhere else (Docker Hub, a public GCR mirror, a developer's personal
+          registry) must be rejected at admission time.
+      - type: question
+        question:
+          questionType: manifest
+          header: "Write the ConstraintTemplate defining a reusable 'allowed repos' policy, rejecting any container whose image doesn't start with one of the allowed prefixes."
+          hint: "The Rego violation rule should iterate input.review.object.spec.containers and check each image against input.parameters.repos using startswith."
+          manifestDefinitionId: constrainttemplate-v1
+          expectedFields:
+            - path: metadata.name
+              expectedValue: k8sallowedrepos
+            - path: spec.crd.spec.names.kind
+              expectedValue: K8sAllowedRepos
+          cel: "answer.contains('startswith') && answer.contains('input.parameters.repos')"
+      - type: question
+        question:
+          questionType: manifest
+          header: "Write the K8sAllowedRepos constraint enforcing registry.corp.internal/ on all Pods."
+          manifestDefinitionId: k8sallowedrepos-v1
+          expectedFields:
+            - path: metadata.name
+              expectedValue: prod-registry-only
+            - path: spec.match.kinds.0.kinds.0
+              expectedValue: Pod
+            - path: spec.parameters.repos.0
+              expectedValue: registry.corp.internal/
+    explanation:
+      elements:
+        - type: context
+          text: |
+            A `ConstraintTemplate` defines the reusable Rego policy logic and the shape of a new CRD
+            (here `K8sAllowedRepos`) to configure it with; a `Constraint` is an instance of that CRD
+            that actually applies the policy, with its own `match` (what it applies to) and
+            `parameters` (the allowed registry prefixes, in this case). This separation is what lets
+            one template back many different constraints — e.g. a stricter list for a `prod`
+            namespace and a looser one for `dev` — without duplicating the Rego logic itself.
+        - type: references
+          links:
+            - url: https://open-policy-agent.github.io/gatekeeper/website/docs/
+              text: OPA Gatekeeper
+            - url: https://open-policy-agent.github.io/gatekeeper-library/website/validation/allowedrepos
+              text: "Gatekeeper Library — K8sAllowedRepos"
+
+  - title: "Generating an SBOM for a Released Image"
+    category: "Understand the Supply Chain"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          Before `registry.corp.internal/report-gen:2.3.0` can be promoted to production, security
+          policy requires a CycloneDX-format Software Bill of Materials be generated for it and
+          written to `report-gen-sbom.json`.
+      - type: question
+        question:
+          questionType: command
+          header: "Generate that SBOM with Trivy."
+          command:
+            executable: trivy
+            subcommands:
+              - name: image
+            positionals:
+              - index: 0
+                required: true
+                value: registry.corp.internal/report-gen:2.3.0
+                description: image reference
+            flags:
+              - name: format
+                required: true
+                value: cyclonedx
+              - name: output
+                short: "o"
+                required: true
+                value: report-gen-sbom.json
+    explanation:
+      elements:
+        - type: context
+          text: |
+            An SBOM is a complete inventory of every package and library baked into an image — the
+            same information Trivy already needs internally to scan for known vulnerabilities, just
+            emitted as structured data (CycloneDX or SPDX format) instead of a vulnerability report.
+            It's what lets you answer "are we affected by this newly-disclosed CVE" for every image
+            you've ever shipped without re-scanning each one from scratch — you diff the CVE against
+            the SBOMs you already have on file.
+        - type: references
+          links:
+            - url: https://aquasecurity.github.io/trivy/latest/docs/target/sbom/
+              text: "Trivy — SBOM Scanning"
+
+  - title: "Failing a Build on Critical Vulnerabilities"
+    category: "Static Analysis"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          A CI pipeline step must scan `registry.corp.internal/report-gen:2.3.0` for known
+          vulnerabilities and fail the build (non-zero exit code) if anything HIGH or CRITICAL is
+          found, without needing to parse the human-readable output to decide that.
+      - type: question
+        question:
+          questionType: command
+          header: "Write the Trivy invocation that scans the image and fails the pipeline step on HIGH or CRITICAL findings."
+          command:
+            executable: trivy
+            subcommands:
+              - name: image
+            positionals:
+              - index: 0
+                required: true
+                value: registry.corp.internal/report-gen:2.3.0
+                description: image reference
+            flags:
+              - name: severity
+                required: true
+                value: "HIGH,CRITICAL"
+              - name: exit-code
+                required: true
+                value: "1"
+    explanation:
+      elements:
+        - type: context
+          text: |
+            By default Trivy always exits `0` regardless of what it finds — it's a reporting tool
+            first, and treating any finding as a hard failure would break on informational LOW
+            findings that may never get fixed. `--exit-code 1` opts specifically-scoped severities
+            into failing the process, which is what lets a CI step gate on "nothing HIGH or
+            CRITICAL" while still tolerating lower-severity noise it can't act on immediately.
+        - type: references
+          links:
+            - url: https://aquasecurity.github.io/trivy/latest/docs/target/container_image/
+              text: "Trivy — Container Image Scanning"
+
+  - title: "Signing and Verifying a Released Image"
+    category: "Secure the Supply Chain"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          `registry.corp.internal/report-gen:2.3.0` has just been built and pushed. A cosign
+          keypair (`cosign.key` / `cosign.pub`) is already provisioned. Before this image is allowed
+          to run in production, it must be signed, and any consumer must be able to verify that
+          signature before deploying it.
+      - type: question
+        question:
+          questionType: command
+          header: "Sign the pushed image with the private key."
+          command:
+            executable: cosign
+            subcommands:
+              - name: sign
+            positionals:
+              - index: 0
+                required: true
+                value: registry.corp.internal/report-gen:2.3.0
+                description: image reference
+            flags:
+              - name: key
+                required: true
+                value: cosign.key
+      - type: question
+        question:
+          questionType: command
+          header: "Verify that signature using the public key."
+          command:
+            executable: cosign
+            subcommands:
+              - name: verify
+            positionals:
+              - index: 0
+                required: true
+                value: registry.corp.internal/report-gen:2.3.0
+                description: image reference
+            flags:
+              - name: key
+                required: true
+                value: cosign.pub
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Signing proves an image hasn't been altered since it left the hands of whoever holds
+            the private key — it says nothing about whether the image is *good*, only that it's
+            *exactly what was signed*. In production this verification step is usually enforced
+            automatically at admission time (via an admission controller like Sigstore Policy
+            Controller or Kyverno's image verification rules) rather than run manually before every
+            deploy, but the underlying `cosign verify` check is the same either way.
+        - type: references
+          links:
+            - url: https://docs.sigstore.dev/cosign/signing/overview/
+              text: "Cosign — Signing Overview"
+            - url: https://docs.sigstore.dev/cosign/verifying/verify/
+              text: "Cosign — Verifying Signatures"
+
+  - title: "Static Analysis of a Manifest Before It Ships"
+    category: "Static Analysis"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          A Deployment manifest at `report-gen-deploy.yaml` is about to be merged into the GitOps
+          repo that drives production. Before it merges, it must pass a static-analysis check for
+          common misconfigurations (running as root, missing resource limits, mutable filesystem,
+          and similar issues) — not a live-cluster check, a check of the YAML file itself.
+      - type: question
+        question:
+          questionType: command
+          header: "Run that static analysis against the manifest file with KubeLinter."
+          command:
+            executable: kube-linter
+            subcommands:
+              - name: lint
+            positionals:
+              - index: 0
+                required: true
+                value: report-gen-deploy.yaml
+                description: manifest file
+    explanation:
+      elements:
+        - type: context
+          text: |
+            KubeLinter and Kubesec both analyze a manifest's *declared* configuration without
+            needing a cluster to apply it to at all — they catch the same class of mistakes a
+            restricted Pod Security Standard would reject at admission time (missing
+            `securityContext`, no resource limits, host namespace usage), but earlier: at review
+            time in CI, before the manifest is ever merged, instead of at deploy time when it's
+            already someone's job to fix a failed rollout.
+        - type: references
+          links:
+            - url: https://docs.kubelinter.io/
+              text: KubeLinter
+            - url: https://kubesec.io/
+              text: Kubesec
