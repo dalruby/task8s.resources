@@ -59,3 +59,30 @@ sets:
       - Runtime Security
       - Investigation
       - Hard
+  - name: "CKS (MCQ): AppArmor and seccomp"
+    filename: cks-mcq-apparmor-seccomp.yaml
+    description: "Multiple-choice only. How seccomp and AppArmor are specified to Kubernetes (Localhost paths and profile names, RuntimeDefault, Unconfined, kubelet seccompDefault), reading seccomp JSON and AppArmor profiles to predict what is blocked, missing-profile behavior, privileged containers, and how to verify what is really enforced."
+    tags:
+      - Multiple Choice
+      - AppArmor
+      - seccomp
+      - Kernel Hardening
+      - Hard
+  - name: "CKS (MCQ): securityContext and Pod Security Standards"
+    filename: cks-mcq-securitycontext-pss.yaml
+    description: "Multiple-choice only. securityContext field placement and inheritance, runAsNonRoot and fsGroup behavior, read-only root filesystems and capabilities, judging whether Pod templates meet baseline or restricted (checked against Kubernetes' own evaluator), and configuring Pod Security Admission with labels, cluster defaults and exemptions."
+    tags:
+      - Multiple Choice
+      - securityContext
+      - Pod Security Standards
+      - Pod Security Admission
+      - Hard
+  - name: "CKS (MCQ): Network Policies"
+    filename: cks-mcq-network-policies.yaml
+    description: "Multiple-choice only, every question with manifests. Default deny and allow, the policyTypes trap, AND versus OR selectors, DNS under egress deny, Service versus Pod ports, additive policies, replies and statefulness, and multi-namespace ingress and egress puzzles verified with an independent NetworkPolicy analyzer."
+    tags:
+      - Multiple Choice
+      - Network Policy
+      - Egress
+      - Multi-Namespace
+      - Hard

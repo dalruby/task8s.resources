@@ -1,0 +1,1344 @@
+apiVersion: v1alpha1
+name: "CKS (MCQ): securityContext and Pod Security Standards"
+
+timing:
+  enabled: true
+  limitSeconds: 3600
+
+introduction:
+  elements:
+    - type: context
+      text: |
+        A multiple-choice-only drill on hardening Pods with `securityContext` and on the **Pod Security
+        Standards** (`privileged`, `baseline`, `restricted`) enforced by **Pod Security Admission**.
+
+        What it covers:
+          - which `securityContext` fields exist at the Pod level, the container level, or both
+          - how fields interact: inheritance, overrides, and what the kubelet checks at start-up
+          - assembling a hardened container, and the classic failures (read-only root filesystem,
+            non-root user, privileged ports)
+          - judging whether a Pod template satisfies `baseline` or `restricted`, field by field
+          - configuring Pod Security Admission with namespace labels and the admission configuration
+
+        Assumptions: Kubernetes 1.34. Every "does this Pod pass?" verdict in this set was checked against
+        Kubernetes' own Pod Security evaluator, so you can rely on the answer key. Some questions ask you
+        to select **all** correct answers; those are marked in the question text.
+    - type: references
+      links:
+        - url: https://training.linuxfoundation.org/certification/certified-kubernetes-security-specialist-cks/
+          text: CKS Domains and Competencies
+        - url: https://kubernetes.io/docs/tasks/configure-pod-container/security-context/
+          text: Configure a Security Context for a Pod or Container
+        - url: https://kubernetes.io/docs/concepts/security/pod-security-standards/
+          text: Pod Security Standards
+        - url: https://kubernetes.io/docs/concepts/security/pod-security-admission/
+          text: Pod Security Admission
+
+scenarios:
+  # ═══════════════════════════════ securityContext ═══════════════════════════════
+  - title: "Which Level Owns Which Field"
+    category: "securityContext: Placement"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          Kubernetes has two securityContext objects: `PodSecurityContext` (at `spec.securityContext`) and
+          `SecurityContext` (at `spec.containers[*].securityContext`). Some fields exist in only one of
+          them, and some exist in both, in which case the container-level value wins.
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "Which of these fields exist ONLY at the Pod level and cannot be set on an individual container? (Select all that apply)"
+          correctAnswerInfo: "fsGroup, supplementalGroups and sysctls are Pod-only, because they act on things shared by the whole Pod: volumes, group membership and the network namespace. runAsGroup and seLinuxOptions exist at both levels. capabilities and readOnlyRootFilesystem are the opposite case: container-only."
+          choices:
+            - text: "fsGroup"
+              answerType: PartOfSolution
+            - text: "runAsGroup"
+              answerType: Invalid
+            - text: "supplementalGroups"
+              answerType: PartOfSolution
+            - text: "capabilities"
+              answerType: Invalid
+            - text: "sysctls"
+              answerType: PartOfSolution
+            - text: "readOnlyRootFilesystem"
+              answerType: Invalid
+            - text: "seLinuxOptions"
+              answerType: Invalid
+    explanation:
+      elements:
+        - type: context
+          text: |
+            A quick way to remember it: **container-only** fields describe one process's privileges
+            (`privileged`, `allowPrivilegeEscalation`, `capabilities`, `readOnlyRootFilesystem`,
+            `procMount`). **Pod-only** fields describe things the containers share (`fsGroup`,
+            `fsGroupChangePolicy`, `supplementalGroups`, `sysctls`). Identity and confinement fields
+            (`runAsUser`, `runAsGroup`, `runAsNonRoot`, `seccompProfile`, `appArmorProfile`,
+            `seLinuxOptions`) exist at both levels.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/pod-v1/#security-context
+              text: PodSecurityContext and SecurityContext reference
+
+  - title: "Fields in the Wrong Place"
+    category: "securityContext: Placement"
+    hintsEnabled: false
+    elements:
+      - type: manifest
+        header: "Pod: bad-placement"
+        content: |
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: bad-placement
+          spec:
+            securityContext:
+              runAsNonRoot: true
+              allowPrivilegeEscalation: false
+            containers:
+            - name: app
+              image: example/app:1.0
+              securityContext:
+                fsGroup: 2000
+                readOnlyRootFilesystem: true
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "You run kubectl apply -f on this manifest with a current kubectl and API server. What happens?"
+          correctAnswerInfo: "allowPrivilegeEscalation exists only on the container securityContext and fsGroup only on the Pod securityContext. With server-side strict field validation, which is the default for kubectl apply on current versions, unknown fields are rejected. Silent dropping only happens when validation is switched off with --validate=false."
+          choices:
+            - text: "It is applied; the two misplaced settings are silently dropped, and the remaining settings take effect as written"
+              answerType: Invalid
+            - text: "It is rejected: strict field validation reports allowPrivilegeEscalation (Pod level) and fsGroup (container level) as unknown fields"
+              answerType: Solution
+            - text: "It is applied, and the kubelet relocates each misplaced field to the level where it is valid before starting the Pod"
+              answerType: Invalid
+            - text: "It is applied, but the container fails to start with CreateContainerConfigError because the fields are unknown to the kubelet"
+              answerType: Invalid
+    explanation:
+      elements:
+        - type: context
+          text: |
+            This is a very common review finding: a hardening setting that *looks* present in the manifest
+            but is not in the place Kubernetes reads it. If a cluster or pipeline applies manifests with
+            validation disabled, the same mistake produces a Pod that quietly runs with **less** hardening
+            than the manifest suggests.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/reference/using-api/api-concepts/#field-validation
+              text: Server-side field validation
+
+  - title: "runAsNonRoot Does Not Choose a User"
+    category: "securityContext: Behavior"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          The image `registry.example.com/billing:3.2` was built **without** a `USER` instruction, so its
+          processes run as root (UID 0) by default.
+      - type: manifest
+        header: "Pod: billing"
+        content: |
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: billing
+          spec:
+            securityContext:
+              runAsNonRoot: true
+            containers:
+            - name: billing
+              image: registry.example.com/billing:3.2
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "What happens when this Pod is scheduled?"
+          correctAnswerInfo: "runAsNonRoot is a check, not a setting: it never changes which user the container runs as. The API server cannot know the image's default user, so the kubelet performs the check when it creates the container and fails with CreateContainerConfigError (image will run as root). The fix is an explicit non-zero runAsUser, or an image with a numeric non-root USER."
+          choices:
+            - text: "The container runs as UID 65534 (nobody), because runAsNonRoot makes the runtime pick an unprivileged user"
+              answerType: Invalid
+            - text: "The API server rejects the Pod because the image's default user cannot be verified at admission time"
+              answerType: Invalid
+            - text: "The container starts as root; runAsNonRoot only removes the capabilities that root normally has"
+              answerType: Invalid
+            - text: "The container does not start: the kubelet reports CreateContainerConfigError because the image would run as root"
+              answerType: Solution
+      - type: context
+        text: |
+          A second image, `registry.example.com/reports:1.9`, sets `USER appuser` in its Dockerfile, a
+          user **name** rather than a number. It is deployed with the same Pod spec as above:
+          `runAsNonRoot: true` and no `runAsUser`.
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "What happens to the reports Pod?"
+          correctAnswerInfo: "The kubelet can only verify a numeric UID. With a named USER and runAsNonRoot: true it refuses to guess and reports that the image has a non-numeric user and it cannot verify the user is non-root. Setting an explicit non-zero runAsUser skips the image check entirely."
+          choices:
+            - text: "The container does not start: the kubelet cannot verify that a non-numeric image user is non-root, so it reports CreateContainerConfigError"
+              answerType: Solution
+            - text: "The container starts as appuser, because any named user is assumed not to be root"
+              answerType: Invalid
+            - text: "The kubelet looks appuser up in /etc/passwd inside the image and starts the container if its UID is not 0"
+              answerType: Invalid
+            - text: "The API server rejects the Pod because it cannot resolve a user name to a UID at admission time"
+              answerType: Invalid
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Two practical rules follow. Build images with a **numeric** `USER` (for example `USER 10001`),
+            and pair `runAsNonRoot: true` with an explicit non-zero `runAsUser` when you do not control the
+            image. The Pod Security `restricted` level requires `runAsNonRoot: true`, so this failure shows
+            up as soon as you tighten a namespace.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/tasks/configure-pod-container/security-context/#set-the-security-context-for-a-pod
+              text: Set the security context for a Pod
+
+  - title: "Which Contradiction Does the API Server Catch?"
+    category: "securityContext: Behavior"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          Each fragment below is the `securityContext` of one container in an otherwise valid Pod.
+      - type: manifest
+        header: "Fragment A"
+        content: |
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 0
+      - type: manifest
+        header: "Fragment B"
+        content: |
+          securityContext:
+            allowPrivilegeEscalation: true
+            readOnlyRootFilesystem: true
+      - type: manifest
+        header: "Fragment C"
+        content: |
+          securityContext:
+            privileged: true
+            allowPrivilegeEscalation: false
+      - type: manifest
+        header: "Fragment D"
+        content: |
+          securityContext:
+            capabilities:
+              drop: ["ALL"]
+              add: ["NET_ADMIN"]
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "Ignoring Pod Security Admission, which fragment does the API server's own validation reject when the Pod is created?"
+          correctAnswerInfo: "privileged: true means the container can gain every privilege, so API validation rejects combining it with allowPrivilegeEscalation: false. Fragment A is accepted by the API server and only fails later in the kubelet (runAsUser breaks non-root policy). B and D are valid objects; blocking NET_ADMIN is the job of Pod Security Admission, not object validation."
+          choices:
+            - text: "Fragment A"
+              answerType: Invalid
+            - text: "Fragment B"
+              answerType: Invalid
+            - text: "Fragment C"
+              answerType: Solution
+            - text: "Fragment D"
+              answerType: Invalid
+    explanation:
+      elements:
+        - type: context
+          text: |
+            It helps to separate the three places a Pod can be refused:
+
+            1. **API validation**: the object is internally inconsistent (Fragment C).
+            2. **Admission policy**: the object is valid but breaks policy, such as a Pod Security level.
+            3. **The kubelet**: the object is valid and admitted, but cannot be started on the node
+               (Fragment A, a missing seccomp profile, an unloaded AppArmor profile).
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/concepts/security/pod-security-admission/
+              text: Pod Security Admission
+
+  - title: "Identity and Volume Access"
+    category: "securityContext: Behavior"
+    hintsEnabled: false
+    elements:
+      - type: manifest
+        header: "Pod: shared-data"
+        content: |
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: shared-data
+          spec:
+            securityContext:
+              runAsUser: 1000
+              runAsGroup: 3000
+              fsGroup: 2000
+            volumes:
+            - name: data
+              emptyDir: {}
+            containers:
+            - name: writer
+              image: busybox:1.36
+              command: ["sh", "-c", "sleep 1d"]
+              volumeMounts:
+              - name: data
+                mountPath: /data
+            - name: legacy
+              image: busybox:1.36
+              command: ["sh", "-c", "sleep 1d"]
+              securityContext:
+                runAsUser: 2000
+              volumeMounts:
+              - name: data
+                mountPath: /data
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "Which statement about the two containers is correct?"
+          correctAnswerInfo: "Effective settings are merged field by field. legacy overrides only runAsUser, so it keeps the Pod-level runAsGroup 3000. fsGroup applies to the whole Pod: it adds group 2000 to every container's supplementary groups and makes supporting volumes group-owned by 2000 with the setgid bit, so new files in /data get group 2000."
+          choices:
+            - text: "writer runs as UID 1000 and GID 3000; legacy runs as UID 2000 and GID 0, because overriding runAsUser resets runAsGroup"
+              answerType: Invalid
+            - text: "writer runs as UID 1000 and GID 3000; legacy runs as UID 2000 and GID 3000; both join supplementary group 2000, and files created in /data get group 2000"
+              answerType: Solution
+            - text: "Both containers run as UID 1000, because the Pod-level runAsUser always wins; only writer joins group 2000"
+              answerType: Invalid
+            - text: "fsGroup applies only to the first container that mounts the volume, so legacy cannot write to /data"
+              answerType: Invalid
+      - type: manifest
+        header: "Pod: no-group"
+        content: |
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: no-group
+          spec:
+            securityContext:
+              runAsUser: 1000
+              fsGroup: 2000
+            containers:
+            - name: app
+              image: busybox:1.36
+              command: ["sh", "-c", "sleep 1d"]
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "In the no-group Pod, no runAsGroup is set. What is the primary group of the container's process?"
+          correctAnswerInfo: "When runAsGroup is omitted the primary group ID is root (0). fsGroup never changes the primary group: it only adds 2000 to the supplementary groups and governs volume ownership. Files the process creates outside a setgid volume are therefore owned by user 1000 and group 0."
+          choices:
+            - text: "2000, because fsGroup also sets the primary group"
+              answerType: Invalid
+            - text: "1000, because the primary group follows runAsUser"
+              answerType: Invalid
+            - text: "The group of the user entry named in the image's USER instruction"
+              answerType: Invalid
+            - text: "0 (root); fsGroup 2000 is only a supplementary group"
+              answerType: Solution
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Remember the division of labour: `runAsUser` / `runAsGroup` choose the process's **primary**
+            identity; `supplementalGroups` and `fsGroup` add **supplementary** groups; and `fsGroup`
+            additionally governs ownership of volumes that support ownership management. Not every volume
+            supports it (for example `hostPath` does not), which is why a permissions problem on a volume
+            is not always fixable with `fsGroup`.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/tasks/configure-pod-container/security-context/#set-the-security-context-for-a-pod
+              text: Set the security context for a Pod
+
+  - title: "A Read-Only Root Filesystem for nginx"
+    category: "securityContext: Hardening"
+    hintsEnabled: false
+    elements:
+      - type: manifest
+        header: "Pod: web"
+        content: |
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: web
+          spec:
+            containers:
+            - name: nginx
+              image: nginx:1.27
+              securityContext:
+                readOnlyRootFilesystem: true
+      - type: context
+        text: |
+          The Pod crash-loops. The container log contains:
+
+          ```
+          nginx: [emerg] mkdir() "/var/cache/nginx/client_temp" failed (30: Read-only file system)
+          ```
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "Which change fixes this while keeping the root filesystem read-only?"
+          correctAnswerInfo: "A read-only root filesystem forces you to say exactly where the application may write. Mount emptyDir volumes at those paths (for nginx, /var/cache/nginx and /var/run, sometimes /tmp). fsGroup only affects volumes, not the image filesystem, and privileged: true would remove the protection you are trying to add."
+          choices:
+            - text: "Keep readOnlyRootFilesystem: true and mount emptyDir volumes at the paths nginx writes to, such as /var/cache/nginx"
+              answerType: Solution
+            - text: "Set readOnlyRootFilesystem: false for this container so nginx can write to its cache directory again"
+              answerType: Invalid
+            - text: "Add fsGroup: 101 to the Pod so the nginx group is allowed to write to /var/cache/nginx on the image"
+              answerType: Invalid
+            - text: "Set privileged: true on the container so that it is able to remount its root filesystem read-write"
+              answerType: Invalid
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Immutability is one of the strongest cheap defences: an attacker who gets code execution cannot
+            drop a binary or modify the application on disk. Note that `readOnlyRootFilesystem` is **not**
+            required by any Pod Security Standard, so Pod Security Admission will never remind you to set it.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/tasks/configure-pod-container/security-context/
+              text: Configure a Security Context for a Pod or Container
+
+  - title: "Binding Port 80 Without Root"
+    category: "securityContext: Hardening"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          An nginx container runs as UID 101 and listens on TCP port 80. It fails with
+          `bind() to 0.0.0.0:80 failed (13: Permission denied)`. The namespace enforces the **restricted**
+          Pod Security Standard, so whichever fix you choose must still be admitted.
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "Which capabilities setting lets the container bind port 80 and still satisfy restricted?"
+          correctAnswerInfo: "Restricted requires every container to drop ALL capabilities and permits adding back only NET_BIND_SERVICE, which is the capability that allows binding ports below 1024. Without drop ALL it fails restricted; NET_ADMIN is outside the allowed set (and does not help); and the CAP_ prefix is wrong in Kubernetes, so the name does not match even the baseline list."
+          choices:
+            - text: "capabilities: {add: [NET_BIND_SERVICE]}"
+              answerType: Invalid
+            - text: "capabilities: {drop: [ALL], add: [NET_ADMIN]}"
+              answerType: Invalid
+            - text: "capabilities: {drop: [ALL], add: [NET_BIND_SERVICE]}"
+              answerType: Solution
+            - text: "capabilities: {drop: [ALL], add: [CAP_NET_BIND_SERVICE]}"
+              answerType: Invalid
+    explanation:
+      elements:
+        - type: context
+          text: |
+            There is another route that also passes `restricted`: setting the safe sysctl
+            `net.ipv4.ip_unprivileged_port_start` (for example to `80`) in the Pod's `securityContext.sysctls`
+            lowers the unprivileged port threshold for the Pod's network namespace, with no extra capability
+            at all. The simplest fix of all is to listen on a port above 1023 and map it with a Service.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/tasks/administer-cluster/sysctl-cluster/
+              text: Using sysctls in a Kubernetes Cluster
+
+  - title: "Assembling a Hardened securityContext"
+    category: "securityContext: Hardening"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          A container must meet **all** of these requirements:
+
+          - run as the non-root UID 10001
+          - never be allowed to gain extra privileges
+          - have a read-only root filesystem
+          - have every Linux capability dropped
+          - use the runtime's default seccomp profile
+
+          Each fragment below is the container-level `securityContext`.
+      - type: manifest
+        header: "Fragment A"
+        content: |
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["NET_RAW", "SYS_ADMIN"]
+            seccompProfile:
+              type: RuntimeDefault
+      - type: manifest
+        header: "Fragment B"
+        content: |
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+      - type: manifest
+        header: "Fragment C"
+        content: |
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: runtime/default
+      - type: manifest
+        header: "Fragment D"
+        content: |
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ALL
+            seccompProfile:
+              type: RuntimeDefault
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "Which fragment meets every requirement and is accepted by the API server?"
+          correctAnswerInfo: "A drops only two capabilities, not all of them. C uses runtime/default, which was the old annotation value; the field accepts only Localhost, RuntimeDefault or Unconfined. D gives drop a scalar where a list is required, so the API server rejects it. Only B is both complete and valid."
+          choices:
+            - text: "Fragment A"
+              answerType: Invalid
+            - text: "Fragment B"
+              answerType: Solution
+            - text: "Fragment C"
+              answerType: Invalid
+            - text: "Fragment D"
+              answerType: Invalid
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Three different kinds of mistake appear above: an incomplete setting (A), a value from an older
+            API (C), and a type error (D). Under time pressure it is the *near-identical* manifest that
+            catches people, so read every line, not just the field you came to check.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/tasks/configure-pod-container/security-context/#set-capabilities-for-a-container
+              text: Set capabilities for a container
+
+  # ═══════════════════════════════ Pod Security Standards ═══════════════════════════════
+  - title: "What Restricted Actually Requires"
+    category: "PSS: Rules"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          Teams often assume the `restricted` level demands every hardening setting they know. It is
+          narrower than that, and the difference matters when you are asked to fix a Pod that is rejected.
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "Which of the following are REQUIRED to satisfy the restricted Pod Security Standard? (Select all that apply)"
+          correctAnswerInfo: "Restricted requires: allowPrivilegeEscalation false, drop ALL capabilities (adding back only NET_BIND_SERVICE), runAsNonRoot true (at Pod level or for every container), a seccomp profile of RuntimeDefault or Localhost, plus everything from baseline and a limited set of volume types. It does not require a read-only root filesystem, a disabled ServiceAccount token, resource limits, or any specific runAsUser."
+          choices:
+            - text: "allowPrivilegeEscalation must be false for every container"
+              answerType: PartOfSolution
+            - text: "readOnlyRootFilesystem must be true for every container"
+              answerType: Invalid
+            - text: "All capabilities must be dropped, adding back at most NET_BIND_SERVICE"
+              answerType: PartOfSolution
+            - text: "automountServiceAccountToken must be false"
+              answerType: Invalid
+            - text: "runAsNonRoot must be true, at Pod level or for every container"
+              answerType: PartOfSolution
+            - text: "Resource requests and limits must be set on every container"
+              answerType: Invalid
+            - text: "A seccomp profile of RuntimeDefault or Localhost must be set explicitly"
+              answerType: PartOfSolution
+            - text: "runAsUser must be set to a specific non-zero UID"
+              answerType: Invalid
+    explanation:
+      elements:
+        - type: context
+          text: |
+            The Pod Security Standards are deliberately a floor, not a full hardening guide. Read-only root
+            filesystems, token automount settings, resource limits, and network isolation are all good
+            practice that you must enforce some other way (policy engines, linters, review).
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/concepts/security/pod-security-standards/#restricted
+              text: Pod Security Standards - Restricted
+
+  - title: "Evaluating a Template: Missing Seccomp"
+    category: "PSS: Evaluating Templates"
+    hintsEnabled: false
+    elements:
+      - type: manifest
+        header: "Pod: ledger"
+        content: |
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: ledger
+          spec:
+            securityContext:
+              runAsNonRoot: true
+            containers:
+            - name: app
+              image: registry.example.com/ledger:2.1
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "Which statement about this Pod and the Pod Security Standards is correct?"
+          correctAnswerInfo: "Restricted says the seccomp profile must be explicitly set to RuntimeDefault or Localhost; an absent profile is prohibited, even though the runtime may apply a default anyway. Baseline only forbids an explicit Unconfined profile, so this Pod passes baseline."
+          choices:
+            - text: "Restricted: seccomp is optional because the runtime applies RuntimeDefault anyway"
+              answerType: Invalid
+            - text: "Baseline only: restricted requires readOnlyRootFilesystem, and it is not set"
+              answerType: Invalid
+            - text: "Baseline only: restricted requires a seccomp profile to be set explicitly, and none is set"
+              answerType: Solution
+            - text: "Privileged only: baseline forbids a Pod that does not set a seccomp profile"
+              answerType: Invalid
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Baseline and restricted treat seccomp differently: baseline only blocks an explicit
+            `Unconfined`, restricted additionally demands an explicit safe value. This is the most common
+            reason a Pod that passes `baseline` is refused when a namespace is tightened to `restricted`.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/concepts/security/pod-security-standards/
+              text: Pod Security Standards
+
+  - title: "Evaluating a Template: Settings Inherited from the Pod"
+    category: "PSS: Evaluating Templates"
+    hintsEnabled: false
+    elements:
+      - type: manifest
+        header: "Pod: gateway"
+        content: |
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: gateway
+          spec:
+            securityContext:
+              runAsNonRoot: true
+              seccompProfile:
+                type: RuntimeDefault
+            containers:
+            - name: app
+              image: registry.example.com/gateway:5.0
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+            - name: sidecar
+              image: registry.example.com/log-shipper:1.4
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "Which statement about this Pod and the Pod Security Standards is correct?"
+          correctAnswerInfo: "For runAsNonRoot and seccompProfile, the restricted check is satisfied by a Pod-level value, which covers any container that does not override it. Neither container needs to repeat them. allowPrivilegeEscalation and capabilities are container-only, so each container must set them itself, and both do."
+          choices:
+            - text: "Restricted: Pod-level runAsNonRoot and seccompProfile cover both containers, and each drops ALL and disables escalation"
+              answerType: Solution
+            - text: "Baseline only: runAsNonRoot and seccompProfile must be repeated in every container's securityContext"
+              answerType: Invalid
+            - text: "Baseline only: restricted also requires readOnlyRootFilesystem to be true on every container"
+              answerType: Invalid
+            - text: "Privileged only: the sidecar does not set its own runAsNonRoot, and baseline requires it in each container"
+              answerType: Invalid
+    explanation:
+      elements:
+        - type: context
+          text: |
+            A tidy hardened Pod sets the shared things (`runAsNonRoot`, `seccompProfile`) once at Pod level
+            and the container-only things (`allowPrivilegeEscalation`, `capabilities`) on each container.
+            That structure is easier to review than repeating everything, and it cannot be accidentally
+            missed on a newly added sidecar for the Pod-level fields.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/concepts/security/pod-security-standards/#restricted
+              text: Pod Security Standards - Restricted
+
+  - title: "Evaluating a Template: The Init Container"
+    category: "PSS: Evaluating Templates"
+    hintsEnabled: false
+    elements:
+      - type: manifest
+        header: "Pod: importer"
+        content: |
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: importer
+          spec:
+            securityContext:
+              runAsNonRoot: true
+              seccompProfile:
+                type: RuntimeDefault
+            initContainers:
+            - name: fetch
+              image: busybox:1.36
+              securityContext:
+                capabilities:
+                  drop: ["ALL"]
+            containers:
+            - name: app
+              image: registry.example.com/importer:1.2
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "Which statement about this Pod and the Pod Security Standards is correct?"
+          correctAnswerInfo: "The controls apply to every container in the Pod, including init containers and ephemeral containers. The fetch init container never sets allowPrivilegeEscalation, which restricted requires to be false, so the whole Pod fails restricted. It still passes baseline."
+          choices:
+            - text: "Restricted: init containers run to completion before the app starts, so the Pod Security Standards do not cover them"
+              answerType: Invalid
+            - text: "Baseline only: the app container lacks its own runAsNonRoot setting, which restricted requires per container"
+              answerType: Invalid
+            - text: "Privileged only: baseline requires every container, including init containers, to drop ALL capabilities"
+              answerType: Invalid
+            - text: "Baseline only: the init container does not set allowPrivilegeEscalation to false, which restricted requires"
+              answerType: Solution
+    explanation:
+      elements:
+        - type: context
+          text: |
+            "If any of the listed containers fails to meet the requirements, the entire pod will fail
+            validation." Reviewers regularly check the main container carefully and forget the init
+            container that pulls data or fixes permissions. The same applies to ephemeral containers
+            added later with `kubectl debug`.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/concepts/security/pod-security-standards/#restricted
+              text: Pod Security Standards - Restricted
+
+  - title: "Evaluating a Template: A Container Overrides the Pod"
+    category: "PSS: Evaluating Templates"
+    hintsEnabled: false
+    elements:
+      - type: manifest
+        header: "Pod: scanner"
+        content: |
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: scanner
+          spec:
+            securityContext:
+              runAsNonRoot: true
+              seccompProfile:
+                type: RuntimeDefault
+            containers:
+            - name: scan
+              image: registry.example.com/scanner:3.3
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+                seccompProfile:
+                  type: Unconfined
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "Which statement about this Pod and the Pod Security Standards is correct?"
+          correctAnswerInfo: "Baseline forbids a seccomp profile of Unconfined wherever it is set, and the container-level field is checked on its own. The Pod-level RuntimeDefault does not rescue it, so this Pod does not even meet baseline."
+          choices:
+            - text: "Restricted: the Pod-level RuntimeDefault profile applies to every container"
+              answerType: Invalid
+            - text: "Privileged only: baseline forbids an explicit Unconfined seccomp profile, even though the Pod-level profile is RuntimeDefault"
+              answerType: Solution
+            - text: "Baseline only: restricted requires the Pod-level and container-level seccomp profiles to be identical"
+              answerType: Invalid
+            - text: "Baseline only: baseline checks just the Pod-level seccomp profile, so only restricted notices the Unconfined container"
+              answerType: Invalid
+    explanation:
+      elements:
+        - type: context
+          text: |
+            The container-level value really does override the Pod-level one at runtime, so this container
+            genuinely runs unconfined. The Pod Security check reflects that: it looks at the field on each
+            container as well as the Pod, rather than computing only the "effective" value for the Pod.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/concepts/security/pod-security-standards/#baseline
+              text: Pod Security Standards - Baseline
+
+  - title: "Evaluating a Template: A Read-Only hostPath"
+    category: "PSS: Evaluating Templates"
+    hintsEnabled: false
+    elements:
+      - type: manifest
+        header: "Pod: log-reader"
+        content: |
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: log-reader
+          spec:
+            securityContext:
+              runAsNonRoot: true
+              seccompProfile:
+                type: RuntimeDefault
+            volumes:
+            - name: node-logs
+              hostPath:
+                path: /var/log
+            containers:
+            - name: reader
+              image: registry.example.com/log-reader:1.0
+              volumeMounts:
+              - name: node-logs
+                mountPath: /host-logs
+                readOnly: true
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "Which statement about this Pod and the Pod Security Standards is correct?"
+          correctAnswerInfo: "The baseline HostPath control is on the volume definition (spec.volumes[*].hostPath), not on how it is mounted, so mounting it readOnly does not help. The Pod therefore fails baseline, and so fails restricted too."
+          choices:
+            - text: "Restricted: a hostPath volume mounted readOnly cannot be used to modify the node"
+              answerType: Invalid
+            - text: "Baseline only: hostPath is blocked by restricted only when it is mounted writable"
+              answerType: Invalid
+            - text: "Privileged only: baseline forbids hostPath volumes entirely, even when they are mounted readOnly"
+              answerType: Solution
+            - text: "Baseline only: restricted requires every volume to be an emptyDir"
+              answerType: Invalid
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Even a read-only host mount exposes node data to the container (credentials, other Pods' files,
+            the container runtime socket). Policy has to forbid the volume *type*, because the mount flag
+            lives in a different part of the spec and is easy to get wrong or change later.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/concepts/security/pod-security-standards/#baseline
+              text: Pod Security Standards - Baseline
+
+  - title: "Evaluating a Template: An Allowed Capability"
+    category: "PSS: Evaluating Templates"
+    hintsEnabled: false
+    elements:
+      - type: manifest
+        header: "Pod: archiver"
+        content: |
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: archiver
+          spec:
+            securityContext:
+              runAsNonRoot: true
+              seccompProfile:
+                type: RuntimeDefault
+            containers:
+            - name: archiver
+              image: registry.example.com/archiver:4.0
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+                  add: ["CHOWN"]
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "Which statement about this Pod and the Pod Security Standards is correct?"
+          correctAnswerInfo: "CHOWN is on baseline's list of capabilities that may be added. Restricted is stricter: after dropping ALL it permits adding back only NET_BIND_SERVICE. Dropping ALL and adding other capabilities is allowed at baseline, so combining drop and add is not itself the problem."
+          choices:
+            - text: "Baseline only: CHOWN may be added at baseline, but restricted allows adding back only NET_BIND_SERVICE"
+              answerType: Solution
+            - text: "Restricted: once ALL capabilities are dropped, any capability may be added back and still pass"
+              answerType: Invalid
+            - text: "Privileged only: CHOWN is not on baseline's list of capabilities that a container may add"
+              answerType: Invalid
+            - text: "Baseline only: restricted forbids a securityContext that uses drop and add at the same time"
+              answerType: Invalid
+    explanation:
+      elements:
+        - type: context
+          text: |
+            The baseline list of addable capabilities is: AUDIT_WRITE, CHOWN, DAC_OVERRIDE, FOWNER, FSETID,
+            KILL, MKNOD, NET_BIND_SERVICE, SETFCAP, SETGID, SETPCAP, SETUID and SYS_CHROOT. Anything outside
+            it (NET_ADMIN, SYS_ADMIN, NET_RAW added back, ...) fails baseline. Restricted narrows that list
+            to a single entry.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/concepts/security/pod-security-standards/#baseline
+              text: Pod Security Standards - Baseline capabilities
+
+  - title: "Evaluating a Template: runAsUser Alone"
+    category: "PSS: Evaluating Templates"
+    hintsEnabled: false
+    elements:
+      - type: manifest
+        header: "Pod: exporter"
+        content: |
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: exporter
+          spec:
+            securityContext:
+              runAsUser: 1000
+              seccompProfile:
+                type: RuntimeDefault
+            containers:
+            - name: exporter
+              image: registry.example.com/exporter:2.2
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "Which statement about this Pod and the Pod Security Standards is correct?"
+          correctAnswerInfo: "Restricted checks the runAsNonRoot flag, not the effective UID. A non-zero runAsUser does not satisfy it, so a Pod can really run as UID 1000 and still fail restricted. The runAsUser field is only checked for the forbidden value 0."
+          choices:
+            - text: "Restricted: a non-zero runAsUser means the container is non-root, so the runAsNonRoot control is met"
+              answerType: Invalid
+            - text: "Privileged only: baseline already requires runAsNonRoot to be true, and this Pod does not set it"
+              answerType: Invalid
+            - text: "Baseline only: restricted forbids setting runAsUser at the Pod level instead of per container"
+              answerType: Invalid
+            - text: "Baseline only: restricted requires runAsNonRoot to be true, and a non-zero runAsUser does not satisfy it"
+              answerType: Solution
+    explanation:
+      elements:
+        - type: context
+          text: |
+            This is the mirror image of the earlier lesson that `runAsNonRoot` does not choose a user. The
+            clean combination is both: `runAsNonRoot: true` (the policy check) with an explicit non-zero
+            `runAsUser` (the actual choice).
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/concepts/security/pod-security-standards/#restricted
+              text: Pod Security Standards - Restricted
+
+  - title: "Evaluating a Template: Two Sysctls"
+    category: "PSS: Evaluating Templates"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          Both Pods below are otherwise identical and would satisfy `restricted`. Only the sysctl differs.
+      - type: manifest
+        header: "Pod: cache-a"
+        content: |
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: cache-a
+          spec:
+            securityContext:
+              runAsNonRoot: true
+              seccompProfile:
+                type: RuntimeDefault
+              sysctls:
+              - name: net.core.somaxconn
+                value: "1024"
+            containers:
+            - name: cache
+              image: registry.example.com/cache:7.0
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+      - type: manifest
+        header: "Pod: cache-b"
+        content: |
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: cache-b
+          spec:
+            securityContext:
+              runAsNonRoot: true
+              seccompProfile:
+                type: RuntimeDefault
+              sysctls:
+              - name: net.ipv4.ip_unprivileged_port_start
+                value: "80"
+            containers:
+            - name: cache
+              image: registry.example.com/cache:7.0
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "Which statement about these two Pods is correct?"
+          correctAnswerInfo: "Baseline allows only a short list of safe sysctls (namespaced and isolated from other Pods), such as net.ipv4.ip_unprivileged_port_start and net.ipv4.ping_group_range. net.core.somaxconn is not on that list, so cache-a fails baseline (and would also need the kubelet's allowed-unsafe-sysctls setting to run at all). cache-b passes restricted."
+          choices:
+            - text: "Both Pods meet restricted: sysctls are not part of the Pod Security Standards"
+              answerType: Invalid
+            - text: "cache-a fails baseline because net.core.somaxconn is not on the safe-sysctl list; cache-b meets restricted"
+              answerType: Solution
+            - text: "cache-a meets restricted; cache-b fails baseline because it changes a port setting"
+              answerType: Invalid
+            - text: "Both Pods fail baseline: baseline forbids setting any sysctl"
+              answerType: Invalid
+    explanation:
+      elements:
+        - type: context
+          text: |
+            The allowed sysctls are: `kernel.shm_rmid_forced`, `net.ipv4.ip_local_port_range`,
+            `net.ipv4.ip_unprivileged_port_start`, `net.ipv4.tcp_syncookies`, `net.ipv4.ping_group_range`,
+            `net.ipv4.ip_local_reserved_ports`, `net.ipv4.tcp_keepalive_time`, `net.ipv4.tcp_fin_timeout`,
+            `net.ipv4.tcp_keepalive_intvl` and `net.ipv4.tcp_keepalive_probes`.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/concepts/security/pod-security-standards/#baseline
+              text: Pod Security Standards - Baseline sysctls
+
+  # ═══════════════════════════════ Pod Security Admission ═══════════════════════════════
+  - title: "Namespace Labels for a Staged Rollout"
+    category: "PSA: Configuration"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          Namespace `payments` hosts older workloads. You must:
+
+          - **block** any Pod that violates the baseline standard
+          - **warn** users and **record in the audit log** any Pod that would violate restricted
+          - pin all three modes to the policy version shipped with Kubernetes v1.34
+      - type: manifest
+        header: "Namespace: Option A"
+        content: |
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: payments
+            labels:
+              pod-security.kubernetes.io/enforce: restricted
+              pod-security.kubernetes.io/enforce-version: v1.34
+              pod-security.kubernetes.io/warn: baseline
+              pod-security.kubernetes.io/warn-version: v1.34
+              pod-security.kubernetes.io/audit: baseline
+              pod-security.kubernetes.io/audit-version: v1.34
+      - type: manifest
+        header: "Namespace: Option B"
+        content: |
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: payments
+            labels:
+              pod-security.kubernetes.io/baseline: enforce
+              pod-security.kubernetes.io/restricted: warn
+              pod-security.kubernetes.io/restricted-audit: audit
+              pod-security.kubernetes.io/version: v1.34
+      - type: manifest
+        header: "Namespace: Option C"
+        content: |
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: payments
+            labels:
+              pod-security.kubernetes.io/enforce: baseline
+              pod-security.kubernetes.io/enforce-version: v1.34
+              pod-security.kubernetes.io/warn: restricted
+              pod-security.kubernetes.io/warn-version: v1.34
+              pod-security.kubernetes.io/audit: restricted
+              pod-security.kubernetes.io/audit-version: v1.34
+      - type: manifest
+        header: "Namespace: Option D"
+        content: |
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: payments
+            labels:
+              pod-security.kubernetes.io/enforce: baseline
+              pod-security.kubernetes.io/warn: restricted
+              pod-security.kubernetes.io/audit: restricted
+              pod-security.kubernetes.io/version: v1.34
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "Which option meets all three requirements?"
+          correctAnswerInfo: "The label format is pod-security.kubernetes.io/<mode> set to a level, with an optional pod-security.kubernetes.io/<mode>-version per mode. A swaps the levels (it would block restricted violations). B inverts keys and values, so none of its labels are recognised. D has no per-mode version labels; the single version key does not exist, so the modes would follow the latest policy."
+          choices:
+            - text: "Option A"
+              answerType: Invalid
+            - text: "Option B"
+              answerType: Invalid
+            - text: "Option C"
+              answerType: Solution
+            - text: "Option D"
+              answerType: Invalid
+    explanation:
+      elements:
+        - type: context
+          text: |
+            This staged pattern (enforce a level you already meet, warn and audit at the level you want to
+            reach) is the standard way to tighten a namespace without breaking running workloads: the
+            warnings tell teams what to fix, and you raise `enforce` when they stop appearing.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/tasks/configure-pod-container/enforce-standards-namespace-labels/
+              text: Enforce Pod Security Standards with Namespace Labels
+
+  - title: "Enforce Applies to Pods, Not to Deployments"
+    category: "PSA: Configuration"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          Namespace `shop` carries these labels:
+
+          ```yaml
+          pod-security.kubernetes.io/enforce: restricted
+          pod-security.kubernetes.io/warn: restricted
+          ```
+
+          A developer applies the Deployment below.
+      - type: manifest
+        header: "Deployment: storefront"
+        content: |
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: storefront
+            namespace: shop
+          spec:
+            replicas: 2
+            selector:
+              matchLabels:
+                app: storefront
+            template:
+              metadata:
+                labels:
+                  app: storefront
+              spec:
+                containers:
+                - name: web
+                  image: registry.example.com/storefront:8.1
+                  securityContext:
+                    privileged: true
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "What happens when the developer runs kubectl apply -f deployment.yaml?"
+          correctAnswerInfo: "The warn (and audit) modes are applied to workload resources such as Deployments, so the developer sees a warning at apply time. The enforce mode is not applied to workload resources, only to the Pods they create. The Deployment is accepted, but the ReplicaSet controller's attempts to create Pods are rejected, which shows up as FailedCreate events on the ReplicaSet."
+          choices:
+            - text: "The Deployment is created and kubectl prints a warning; the ReplicaSet cannot create Pods, and FailedCreate events cite the violation"
+              answerType: Solution
+            - text: "kubectl apply fails immediately with a Forbidden error citing Pod Security, and the Deployment is never created"
+              answerType: Invalid
+            - text: "The Deployment and its Pods are created and a warning is printed, but the Pods keep running despite the violation"
+              answerType: Invalid
+            - text: "The Deployment is created and its Pods start, but the kubelet evicts them shortly afterwards for violating policy"
+              answerType: Invalid
+    explanation:
+      elements:
+        - type: context
+          text: |
+            This is why `kubectl get deployment` showing `0/2` ready is the classic symptom of a Pod
+            Security rejection: nothing failed at apply time. The diagnosis lives one level down, in
+            `kubectl describe replicaset` or the namespace events. It is also a reason to set `warn` next to
+            `enforce`: the warning is the only thing that surfaces the problem at apply time.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/concepts/security/pod-security-admission/#workload-resources-and-pod-templates
+              text: Workload resources and Pod templates
+
+  - title: "Labeling a Namespace That Already Has Pods"
+    category: "PSA: Configuration"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          Namespace `legacy` has no pod-security labels and runs several Pods that would violate the
+          baseline standard (some are privileged). An administrator runs:
+
+          ```
+          kubectl label ns legacy pod-security.kubernetes.io/enforce=baseline
+          ```
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "What is the result?"
+          correctAnswerInfo: "Adding or changing an enforce label does not touch running Pods. The admission plugin evaluates the existing Pods against the new level and reports violations as warnings in the response, so you can see what will break. From then on, new Pods and updates that violate the level are rejected."
+          choices:
+            - text: "The command fails with an error because the namespace already contains Pods that violate baseline"
+              answerType: Invalid
+            - text: "The label is applied and existing Pods keep running; the response warns about the violating Pods, and new violating Pods will be rejected"
+              answerType: Solution
+            - text: "The label is applied and the violating Pods are evicted immediately, since enforce also applies to running Pods"
+              answerType: Invalid
+            - text: "The label is applied and nothing is reported at all until one of the existing Pods is recreated or updated"
+              answerType: Invalid
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "Which command reports which existing Pods in every namespace would violate baseline, without changing anything?"
+          correctAnswerInfo: "A server-side dry run sends the request through admission, so the Pod Security plugin evaluates the existing Pods and returns warnings, but nothing is persisted. A client-side dry run never contacts the API server, so no admission check happens and you learn nothing."
+          choices:
+            - text: "kubectl label --dry-run=client --overwrite ns --all pod-security.kubernetes.io/enforce=baseline"
+              answerType: Invalid
+            - text: "kubectl get pods -A --field-selector=spec.securityContext.privileged=true"
+              answerType: Invalid
+            - text: "kubectl auth can-i create pods --all-namespaces --as=system:anonymous"
+              answerType: Invalid
+            - text: "kubectl label --dry-run=server --overwrite ns --all pod-security.kubernetes.io/enforce=baseline"
+              answerType: Solution
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Run the server-side dry run **before** raising an `enforce` level. A safe order is: apply `warn`
+            and `audit` at the target level, watch for violations, fix them, run the dry run to confirm the
+            namespace is clean, and only then set `enforce`.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/tasks/configure-pod-container/enforce-standards-namespace-labels/#add-labels-to-existing-namespaces-with-kubectl-label
+              text: Add labels to existing namespaces with kubectl label
+
+  - title: "Cluster-Wide Defaults and Per-Mode Overrides"
+    category: "PSA: Configuration"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          The API server runs with the following Pod Security admission configuration:
+      - type: manifest
+        header: "admission-config.yaml"
+        content: |
+          apiVersion: apiserver.config.k8s.io/v1
+          kind: AdmissionConfiguration
+          plugins:
+          - name: PodSecurity
+            configuration:
+              apiVersion: pod-security.admission.config.k8s.io/v1
+              kind: PodSecurityConfiguration
+              defaults:
+                enforce: baseline
+                enforce-version: latest
+                audit: restricted
+                audit-version: latest
+                warn: restricted
+                warn-version: latest
+              exemptions:
+                usernames: []
+                runtimeClasses: []
+                namespaces: [kube-system]
+      - type: context
+        text: |
+          Namespace `dev` has no pod-security labels. Namespace `prod` has exactly one:
+          `pod-security.kubernetes.io/enforce: privileged`. A user creates a Pod with `hostNetwork: true`
+          directly in each namespace.
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "What happens in namespace dev?"
+          correctAnswerInfo: "A mode without a namespace label falls back to the cluster default for that mode. The enforce default is baseline, and baseline forbids sharing the host network namespace, so the Pod is rejected."
+          choices:
+            - text: "It is rejected: with no namespace label the cluster default applies, enforce defaults to baseline, and baseline forbids hostNetwork"
+              answerType: Solution
+            - text: "It is admitted: namespaces without labels are always treated as privileged"
+              answerType: Invalid
+            - text: "It is admitted with a warning only, because the defaults apply to warn and audit but not to enforce"
+              answerType: Invalid
+            - text: "It is admitted: defaults apply only to namespaces that carry at least one pod-security label"
+              answerType: Invalid
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "What happens in namespace prod?"
+          correctAnswerInfo: "Each mode is resolved independently. prod's enforce label overrides the enforce default, so nothing is rejected. It has no warn or audit label, so those two modes still use the cluster defaults (restricted), which means the user gets a warning and an audit annotation is recorded."
+          choices:
+            - text: "It is rejected: the cluster-wide enforce default of baseline overrides the enforce label on the namespace"
+              answerType: Invalid
+            - text: "It is admitted silently: setting any namespace label turns off the cluster defaults for all three modes"
+              answerType: Invalid
+            - text: "It is admitted, but the user sees a warning and an audit annotation is recorded, because warn and audit still default to restricted"
+              answerType: Solution
+            - text: "It is rejected: a namespace may only choose enforce=privileged when the cluster default is also privileged"
+              answerType: Invalid
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "How is this configuration file put into effect?"
+          correctAnswerInfo: "The file is not a Kubernetes API object. kube-apiserver reads it at start-up from the path given by --admission-control-config-file (on kubeadm clusters you edit the kube-apiserver static Pod manifest and mount the file into the container). The PodSecurity plugin is enabled by default, so enabling it by name does not load any configuration."
+          choices:
+            - text: "kubectl apply -f admission-config.yaml"
+              answerType: Invalid
+            - text: "Add --enable-admission-plugins=PodSecurity to kube-apiserver"
+              answerType: Invalid
+            - text: "Set --pod-security-config=/etc/kubernetes/admission-config.yaml on kube-controller-manager"
+              answerType: Invalid
+            - text: "Pass the file to kube-apiserver with --admission-control-config-file"
+              answerType: Solution
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Defaults cover namespaces that have no label for a given mode; a namespace label always wins
+            for the mode it sets. The default for every mode, if you configure nothing, is `privileged`,
+            i.e. no restriction. Changing the file requires restarting the API server, which is why most
+            teams rely on namespace labels and keep the file for cluster-wide defaults and exemptions.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/tasks/configure-pod-container/enforce-standards-admission-controller/
+              text: Enforce Pod Security Standards by Configuring the Built-in Admission Controller
+
+  - title: "Pod Security Exemptions"
+    category: "PSA: Configuration"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          Some system components legitimately need privileges that the cluster default would block. The
+          admission configuration lets you exempt requests from Pod Security enforcement.
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "Which of the following can be used as an exemption dimension in the Pod Security admission configuration? (Select all that apply)"
+          correctAnswerInfo: "The built-in controller supports exactly three exemption dimensions: authenticated usernames, RuntimeClass names and namespaces. Exemptions are configured only in the admission configuration file, never through labels, and a request that matches an exemption skips enforce, audit and warn entirely."
+          choices:
+            - text: "Authenticated usernames"
+              answerType: PartOfSolution
+            - text: "Pod labels"
+              answerType: Invalid
+            - text: "RuntimeClass names"
+              answerType: PartOfSolution
+            - text: "Container image registries"
+              answerType: Invalid
+            - text: "Namespaces"
+              answerType: PartOfSolution
+            - text: "Individual Pod names"
+              answerType: Invalid
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Be careful with the username dimension. Most Pods are created by a controller, not by the user,
+            so exempting a *user* only exempts them when they create Pods directly. Exempting a controller's
+            ServiceAccount such as the ReplicaSet controller would be far worse: it would implicitly exempt
+            everyone who can create the corresponding workload resource.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/concepts/security/pod-security-admission/#exemptions
+              text: Pod Security Admission - Exemptions

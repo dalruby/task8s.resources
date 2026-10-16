@@ -1,0 +1,831 @@
+apiVersion: v1alpha1
+name: "CKS (MCQ): AppArmor and seccomp"
+
+timing:
+  enabled: true
+  limitSeconds: 2700
+
+introduction:
+  elements:
+    - type: context
+      text: |
+        A multiple-choice-only drill on the two kernel-hardening mechanisms the CKS exam tests most
+        directly: **seccomp** (system call filtering) and **AppArmor** (a Linux Security Module that
+        confines what a program may access).
+
+        What it covers:
+          - how each mechanism is specified to Kubernetes (fields, profile types, paths and names)
+          - what `RuntimeDefault`, `Localhost` and `Unconfined` actually do
+          - reading seccomp JSON profiles and AppArmor profiles to predict what is allowed or blocked
+          - what happens when a profile is missing, and how to verify what is really enforced
+
+        Assumptions: Kubernetes 1.34 or later, containerd, nodes running a distribution with AppArmor
+        (such as Ubuntu). Manifests and profiles shown in a question are exactly what is deployed.
+        Some questions ask you to select **all** correct answers; those are marked in the question text.
+    - type: references
+      links:
+        - url: https://training.linuxfoundation.org/certification/certified-kubernetes-security-specialist-cks/
+          text: CKS Domains and Competencies
+        - url: https://kubernetes.io/docs/tutorials/security/seccomp/
+          text: Restrict a Container's Syscalls with seccomp
+        - url: https://kubernetes.io/docs/tutorials/security/apparmor/
+          text: Restrict a Container's Access to Resources with AppArmor
+
+scenarios:
+  # ───────────────────────────────────────────────────────────────────────────
+  - title: "Two Mechanisms, Two Jobs"
+    category: "Fundamentals"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          Both seccomp and AppArmor are enabled per container through the Pod's `securityContext`, which
+          makes them easy to confuse. They sit at different layers of the kernel.
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "Which statement best distinguishes seccomp from AppArmor?"
+          correctAnswerInfo: "seccomp works at the system call boundary: a profile decides which syscalls (and optionally which arguments) a process may make. AppArmor is a Linux Security Module that mediates access to objects such as files, network sockets and capabilities by path or type, according to a profile attached to the program."
+          choices:
+            - text: "seccomp restricts which files and network resources a process may touch, by path; AppArmor restricts which system calls it may make, by number"
+              answerType: Invalid
+            - text: "seccomp is enforced by the kubelet in userspace after the container starts, while AppArmor is enforced by the container runtime when the image is pulled"
+              answerType: Invalid
+            - text: "seccomp filters the system calls (and optionally their arguments) a process may make; AppArmor is a Linux Security Module that confines access to files, network and capabilities per program"
+              answerType: Solution
+            - text: "They are two names for the same kernel feature; the difference is only which Kubernetes securityContext field is used to configure it"
+              answerType: Invalid
+    explanation:
+      elements:
+        - type: context
+          text: |
+            The two are complementary, not alternatives. A seccomp profile can stop a container calling
+            `mount`, `ptrace` or `keyctl` at all, but it cannot say "this process may write to `/var/log`
+            but not to `/etc`" because it never sees paths. AppArmor can express that, but it does not
+            filter syscalls by number. Hardened workloads typically use both.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/concepts/security/linux-kernel-security-constraints/
+              text: Linux kernel security constraints for Pods and containers
+
+  # ───────────────────────────────────────────────────────────────────────────
+  - title: "Pointing a Pod at a Custom seccomp Profile"
+    category: "seccomp: Specifying Profiles"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          A custom profile has been placed on every node at:
+
+          `/var/lib/kubelet/seccomp/profiles/payments.json`
+
+          `/var/lib/kubelet/seccomp` is the kubelet's default seccomp root directory. You are writing
+          the Pod spec that must run its containers under that profile.
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "Which securityContext setting applies that profile and is accepted by the API server?"
+          correctAnswerInfo: "localhostProfile is resolved relative to the kubelet's seccomp root and is only valid together with type Localhost. An absolute path is rejected by API validation (must be a relative path), localhostProfile combined with any other type is rejected too, and Custom is not a valid type (the valid types are Unconfined, RuntimeDefault and Localhost)."
+          choices:
+            - text: "seccompProfile: {type: Localhost, localhostProfile: profiles/payments.json}"
+              answerType: Solution
+            - text: "seccompProfile: {type: Localhost, localhostProfile: /var/lib/kubelet/seccomp/profiles/payments.json}"
+              answerType: Invalid
+            - text: "seccompProfile: {type: RuntimeDefault, localhostProfile: profiles/payments.json}"
+              answerType: Invalid
+            - text: "seccompProfile: {type: Custom, path: profiles/payments.json}"
+              answerType: Invalid
+    explanation:
+      elements:
+        - type: context
+          text: |
+            The profile name is a path *under* the seccomp root, so `profiles/payments.json` resolves to
+            `/var/lib/kubelet/seccomp/profiles/payments.json`. Because the kubelet resolves the path on
+            whichever node the Pod lands on, the file has to exist on **every** node that could run it.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/pod-v1/#security-context
+              text: Pod securityContext reference
+
+  # ───────────────────────────────────────────────────────────────────────────
+  - title: "What RuntimeDefault Means"
+    category: "seccomp: Specifying Profiles"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          A teammate adds the following to a Pod and says "this locks it down, it only permits the
+          syscalls Kubernetes considers safe":
+
+          ```yaml
+          securityContext:
+            seccompProfile:
+              type: RuntimeDefault
+          ```
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "Which statement about RuntimeDefault is accurate?"
+          correctAnswerInfo: "RuntimeDefault delegates to the container runtime: containerd and CRI-O each ship their own default profile. It blocks a set of syscalls considered dangerous while keeping most workloads working, and the contents can differ between runtimes and between runtime versions."
+          choices:
+            - text: "Kubernetes applies one built-in profile that is identical on every cluster and stored at /var/lib/kubelet/seccomp/default.json"
+              answerType: Invalid
+            - text: "Every syscall is allowed, but each one is logged to the node's audit log, which makes it useful for building a profile later"
+              answerType: Invalid
+            - text: "Seccomp is turned off for the container, and the runtime's AppArmor profile is used in its place, which is why it is called a default"
+              answerType: Invalid
+            - text: "The container runtime's own default profile is applied; it blocks a set of dangerous syscalls and allows most others, and it can differ between runtimes"
+              answerType: Solution
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Because the profile belongs to the runtime, `RuntimeDefault` is a *good baseline* but not a
+            guarantee of a specific set of blocked syscalls. If you need a precise, auditable allowlist,
+            use a `Localhost` profile that you control.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/tutorials/security/seccomp/#create-a-pod-that-uses-the-container-runtime-default-seccomp-profile
+              text: Use the container runtime default seccomp profile
+
+  # ───────────────────────────────────────────────────────────────────────────
+  - title: "Cluster-Wide Defaulting with seccompDefault"
+    category: "seccomp: Specifying Profiles"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          The kubelet on node `worker-1` is configured as follows, and the Pod below is scheduled onto it.
+      - type: manifest
+        header: "Kubelet configuration on worker-1"
+        content: |
+          apiVersion: kubelet.config.k8s.io/v1beta1
+          kind: KubeletConfiguration
+          seccompDefault: true
+      - type: manifest
+        header: "Pod scheduled on worker-1"
+        content: |
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: web
+          spec:
+            containers:
+            - name: web
+              image: nginx:1.27
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "What seccomp profile does the web container actually run with on this node?"
+          correctAnswerInfo: "With seccompDefault enabled the kubelet uses RuntimeDefault for any container that does not specify a profile. The Pod object itself is not modified, so kubectl get pod -o yaml still shows no seccompProfile."
+          choices:
+            - text: "Unconfined, because the Pod does not specify a seccompProfile"
+              answerType: Invalid
+            - text: "RuntimeDefault, even though the Pod spec shows no seccompProfile"
+              answerType: Solution
+            - text: "RuntimeDefault, because the API server mutates the Pod to add securityContext.seccompProfile"
+              answerType: Invalid
+            - text: "A Localhost profile named default.json from the kubelet's seccomp directory"
+              answerType: Invalid
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "How can you confirm which seccomp profile the running container really uses?"
+          correctAnswerInfo: "Because the Pod spec is unchanged, the API cannot tell you. The container runtime's view can: on the node, crictl inspect shows the runtime spec including the seccomp section."
+          choices:
+            - text: "kubectl get pod web -o jsonpath='{.spec.securityContext.seccompProfile}' and read the profile type"
+              answerType: Invalid
+            - text: "kubectl describe pod web and look for the effective Seccomp profile in the Containers section"
+              answerType: Invalid
+            - text: "On the node, run crictl inspect for the container and read the seccomp section of its runtime spec"
+              answerType: Solution
+            - text: "kubectl exec web -- seccomp-status"
+              answerType: Invalid
+    explanation:
+      elements:
+        - type: context
+          text: |
+            `seccompDefault` is a kubelet setting (flag `--seccomp-default` or the `seccompDefault` field
+            in the kubelet config file), so it has to be enabled on each node where you want it. The
+            Kubernetes project recommends enabling it on a subset of nodes first, because some workloads
+            fail under `RuntimeDefault`.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/tutorials/security/seccomp/#enable-the-use-of-runtimedefault-as-the-default-seccomp-profile-for-all-workloads
+              text: Enable RuntimeDefault as the default for all workloads
+
+  # ───────────────────────────────────────────────────────────────────────────
+  - title: "Pod-Level versus Container-Level seccomp"
+    category: "seccomp: Specifying Profiles"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          Kubelet seccomp defaulting is **disabled** on the node that runs this Pod.
+      - type: manifest
+        header: "Pod: mixed"
+        content: |
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: mixed
+          spec:
+            securityContext:
+              seccompProfile:
+                type: RuntimeDefault
+            initContainers:
+            - name: init-db
+              image: busybox:1.36
+            containers:
+            - name: app
+              image: example/app:1.0
+              securityContext:
+                seccompProfile:
+                  type: Unconfined
+            - name: logger
+              image: example/logger:1.0
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "Which option correctly lists the effective seccomp profile of each container?"
+          correctAnswerInfo: "A pod-level seccompProfile is the default for every container, including init containers. A container-level seccompProfile overrides it for that container only; it does not affect the others."
+          choices:
+            - text: "init-db: RuntimeDefault, app: Unconfined, logger: RuntimeDefault"
+              answerType: Solution
+            - text: "init-db: Unconfined, app: Unconfined, logger: Unconfined, because a container-level override applies to the whole Pod"
+              answerType: Invalid
+            - text: "init-db: RuntimeDefault, app: RuntimeDefault, logger: RuntimeDefault, because the pod-level setting always wins"
+              answerType: Invalid
+            - text: "The Pod is rejected because the pod-level and container-level seccomp settings conflict"
+              answerType: Invalid
+    explanation:
+      elements:
+        - type: context
+          text: |
+            The same precedence rule applies to AppArmor: a container-level `appArmorProfile` overrides the
+            Pod-level one. Keep this Pod in mind, because the Pod Security Standards forbid an explicit
+            `Unconfined` seccomp profile at the baseline level, so the `app` container would also be
+            rejected in a namespace enforcing `baseline` or `restricted`.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/tasks/configure-pod-container/security-context/#set-the-seccomp-profile-for-a-container
+              text: Set the seccomp profile for a container
+
+  # ───────────────────────────────────────────────────────────────────────────
+  - title: "Reading Three seccomp Profiles"
+    category: "seccomp: Interpreting Profiles"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          Three profiles are stored in the kubelet's seccomp directory on every node.
+
+          **audit.json**
+
+          ```json
+          {
+            "defaultAction": "SCMP_ACT_LOG"
+          }
+          ```
+
+          **violation.json**
+
+          ```json
+          {
+            "defaultAction": "SCMP_ACT_ERRNO"
+          }
+          ```
+
+          **no-mkdir.json**
+
+          ```json
+          {
+            "defaultAction": "SCMP_ACT_ALLOW",
+            "architectures": ["SCMP_ARCH_X86_64"],
+            "syscalls": [
+              {
+                "names": ["mkdir", "mkdirat"],
+                "action": "SCMP_ACT_ERRNO"
+              }
+            ]
+          }
+          ```
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "A web server Pod is started with audit.json as a Localhost profile. What happens, and where do you look for evidence?"
+          correctAnswerInfo: "SCMP_ACT_LOG allows the syscall but asks the kernel to log it. The records are written by the node's kernel (audit subsystem), so they appear in the node's syslog or kernel log, not in the Pod's logs or Kubernetes events."
+          choices:
+            - text: "The container is killed on its first syscall, and kubectl logs shows which syscall was blocked"
+              answerType: Invalid
+            - text: "Syscalls outside a built-in list are blocked, and the blocked calls appear in kubectl get events"
+              answerType: Invalid
+            - text: "The Pod runs normally, and every syscall is printed to its stdout so it shows up in kubectl logs"
+              answerType: Invalid
+            - text: "The Pod runs normally; each syscall is allowed but logged by the kernel on the node, for example in /var/log/syslog"
+              answerType: Solution
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "A Pod is started with violation.json as a Localhost profile. What do you observe?"
+          correctAnswerInfo: "With defaultAction SCMP_ACT_ERRNO and no allow list, every syscall returns an error, including the ones the process needs to start. The container cannot run properly, so the Pod ends up in CrashLoopBackOff."
+          choices:
+            - text: "The Pod runs normally because the profile lists no syscalls to block"
+              answerType: Invalid
+            - text: "Every syscall fails with an error, so the container cannot start properly and ends up in CrashLoopBackOff"
+              answerType: Solution
+            - text: "The API server rejects the Pod because the profile file has no syscalls section"
+              answerType: Invalid
+            - text: "The kubelet ignores the empty profile and falls back to RuntimeDefault, so the Pod runs normally"
+              answerType: Invalid
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "A container confined by no-mkdir.json runs. Which statement is correct?"
+          correctAnswerInfo: "The default action is ALLOW, so this is a deny list: only the syscalls it names are affected (they return an error, EPERM by default), and anything it does not name is permitted, including syscalls added by future kernels. A default of SCMP_ACT_ERRNO plus an allow list fails closed instead."
+          choices:
+            - text: "mkdir fails, and every syscall not named in the profile is also denied because seccomp is deny-by-default"
+              answerType: Invalid
+            - text: "Nothing is blocked: SCMP_ACT_ERRNO entries are only logged unless SCMP_ACT_KILL is used"
+              answerType: Invalid
+            - text: "mkdir and mkdirat fail with Operation not permitted; every other syscall, including ones the profile never names, is allowed"
+              answerType: Solution
+            - text: "The container cannot start, because the runtime needs mkdir while creating the container"
+              answerType: Invalid
+    explanation:
+      elements:
+        - type: context
+          text: |
+            The three profiles show the two designs and the audit mode between them:
+
+            - **Allow list** (`defaultAction: SCMP_ACT_ERRNO` plus `SCMP_ACT_ALLOW` entries): fails closed.
+              Safest, but you must list every syscall the workload needs.
+            - **Deny list** (`defaultAction: SCMP_ACT_ALLOW` plus `SCMP_ACT_ERRNO` entries): fails open.
+              Easy to adopt, but it only blocks what you thought of.
+            - **Audit** (`SCMP_ACT_LOG`): blocks nothing; it is a tool for discovering what a workload uses.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/tutorials/security/seccomp/#create-a-pod-with-a-seccomp-profile-for-syscall-auditing
+              text: Auditing syscalls with a seccomp profile
+            - url: https://kubernetes.io/docs/tutorials/security/seccomp/#create-a-pod-with-a-seccomp-profile-that-causes-violation
+              text: A profile that causes a violation
+
+  # ───────────────────────────────────────────────────────────────────────────
+  - title: "Building a Least-Privilege seccomp Profile"
+    category: "seccomp: Interpreting Profiles"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          Your team wrote a small in-house service and wants a tight seccomp allow list for it, rather
+          than relying on `RuntimeDefault`. Nobody knows exactly which syscalls the service makes.
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "Which workflow is the practical way to arrive at that allow list?"
+          correctAnswerInfo: "The Kubernetes seccomp tutorial uses exactly this approach: run the workload under an audit profile (SCMP_ACT_LOG), read the syscall numbers the kernel logged on the node, then write a profile with defaultAction SCMP_ACT_ERRNO that allows only those syscalls."
+          choices:
+            - text: "Run the workload with an audit profile (SCMP_ACT_LOG), read the logged syscalls on the node, then write a profile with default SCMP_ACT_ERRNO that allows only those"
+              answerType: Solution
+            - text: "Run kubectl auth can-i --list for the workload's ServiceAccount and convert the permitted verbs into the syscalls they imply"
+              answerType: Invalid
+            - text: "Start from the violation profile and let the kubelet add syscalls to it automatically as it observes denials in the node log"
+              answerType: Invalid
+            - text: "Read the image's OCI manifest and config, which declare the syscalls that the image requires at runtime"
+              answerType: Invalid
+    explanation:
+      elements:
+        - type: context
+          text: |
+            An allow list built from one observed run is a starting point, not a proof: code paths that
+            did not execute during the observation (error handling, shutdown, rarely used features) may
+            need syscalls that were never logged, so test the profile against realistic and failure-case
+            traffic before enforcing it.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/tutorials/security/seccomp/#create-a-pod-with-a-seccomp-profile-that-only-allows-necessary-syscalls
+              text: A profile that only allows necessary syscalls
+
+  # ───────────────────────────────────────────────────────────────────────────
+  - title: "Privileged Containers and seccomp"
+    category: "seccomp: Runtime Behavior"
+    hintsEnabled: false
+    elements:
+      - type: manifest
+        header: "Pod: debug-tools"
+        content: |
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: debug-tools
+          spec:
+            securityContext:
+              seccompProfile:
+                type: RuntimeDefault
+            containers:
+            - name: tools
+              image: example/netshoot:1.0
+              securityContext:
+                privileged: true
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "What seccomp profile is the tools container effectively running with?"
+          correctAnswerInfo: "A seccomp profile cannot be applied to a container running with privileged: true. Privileged containers always run as Unconfined, whatever seccompProfile says."
+          choices:
+            - text: "RuntimeDefault, inherited from the pod-level setting"
+              answerType: Invalid
+            - text: "The Pod is rejected: privileged containers cannot be combined with a seccompProfile"
+              answerType: Invalid
+            - text: "RuntimeDefault, with the extra privileges added back on top"
+              answerType: Invalid
+            - text: "Unconfined: privileged containers always run unconfined, so the seccompProfile has no effect"
+              answerType: Solution
+    explanation:
+      elements:
+        - type: context
+          text: |
+            This is a good reason to audit for `privileged: true` separately: the Pod above *looks*
+            hardened because it declares a seccomp profile, but the profile is silently not enforced.
+            The Pod Security Standards forbid privileged containers at the baseline level for the same
+            reason.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/tutorials/security/seccomp/#before-you-begin
+              text: "seccomp tutorial: privileged containers"
+
+  # ───────────────────────────────────────────────────────────────────────────
+  - title: "Reading seccomp State from Inside a Container"
+    category: "seccomp: Runtime Behavior"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          You want to check seccomp status from inside a running container, without access to the node.
+          The kernel exposes it in `/proc/<pid>/status`.
+      - type: context
+        text: |
+          ```
+          $ kubectl exec web -- grep -i seccomp /proc/1/status
+          Seccomp:         2
+          Seccomp_filters: 1
+          ```
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "What can you conclude from this output?"
+          correctAnswerInfo: "The Seccomp field is the process's mode: 0 means disabled, 1 means strict mode (only read, write, exit and sigreturn), 2 means filter mode. Seccomp_filters counts the filters attached. Mode 2 with one filter means a profile (RuntimeDefault or a Localhost profile) is being enforced."
+          choices:
+            - text: "Seccomp is disabled for PID 1, so the container is effectively Unconfined and every syscall is permitted"
+              answerType: Invalid
+            - text: "A seccomp filter is installed for PID 1 (filter mode), so a profile such as RuntimeDefault or a Localhost one is in effect"
+              answerType: Solution
+            - text: "Strict mode: PID 1 is limited to read, write, exit and sigreturn, which is the most restrictive mode"
+              answerType: Invalid
+            - text: "The container uses profile number 2 from the kubelet's seccomp directory, loaded as a Localhost profile"
+              answerType: Invalid
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "For a different Pod, the same command prints Seccomp: 0. Which situations could explain this? (Select all that apply)"
+          correctAnswerInfo: "Seccomp: 0 means no filter is attached. That happens when no profile is configured and kubelet seccompDefault is off, when the profile is Unconfined, and when the container is privileged. RuntimeDefault would install a filter, and a Localhost profile whose file is missing stops the container from starting at all, so there would be no PID 1 to inspect."
+          choices:
+            - text: "No seccompProfile is set and the kubelet runs without seccompDefault"
+              answerType: PartOfSolution
+            - text: "seccompProfile.type is RuntimeDefault"
+              answerType: Invalid
+            - text: "The container runs with privileged: true"
+              answerType: PartOfSolution
+            - text: "A Localhost profile is configured, but its file is missing on the node"
+              answerType: Invalid
+            - text: "seccompProfile.type is Unconfined"
+              answerType: PartOfSolution
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Checking `/proc/1/status` is the quickest way to prove a seccomp profile is *actually* in force,
+            which is more reliable than reading the Pod spec: it catches the privileged-container case and
+            the "kubelet defaulting is off" case that the spec alone cannot reveal.
+        - type: references
+          links:
+            - url: https://man7.org/linux/man-pages/man5/proc_pid_status.5.html
+              text: "proc_pid_status(5): the Seccomp field"
+
+  # ───────────────────────────────────────────────────────────────────────────
+  - title: "Naming an AppArmor Profile Correctly"
+    category: "AppArmor: Specifying Profiles"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          On every node, a profile was loaded with `apparmor_parser` from a file named
+          `/etc/apparmor.d/nginx-restrict`. The first lines of that file are:
+
+          ```
+          #include <tunables/global>
+          profile k8s-nginx flags=(attach_disconnected) {
+            #include <abstractions/base>
+            file,
+            deny /** w,
+          }
+          ```
+
+          `aa-status` on each node lists `k8s-nginx` in enforce mode. You are writing the Pod for a
+          container named `nginx` on Kubernetes 1.34.
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "Which setting confines the container to that profile?"
+          correctAnswerInfo: "localhostProfile takes the name of the profile as loaded in the kernel (the name after the profile keyword, here k8s-nginx), not the file name or path. The API server does not check that it exists, so the other values are accepted at creation time and fail when the container is started. The localhost/ prefix belongs only to the legacy annotation form."
+          choices:
+            - text: "appArmorProfile: {type: Localhost, localhostProfile: nginx-restrict}"
+              answerType: Invalid
+            - text: "appArmorProfile: {type: Localhost, localhostProfile: /etc/apparmor.d/nginx-restrict}"
+              answerType: Invalid
+            - text: "appArmorProfile: {type: Localhost, localhostProfile: k8s-nginx}"
+              answerType: Solution
+            - text: "appArmorProfile: {type: Localhost, localhostProfile: localhost/k8s-nginx}"
+              answerType: Invalid
+    explanation:
+      elements:
+        - type: context
+          text: |
+            The name you need is whatever `aa-status` (or `/sys/kernel/security/apparmor/profiles`) prints.
+            It comes from the `profile <name>` line inside the file, and the file name on disk is
+            irrelevant to Kubernetes. If you ever see a Pod stuck after you referenced a profile that
+            "obviously exists", compare the name in the Pod to the name the kernel reports first.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/tutorials/security/apparmor/#specifying-apparmor-confinement
+              text: Specifying AppArmor confinement
+
+  # ───────────────────────────────────────────────────────────────────────────
+  - title: "The AppArmor API in Kubernetes 1.30 and Later"
+    category: "AppArmor: Specifying Profiles"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          Before Kubernetes 1.30, AppArmor was configured with an annotation on the Pod. From 1.30 it is
+          a first-class field. Several of the statements below are commonly repeated but wrong.
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "Which statements about specifying AppArmor on Kubernetes 1.30 or later are correct? (Select all that apply)"
+          correctAnswerInfo: "appArmorProfile exists at both Pod and container level (container wins), type is Localhost, RuntimeDefault or Unconfined with localhostProfile required if and only if type is Localhost, and Kubernetes never loads profiles onto nodes for you. The annotation is the deprecated form, RuntimeDefault applies the runtime's default AppArmor profile (it does not disable confinement), and the scheduler knows nothing about which profiles a node has loaded."
+          choices:
+            - text: "appArmorProfile can be set in a container's securityContext or in the Pod's securityContext, and the container-level profile wins when both are set"
+              answerType: PartOfSolution
+            - text: "The annotation container.apparmor.security.beta.kubernetes.io/<container> is the recommended way to configure AppArmor"
+              answerType: Invalid
+            - text: "type is one of Localhost, RuntimeDefault or Unconfined, and localhostProfile must be set if and only if type is Localhost"
+              answerType: PartOfSolution
+            - text: "type RuntimeDefault means the container runs without any AppArmor confinement"
+              answerType: Invalid
+            - text: "Kubernetes does not load profiles onto nodes; the profile must already be loaded in the kernel of every node where the Pod can run"
+              answerType: PartOfSolution
+            - text: "The scheduler automatically places the Pod only on nodes where the requested Localhost profile is loaded"
+              answerType: Invalid
+    explanation:
+      elements:
+        - type: context
+          text: |
+            The "iff" rule is enforced by the API server: `type: Localhost` without `localhostProfile` is
+            rejected, and so is `localhostProfile` combined with `RuntimeDefault` or `Unconfined`.
+            Whether the named profile actually exists on a node is not something the API server can know.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/tutorials/security/apparmor/#securing-a-pod
+              text: Securing a Pod with AppArmor
+
+  # ───────────────────────────────────────────────────────────────────────────
+  - title: "Reading AppArmor Profiles"
+    category: "AppArmor: Interpreting Profiles"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          The Kubernetes documentation uses this profile as its example. It is loaded on the node and
+          applied to a container.
+
+          ```
+          #include <tunables/global>
+          profile k8s-apparmor-example-deny-write flags=(attach_disconnected) {
+            #include <abstractions/base>
+            file,
+            # Deny all file writes.
+            deny /** w,
+          }
+          ```
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "A process in the confined container runs: touch /tmp/test. What happens?"
+          correctAnswerInfo: "In AppArmor an explicit deny rule always overrides an allow rule, regardless of the order they appear in. file, allows file access in general, but deny /** w, removes write access to every path, so the write fails with Permission denied."
+          choices:
+            - text: "It fails with Permission denied: explicit deny rules take precedence over allow rules regardless of order"
+              answerType: Solution
+            - text: "It succeeds: the file, rule allows all file access, and the later deny rule never applies"
+              answerType: Invalid
+            - text: "It succeeds only if the container runs as root"
+              answerType: Invalid
+            - text: "The profile fails to load because file, and deny /** w, conflict"
+              answerType: Invalid
+      - type: context
+        text: |
+          A second profile is loaded for a different container:
+
+          ```
+          #include <tunables/global>
+          profile k8s-web flags=(attach_disconnected) {
+            #include <abstractions/base>
+
+            capability,
+            file,
+            network inet stream,
+
+            deny /etc/** w,
+            deny mount,
+          }
+          ```
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "Assume the container has every Linux capability it needs and AppArmor is the only thing that can block an operation. Which command succeeds?"
+          correctAnswerInfo: "network inet stream, permits only TCP-style (stream) sockets over IPv4, so a TCP connection to an IP address works. Writes under /etc and mount operations are explicitly denied, and ping needs a raw or datagram socket, which this profile does not allow."
+          choices:
+            - text: "echo debug=true >> /etc/app/app.conf"
+              answerType: Invalid
+            - text: "mount -t tmpfs tmpfs /mnt"
+              answerType: Invalid
+            - text: "ping -c 1 10.20.30.40"
+              answerType: Invalid
+            - text: "wget -qO- http://10.20.30.40:8080/health"
+              answerType: Solution
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Reading a profile top to bottom is a trap, because AppArmor does not use first-match-wins
+            ordering. The effective permission for an access is: allowed if any allow rule covers it
+            **and** no deny rule does. A bare `file,` or `network,` rule is a very permissive starting
+            point, which is why real profiles pair it with specific `deny` rules.
+        - type: references
+          links:
+            - url: https://gitlab.com/apparmor/apparmor/wikis/QuickProfileLanguage
+              text: Quick guide to the AppArmor profile language
+
+  # ───────────────────────────────────────────────────────────────────────────
+  - title: "A Profile That Is Not Loaded on the Node"
+    category: "AppArmor: Runtime Behavior"
+    hintsEnabled: false
+    elements:
+      - type: manifest
+        header: "Pod: reports"
+        content: |
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: reports
+          spec:
+            containers:
+            - name: reports
+              image: example/reports:2.4
+              securityContext:
+                appArmorProfile:
+                  type: Localhost
+                  localhostProfile: k8s-web
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "The scheduler places this Pod on a node where the k8s-web profile is not loaded. What happens?"
+          correctAnswerInfo: "There is no fallback. The kubelet or runtime cannot start the container because the profile does not exist in the kernel on that node; the Pod stays stuck and the events show the reason (for example an AppArmor profile not found error)."
+          choices:
+            - text: "The container starts with the RuntimeDefault profile and a warning event is recorded"
+              answerType: Invalid
+            - text: "The container does not start on that node; there is no fallback to RuntimeDefault or Unconfined"
+              answerType: Solution
+            - text: "The API server rejected the Pod at creation time because it checks profile names against the cluster"
+              answerType: Invalid
+            - text: "The container starts Unconfined, and only the kubelet logs mention the missing profile"
+              answerType: Invalid
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "How do you make sure Pods using a Localhost AppArmor profile only run where the profile exists?"
+          correctAnswerInfo: "Kubernetes has no mechanism to distribute AppArmor profiles, and the scheduler is unaware of what each node has loaded. Either load the profile on every node (custom tooling, a DaemonSet, or the Security Profiles Operator) or label the nodes that have it and constrain Pods with a nodeSelector."
+          choices:
+            - text: "Nothing is needed: the scheduler reads /sys/kernel/security/apparmor/profiles and avoids nodes without the profile"
+              answerType: Invalid
+            - text: "Create a ConfigMap containing the profile text; the kubelet loads it before starting the Pod"
+              answerType: Invalid
+            - text: "Load the profile on every node (for example with a DaemonSet or the Security Profiles Operator), or label the nodes that have it and use a nodeSelector"
+              answerType: Solution
+            - text: "Put the profile text in a Pod annotation so the container runtime loads it on demand"
+              answerType: Invalid
+    explanation:
+      elements:
+        - type: context
+          text: |
+            The profile must be in the kernel of every node the Pod could be scheduled to. The failure mode
+            is loud (the container does not start) rather than silent, which is the good news: a missing
+            profile never quietly downgrades a Pod to running unconfined.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/tutorials/security/apparmor/#setting-up-nodes-with-profiles
+              text: Setting up nodes with profiles
+
+  # ───────────────────────────────────────────────────────────────────────────
+  - title: "Verifying and Reading AppArmor State"
+    category: "AppArmor: Runtime Behavior"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          A Pod named `web` is Running and configured with an AppArmor profile. You want proof of which
+          profile actually confines the container's main process.
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "Which command shows the AppArmor profile (and mode) confining the container's PID 1?"
+          correctAnswerInfo: "The process's own attribute file reports the profile name and mode, for example k8s-web (enforce). This is the check the Kubernetes AppArmor tutorial uses. kubectl describe only shows what was requested, and aa-status inspects the host kernel's profile list, which is not available inside a normal container."
+          choices:
+            - text: "kubectl exec web -- cat /proc/1/attr/current"
+              answerType: Solution
+            - text: "kubectl exec web -- aa-status"
+              answerType: Invalid
+            - text: "kubectl describe pod web | grep -i apparmor"
+              answerType: Invalid
+            - text: "kubectl get pod web -o jsonpath='{.status.appArmorProfile}'"
+              answerType: Invalid
+      - type: context
+        text: |
+          ```
+          $ kubectl exec web -- cat /proc/1/attr/current
+          k8s-web (complain)
+          ```
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "What does this output tell you?"
+          correctAnswerInfo: "The text in parentheses is the profile mode. In complain mode AppArmor logs what the profile would have denied but allows it, which is useful while developing a profile but gives no protection. The profile has to be reloaded in enforce mode."
+          choices:
+            - text: "The profile is enforced and violations are blocked and logged"
+              answerType: Invalid
+            - text: "The container is Unconfined and k8s-web is only the Pod's label"
+              answerType: Invalid
+            - text: "The profile failed to load and the runtime default is used"
+              answerType: Invalid
+            - text: "The profile is loaded in complain mode: violations are logged but not blocked"
+              answerType: Solution
+    explanation:
+      elements:
+        - type: context
+          text: |
+            Always check the **mode** as well as the name. A profile in complain mode looks correct in the
+            Pod spec, shows up in `aa-status`, and still blocks nothing. Profiles being developed are
+            often left in complain mode by mistake.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/tutorials/security/apparmor/#securing-a-pod
+              text: "Verifying with /proc/1/attr/current"
+
+  # ───────────────────────────────────────────────────────────────────────────
+  - title: "What RuntimeDefault Means for AppArmor"
+    category: "AppArmor: Runtime Behavior"
+    hintsEnabled: false
+    elements:
+      - type: context
+        text: |
+          A Pod sets `appArmorProfile: {type: RuntimeDefault}`. Inside the container you run
+          `cat /proc/1/attr/current` and see:
+
+          ```
+          cri-containerd.apparmor.d (enforce)
+          ```
+      - type: question
+        question:
+          questionType: multiple-choice
+          header: "What is cri-containerd.apparmor.d?"
+          correctAnswerInfo: "RuntimeDefault selects the container runtime's own default AppArmor profile. For containerd that is cri-containerd.apparmor.d, which the runtime generates and loads itself, so you do not have to load anything onto the node. The same example appears in the Kubernetes AppArmor documentation."
+          choices:
+            - text: "A custom profile that you loaded onto the node and that happens to have a similar name"
+              answerType: Invalid
+            - text: "containerd's built-in default AppArmor profile, applied because the type is RuntimeDefault"
+              answerType: Solution
+            - text: "A marker meaning the container is unconfined"
+              answerType: Invalid
+            - text: "A profile the kubelet generated from the Pod's securityContext"
+              answerType: Invalid
+    explanation:
+      elements:
+        - type: context
+          text: |
+            `RuntimeDefault` is the low-effort option: no profile distribution problem, and a sensible
+            baseline. Use `Localhost` when you need rules specific to the workload, accepting that you
+            now own getting that profile onto every node.
+        - type: references
+          links:
+            - url: https://kubernetes.io/docs/tutorials/security/apparmor/#securing-a-pod
+              text: Securing a Pod with AppArmor
