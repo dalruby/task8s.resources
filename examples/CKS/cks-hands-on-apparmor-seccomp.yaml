@@ -201,7 +201,7 @@ scenarios:
       A tiny statically linked utility, `heartbeat`, only ever reads from and writes to file
       descriptors it already holds. Its vendor documents the complete list of system calls it needs:
 
-      `read`, `write`, `close`, `futex`, `rt_sigreturn`, `exit_group`
+      `execve`, `read`, `write`, `close`, `futex`, `rt_sigreturn`, `exit_group`
 
       You are on `node01`. Store a profile named `heartbeat.json` in the `profiles` directory so that
       the utility can do exactly that and **everything else is refused with an error**, never
@@ -214,7 +214,7 @@ scenarios:
           "defaultAction": "SCMP_ACT_ERRNO",
           "syscalls": [
             {
-              "names": ["read", "write", "close", "futex", "rt_sigreturn", "exit_group"],
+              "names": ["execve", "read", "write", "close", "futex", "rt_sigreturn", "exit_group"],
               "action": "SCMP_ACT_ALLOW"
             }
           ]
@@ -225,6 +225,7 @@ scenarios:
         syscalls than a toy utility, so allow lists are usually built from observed behaviour (see the audit-log scenario).
       cel: |-
         (answer.matches(r'"defaultAction"\s*:\s*"SCMP_ACT_ERRNO"')) &&
+        (answer.matches(r'("names"\s*:\s*\[[^\]]*"execve"[^\]]*\][^{}]*"action"\s*:\s*"SCMP_ACT_ALLOW")|("action"\s*:\s*"SCMP_ACT_ALLOW"[^{}]*"names"\s*:\s*\[[^\]]*"execve"[^\]]*\])')) &&
         (answer.matches(r'("names"\s*:\s*\[[^\]]*"read"[^\]]*\][^{}]*"action"\s*:\s*"SCMP_ACT_ALLOW")|("action"\s*:\s*"SCMP_ACT_ALLOW"[^{}]*"names"\s*:\s*\[[^\]]*"read"[^\]]*\])')) &&
         (answer.matches(r'("names"\s*:\s*\[[^\]]*"write"[^\]]*\][^{}]*"action"\s*:\s*"SCMP_ACT_ALLOW")|("action"\s*:\s*"SCMP_ACT_ALLOW"[^{}]*"names"\s*:\s*\[[^\]]*"write"[^\]]*\])')) &&
         (answer.matches(r'("names"\s*:\s*\[[^\]]*"close"[^\]]*\][^{}]*"action"\s*:\s*"SCMP_ACT_ALLOW")|("action"\s*:\s*"SCMP_ACT_ALLOW"[^{}]*"names"\s*:\s*\[[^\]]*"close"[^\]]*\])')) &&
@@ -242,6 +243,11 @@ scenarios:
 
         Choosing `SCMP_ACT_ERRNO` rather than a kill action as the default keeps the process alive, which
         makes missing syscalls much easier to diagnose.
+
+        **`execve` is always needed.** The container runtime installs the seccomp filter *before* it
+        executes the container's entrypoint, so a deny-by-default profile without `execve` prevents the
+        container from starting at all. Real programs need many more syscalls — static binaries commonly
+        need `arch_prctl` and `set_tid_address`, dynamic ones `mmap`, `openat`, `brk` and others.
     - type: references
       links:
       - url: https://kubernetes.io/docs/tutorials/security/seccomp/
@@ -309,6 +315,7 @@ scenarios:
   - type: manifest
     header: $ grep type=1326 /var/log/syslog
     content: |
+      Oct 17 10:12:00 node01 kernel: [ 5120.998871] audit: type=1326 audit(1760695920.991:450): auid=4294967295 uid=0 gid=0 ses=4294967295 pid=2231 comm="batch-export" exe="/usr/local/bin/batch-export" sig=0 arch=c000003e syscall=59 compat=0 ip=0x7f1c2a1af0b2 code=0x7ffc0000
       Oct 17 10:12:01 node01 kernel: [ 5121.223344] audit: type=1326 audit(1760695921.123:451): auid=4294967295 uid=0 gid=0 ses=4294967295 pid=2231 comm="batch-export" exe="/usr/local/bin/batch-export" sig=0 arch=c000003e syscall=257 compat=0 ip=0x7f1c2a1b0e5a code=0x7ffc0000
       Oct 17 10:12:01 node01 kernel: [ 5121.223901] audit: type=1326 audit(1760695921.123:452): auid=4294967295 uid=0 gid=0 ses=4294967295 pid=2231 comm="batch-export" exe="/usr/local/bin/batch-export" sig=0 arch=c000003e syscall=0 compat=0 ip=0x7f1c2a1b0f1a code=0x7ffc0000
       Oct 17 10:12:01 node01 kernel: [ 5121.224102] audit: type=1326 audit(1760695921.124:453): auid=4294967295 uid=0 gid=0 ses=4294967295 pid=2231 comm="batch-export" exe="/usr/local/bin/batch-export" sig=0 arch=c000003e syscall=12 compat=0 ip=0x7f1c2a1b1033 code=0x7ffc0000
@@ -344,12 +351,13 @@ scenarios:
     question:
       questionType: multiline
       expectedAnswer: |
-        {"defaultAction":"SCMP_ACT_ERRNO","syscalls":[{"names":["read","write","close","brk","futex","exit_group","openat"],"action":"SCMP_ACT_ALLOW"}]}
+        {"defaultAction":"SCMP_ACT_ERRNO","syscalls":[{"names":["execve","read","write","close","brk","futex","exit_group","openat"],"action":"SCMP_ACT_ALLOW"}]}
       header: 'Write the complete contents of /var/lib/kubelet/seccomp/profiles/batch-export.json: a profile that permits
         exactly the system calls recorded above and refuses all others with an error.'
       hint: Several records repeat the same number. Only the distinct numbers matter, and each has to be translated to a name.
       cel: |-
         (answer.matches(r'"defaultAction"\s*:\s*"SCMP_ACT_ERRNO"')) &&
+        (answer.matches(r'("names"\s*:\s*\[[^\]]*"execve"[^\]]*\][^{}]*"action"\s*:\s*"SCMP_ACT_ALLOW")|("action"\s*:\s*"SCMP_ACT_ALLOW"[^{}]*"names"\s*:\s*\[[^\]]*"execve"[^\]]*\])')) &&
         (answer.matches(r'("names"\s*:\s*\[[^\]]*"read"[^\]]*\][^{}]*"action"\s*:\s*"SCMP_ACT_ALLOW")|("action"\s*:\s*"SCMP_ACT_ALLOW"[^{}]*"names"\s*:\s*\[[^\]]*"read"[^\]]*\])')) &&
         (answer.matches(r'("names"\s*:\s*\[[^\]]*"write"[^\]]*\][^{}]*"action"\s*:\s*"SCMP_ACT_ALLOW")|("action"\s*:\s*"SCMP_ACT_ALLOW"[^{}]*"names"\s*:\s*\[[^\]]*"write"[^\]]*\])')) &&
         (answer.matches(r'("names"\s*:\s*\[[^\]]*"close"[^\]]*\][^{}]*"action"\s*:\s*"SCMP_ACT_ALLOW")|("action"\s*:\s*"SCMP_ACT_ALLOW"[^{}]*"names"\s*:\s*\[[^\]]*"close"[^\]]*\])')) &&
@@ -1078,13 +1086,13 @@ scenarios:
   elements:
   - type: context
     text: |
-      Pod `mkdir-test` was created from a manifest that selected `deny-mkdir.json`. You are on `node01`,
+      Pod `fs-check` was created from a manifest that selected `deny-mkdir.json`. You are on `node01`,
       where it is running, and want to see the filter the container runtime really installed. The
-      container's name is `tester`; `crictl` is configured for the node's runtime.
+      container's name is `checker`; `crictl` is configured for the node's runtime.
   - type: question
     question:
       questionType: command
-      header: List the containers on this node whose name is tester.
+      header: List the containers on this node whose name is checker.
       hint: 'crictl mirrors the docker CLI: it has a verb for containers, with a filter flag for the name.'
       command:
         executable: crictl
@@ -1093,15 +1101,15 @@ scenarios:
         flags:
         - name: name
           required: true
-          value: tester
+          value: checker
         - name: all
           short: a
           boolean: true
   - type: manifest
-    header: $ crictl ps --name tester
+    header: $ crictl ps --name checker
     content: |
       CONTAINER           IMAGE               CREATED             STATE               NAME                ATTEMPT             POD ID              POD
-      8e2f6a1b9c0d4       7b2a8c9d1e3f5       5 minutes ago       Running             tester              0                   c41d9e7a2b6f3       mkdir-test
+      8e2f6a1b9c0d4       7b2a8c9d1e3f5       5 minutes ago       Running             checker             0                   c41d9e7a2b6f3       fs-check
   - type: question
     question:
       questionType: command
@@ -1272,6 +1280,27 @@ scenarios:
       correctAnswerInfo: Profiles in the complain section log violations without blocking them. Everything under 'enforce
         mode' is actively denying.
       cel: answer.trim() == 'k8s-audit-net'
+  - type: context
+    text: |
+      On `node02` the `apparmor-utils` package is **not installed**, so `aa-status` does not exist
+      there. The kernel exposes the list of loaded profiles as a file anyway.
+  - type: question
+    question:
+      questionType: command
+      header: Print the kernel's list of loaded AppArmor profiles on node02 by reading that file directly.
+      hint: Kernel security modules publish their state under a security directory of the sysfs filesystem.
+      command:
+        executable: cat
+        positionals:
+        - index: 0
+          value: /sys/kernel/security/apparmor/profiles
+          description: file
+  - type: manifest
+    header: $ cat /sys/kernel/security/apparmor/profiles
+    content: |
+      cri-containerd.apparmor.d (enforce)
+      k8s-deny-write (enforce)
+      k8s-audit-net (complain)
   explanation:
     elements:
     - type: context
@@ -1419,8 +1448,8 @@ scenarios:
   elements:
   - type: context
     text: |
-      A proxy container makes outbound connections to a database and must never use anything else for
-      networking: no UDP, no raw sockets, no IPv6, no Unix-domain sockets. Ordinary file access is
+      A proxy container makes outbound connections to a database, addressed **by IP address** (no name
+      resolution is involved), and must never use anything else for networking: no UDP, no raw sockets, no IPv6, no Unix-domain sockets. Ordinary file access is
       unrestricted.
 
       Create the profile `k8s-net-tcp4` in `/etc/apparmor.d/k8s-net-tcp4` on `node01`. Do not use any
@@ -1467,6 +1496,10 @@ scenarios:
 
         Because unlisted network access is refused, an allow-list of a single rule is enough. The common
         mistake is writing `network inet,` (too broad: UDP and raw sockets are included) or `network,`.
+
+        **Gotcha:** DNS lookups normally use UDP, so a TCP-only profile breaks hostname resolution inside
+        the container (and `getaddrinfo` falls back to TCP only in some cases). Real profiles for services
+        that resolve names need `network inet dgram,` as well — which is why this task connects by IP.
     - type: references
       links:
       - url: https://gitlab.com/apparmor/apparmor/-/wikis/AppArmor_Core_Policy_Reference
@@ -1603,8 +1636,9 @@ scenarios:
       written
   - type: context
     text: |
-      The profile file is `/etc/apparmor.d/k8s-ledger-guard` on the node, which you are logged in to.
-      The profile's rules are correct; it only operates in the wrong mode.
+      The profile file is `/etc/apparmor.d/k8s-ledger-guard` on the node, which you are logged in to
+      (your working directory is `/root`). The profile's rules are correct; it only operates in the
+      wrong mode.
   - type: question
     question:
       questionType: command
@@ -1617,8 +1651,8 @@ scenarios:
         executable: aa-enforce
         positionals:
         - index: 0
-          regex: ^(/etc/apparmor\.d/)?k8s-ledger-guard$
-          description: profile
+          value: /etc/apparmor.d/k8s-ledger-guard
+          description: profile file
   - type: manifest
     header: $ kubectl exec ledger -n finance -- cat /proc/1/attr/current
     content: |
@@ -1642,8 +1676,8 @@ scenarios:
         executable: aa-complain
         positionals:
         - index: 0
-          regex: ^(/etc/apparmor\.d/)?k8s-batch-trial$
-          description: profile
+          value: /etc/apparmor.d/k8s-batch-trial
+          description: profile file
   explanation:
     elements:
     - type: context
@@ -1655,6 +1689,10 @@ scenarios:
         The mode can be changed in three equivalent ways: `aa-enforce` / `aa-complain` (utilities that
         flip the flag in the profile and reload it), `apparmor_parser -C` to load in complain mode, or
         editing `flags=(complain)` in the profile header and reloading with `-r`.
+
+        These utilities take a **path** to the profile file (or a program name found on `PATH`); a bare
+        profile name such as `k8s-ledger-guard` is only resolved when your working directory happens to be
+        `/etc/apparmor.d`, so use the full path.
 
         A profile left in complain mode after development is a classic way to ship a profile that looks
         deployed but protects nothing.
@@ -1952,7 +1990,7 @@ scenarios:
 
         As with every Pod template change, this triggers a rolling update: Pods that were running before
         stay unconfined until they are replaced. If the profile is missing on the node a new Pod
-        lands on, that Pod is rejected by the kubelet (see the 'blocked Pod' scenario).
+        lands on, its container cannot start (see the 'missing profile' scenario).
     - type: references
       links:
       - url: https://kubernetes.io/docs/tutorials/security/apparmor/
@@ -2043,25 +2081,24 @@ scenarios:
       links:
       - url: https://kubernetes.io/docs/tutorials/security/apparmor/
         text: Restrict a Container's Access to Resources with AppArmor
-- title: A Pod That Is Rejected by the Kubelet
+- title: A Pod Stuck on a Missing Profile
   category: 'AppArmor: Applying Profiles'
   hintsEnabled: true
   elements:
   - type: context
     text: |
-      Pod `audit-agent` was created and accepted, but it never runs.
-  - type: manifest
-    header: $ kubectl get pod audit-agent
-    content: |
-      NAME          READY   STATUS     RESTARTS   AGE
-      audit-agent   0/1     AppArmor   0          48s
+      Pod `audit-agent` was created and accepted, but its container never starts.
   - type: manifest
     header: $ kubectl describe pod audit-agent  (excerpt)
     content: |
-      Status:       Failed
-      Reason:       AppArmor
-      Message:      Cannot enforce AppArmor: profile "k8s-deny-writes" is not loaded
+      Status:       Pending
       Node:         node01/10.0.0.11
+      Events:
+        Type     Reason     Age              From               Message
+        ----     ------     ----             ----               -------
+        Normal   Scheduled  12s              default-scheduler  Successfully assigned default/audit-agent to node01
+        Normal   Pulled     10s              kubelet            Container image "audit-agent:2.0" already present on machine
+        Warning  Failed     9s (x2 over 10s) kubelet            Error: failed to get container spec opts: failed to generate apparmor spec opts: apparmor profile not found k8s-deny-writes
   - type: manifest
     header: $ ssh node01 aa-status | grep k8s-
     content: |
@@ -2105,11 +2142,15 @@ scenarios:
     elements:
     - type: context
       text: |
-        Unlike seccomp, a missing or misnamed AppArmor profile is caught by the kubelet at **admission**:
-        the Pod is marked `Failed` with `Reason: AppArmor` and the message
-        `Cannot enforce AppArmor: profile "<name>" is not loaded`, instead of reaching
-        `CreateContainerError`. The check compares your `localhostProfile` against the profiles the kernel
-        on that node actually has loaded — which is why `aa-status` is the first command to run.
+        Neither seccomp nor AppArmor profiles are checked when you create the Pod: the API server accepts
+        any `localhostProfile` string. The failure appears later, when the kubelet asks the container
+        runtime to **create the container**, and shows up as a `Warning Failed` event while the Pod stays
+        `Pending`. The wording is runtime-dependent; with containerd it ends in
+        `apparmor profile not found <name>` for AppArmor, and `cannot load seccomp profile ...` for
+        seccomp (reported as `CreateContainerError`).
+
+        First command to run: `aa-status` (or `cat /sys/kernel/security/apparmor/profiles`) on the node
+        where the Pod was scheduled, then compare the names character by character.
 
         Common causes: typo (here), file name used instead of profile name, profile loaded on a different
         node, profile file present but never loaded with `apparmor_parser`, or the node rebooted since
@@ -2202,8 +2243,8 @@ scenarios:
         2. label exactly those nodes,
         3. add a matching `nodeSelector` (or node affinity) to the workload.
 
-        Remember to keep labels and reality in sync — a stale label sends Pods to a node where the
-        kubelet then rejects them. For fleet-wide management prefer the Security Profiles Operator, which
+        Remember to keep labels and reality in sync — a stale label sends Pods to a node where their
+        containers then cannot start. For fleet-wide management prefer the Security Profiles Operator, which
         automates loading and labelling.
     - type: references
       links:
@@ -2485,6 +2526,84 @@ scenarios:
         text: Configure a Security Context for a Pod or Container
       - url: https://kubernetes.io/docs/concepts/security/pod-security-standards/
         text: Pod Security Standards
+- title: What Happens When the Manifest Says Nothing?
+  category: Cross-Cutting
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Pod `plain-pod` in the `default` namespace has **no** `securityContext` of any kind, and the
+      kubelets in this cluster run with default settings (`seccompDefault` is off). The nodes have
+      AppArmor enabled with the container runtime's standard profile available. Before deciding what
+      to harden, you check what the kernel actually applies to such a Pod.
+  - type: question
+    question:
+      questionType: command
+      header: Print the AppArmor label of the container's main process.
+      command:
+        executable: kubectl
+        strictness: permissive
+        subcommands:
+        - name: exec
+        positionals:
+        - index: 0
+          value: plain-pod
+          description: pod
+      cel: extras == ['cat', '/proc/1/attr/current']
+  - type: manifest
+    header: $ kubectl exec plain-pod -- cat /proc/1/attr/current
+    content: |
+      cri-containerd.apparmor.d (enforce)
+  - type: question
+    question:
+      questionType: command
+      header: Now print the Seccomp line of the same process's kernel status.
+      command:
+        executable: kubectl
+        strictness: permissive
+        subcommands:
+        - name: exec
+        positionals:
+        - index: 0
+          value: plain-pod
+          description: pod
+      cel: extras.size() >= 3 && extras[0] == 'grep' && extras[extras.size() - 1] == '/proc/1/status' && extras.join(' ').matches(r'(?i)seccomp')
+  - type: manifest
+    header: $ kubectl exec plain-pod -- grep Seccomp /proc/1/status
+    content: |
+      Seccomp:        0
+      Seccomp_filters:        0
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: seccomp
+      header: Of the two mechanisms, which one leaves a container completely unconfined when the manifest is silent?
+      hint: 'Compare the two outputs: one shows a named profile in enforce mode, the other shows a mode that was described
+        earlier as ''disabled''.'
+      correctAnswerInfo: Without a setting, the container runtime applies its default AppArmor profile automatically (when
+        the node has AppArmor enabled), whereas seccomp stays disabled unless the kubelet's seccompDefault is turned on or
+        the Pod asks for RuntimeDefault.
+      cel: answer.trim().lowerAscii() == 'seccomp'
+  explanation:
+    elements:
+    - type: context
+      text: |
+        The two mechanisms have **different defaults**:
+
+        | Manifest says nothing | Result |
+        |---|---|
+        | AppArmor | The runtime's default profile (`cri-containerd.apparmor.d` for containerd, `docker-default` for Docker) is applied, if AppArmor is enabled on the node. |
+        | seccomp | **Unconfined** (`Seccomp: 0`) — unless the kubelet runs with `seccompDefault: true`. |
+
+        This asymmetry is why "set `seccompProfile: RuntimeDefault`" is the first hardening step on almost
+        every Pod, and why the Pod Security **restricted** level requires it while it does not require an
+        AppArmor profile.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/tutorials/security/seccomp/
+        text: Restrict a Container's Syscalls with seccomp
+      - url: https://kubernetes.io/docs/tutorials/security/apparmor/
+        text: Restrict a Container's Access to Resources with AppArmor
 - title: Enforcing the Baseline Standard on a Namespace
   category: Cross-Cutting
   hintsEnabled: true
@@ -3057,7 +3176,7 @@ scenarios:
         A fast diagnostic order when verification fails:
 
         1. `aa-status` on the node: is the profile there, in `enforce` mode, under the exact name used?
-        2. Pod status: `AppArmor` as the reason means the node did not have the profile.
+        2. Pod events: `apparmor profile not found <name>` means the node did not have the profile loaded under that name.
         3. `cat /proc/1/attr/current` in the container: `unconfined` points to a `privileged` flag or to a
            Pod that was created before the change.
         4. The kernel log for `apparmor="DENIED"` records.

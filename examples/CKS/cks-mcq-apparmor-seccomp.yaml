@@ -363,6 +363,11 @@ scenarios:
             - **Deny list** (`defaultAction: SCMP_ACT_ALLOW` plus `SCMP_ACT_ERRNO` entries): fails open.
               Easy to adopt, but it only blocks what you thought of.
             - **Audit** (`SCMP_ACT_LOG`): blocks nothing; it is a tool for discovering what a workload uses.
+
+            `violation.json` fails so early because it also denies `execve`: the container runtime
+            installs the seccomp filter *before* it executes the container's entrypoint, so the entrypoint
+            can never be started. For the same reason **every allow list must include `execve`**, plus
+            whatever the program needs to start up.
         - type: references
           links:
             - url: https://kubernetes.io/docs/tutorials/security/seccomp/#create-a-pod-with-a-seccomp-profile-for-syscall-auditing
@@ -401,6 +406,11 @@ scenarios:
             did not execute during the observation (error handling, shutdown, rarely used features) may
             need syscalls that were never logged, so test the profile against realistic and failure-case
             traffic before enforcing it.
+
+            Two practical details: the recorded list must include `execve` (the runtime installs the filter
+            before it starts the entrypoint, so a deny-by-default profile without it keeps the container
+            from starting), and syscall numbers in the log are architecture-specific, so translate them
+            with the table for the node's architecture (for example `ausyscall`).
         - type: references
           links:
             - url: https://kubernetes.io/docs/tutorials/security/seccomp/#create-a-pod-with-a-seccomp-profile-that-only-allows-necessary-syscalls
@@ -671,6 +681,10 @@ scenarios:
             ordering. The effective permission for an access is: allowed if any allow rule covers it
             **and** no deny rule does. A bare `file,` or `network,` rule is a very permissive starting
             point, which is why real profiles pair it with specific `deny` rules.
+
+            Note the question deliberately connects to an **IP address**: with only `network inet stream,`
+            the container could not resolve a hostname, because DNS lookups normally use UDP (a datagram
+            socket), which this profile does not allow.
         - type: references
           links:
             - url: https://gitlab.com/apparmor/apparmor/wikis/QuickProfileLanguage
@@ -700,7 +714,7 @@ scenarios:
         question:
           questionType: multiple-choice
           header: "The scheduler places this Pod on a node where the k8s-web profile is not loaded. What happens?"
-          correctAnswerInfo: "There is no fallback. The kubelet or runtime cannot start the container because the profile does not exist in the kernel on that node; the Pod stays stuck and the events show the reason (for example an AppArmor profile not found error)."
+          correctAnswerInfo: "There is no fallback. The kubelet or runtime cannot start the container because the profile does not exist in the kernel on that node; the Pod stays Pending and a Warning Failed event shows the reason, for example an AppArmor profile not found error (the exact wording depends on the runtime). A missing seccomp file fails the same way, reported as CreateContainerError."
           choices:
             - text: "The container starts with the RuntimeDefault profile and a warning event is recorded"
               answerType: Invalid
@@ -731,6 +745,12 @@ scenarios:
             The profile must be in the kernel of every node the Pod could be scheduled to. The failure mode
             is loud (the container does not start) rather than silent, which is the good news: a missing
             profile never quietly downgrades a Pod to running unconfined.
+
+            AppArmor and seccomp behave alike here: the API server checks neither at Pod creation, and
+            both fail when the container is created on the node — the Pod stays `Pending` with a
+            `Warning Failed` event (`apparmor profile not found <name>`, or `cannot load seccomp profile`
+            for a missing seccomp file). The first check is always the node's own view: `aa-status`, or
+            `cat /sys/kernel/security/apparmor/profiles` if the utilities are not installed.
         - type: references
           links:
             - url: https://kubernetes.io/docs/tutorials/security/apparmor/#setting-up-nodes-with-profiles
@@ -825,6 +845,11 @@ scenarios:
             `RuntimeDefault` is the low-effort option: no profile distribution problem, and a sensible
             baseline. Use `Localhost` when you need rules specific to the workload, accepting that you
             now own getting that profile onto every node.
+
+            Defaults differ between the two mechanisms: if the manifest says nothing, the runtime still
+            applies its default AppArmor profile on nodes where AppArmor is enabled (you would see
+            `cri-containerd.apparmor.d (enforce)`), whereas seccomp stays **Unconfined** (`Seccomp: 0`)
+            unless the kubelet runs with `seccompDefault: true`.
         - type: references
           links:
             - url: https://kubernetes.io/docs/tutorials/security/apparmor/#securing-a-pod
