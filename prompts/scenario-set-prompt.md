@@ -800,6 +800,61 @@ Items are displayed in a randomised order that is **guaranteed not to equal the 
 
 ---
 
+### `assemble-command`
+
+A tap-to-build command question. The user sees a shuffled set of buttons, each holding one token (executable, subcommand, flag, or value), and taps them in order to assemble the command on a `$` prompt line. Tapping a selected button removes it; tapping it again appends it at the end. Distractor buttons can be mixed in. Especially useful for mobile users, where typing commands is awkward — it still tests knowledge of the command, but without the typing.
+
+Validation is identical to `command`: the selected tokens are joined with single spaces and checked against the `CommandSpec` (and optional `cel`). Argument order is therefore as flexible as in a `command` question, but the executable must still come first.
+
+```yaml
+- type: question
+  question:
+    questionType: assemble-command
+    header: "Assemble the command that lists Pods in the namespace mynamespace"
+    hint: "The namespace flag takes a separate value token."
+    correctAnswerInfo: "-n (or --namespace) selects the namespace for a single command."
+    command:
+      executable: kubectl
+      subcommands:
+        - name: get
+        - name: pods
+          aliases: [pod, po]
+      flags:
+        - name: namespace
+          short: n
+          required: true
+          value: mynamespace
+    components:
+      - kubectl
+      - get
+      - pods
+      - -n
+      - mynamespace
+      - -A
+      - delete
+      - default
+```
+
+**Fields:**
+
+| Field | Required | Description |
+|---|---|---|
+| `questionType` | yes | Must be `assemble-command`. |
+| `command` | yes | The `CommandSpec` describing what is accepted (see `command`). |
+| `components` | yes | Array of at least 2 button labels. Include every token needed for a correct command plus any distractors. Shown in random order. |
+| `header` | no | Question text shown above the prompt line. |
+| `hint` | no | Shown after the first incorrect attempt. |
+| `correctAnswerInfo` | no | Shown after a correct answer. |
+| `cel` | no | CEL expression for additional validation (same variables as `command`). |
+
+**Rules:**
+- One button = one space-separated token. Write `-n` and `mynamespace` as two entries, or use a single `--namespace=mynamespace` entry for the `=` form.
+- Every token the `CommandSpec` needs must be present in `components`, spelled exactly as it should appear (an alias such as `po` must be listed itself if you want it to be possible).
+- Add 2–4 plausible distractors (wrong flag, wrong verb, wrong value) so the question is not just "click everything".
+- Do not use `initialValue`; it does not apply.
+
+---
+
 ## Explanation
 
 Every scenario requires an `explanation` block. It is displayed after all questions in the scenario are answered correctly. Use it to explain why the answers were correct, provide deeper context, and link to official documentation.
@@ -1196,6 +1251,7 @@ Before producing the final YAML, verify:
 - [ ] Every `sequence` has at least 2 `steps`
 - [ ] Every `multiple-choice` question has at least 2 `choices`; each choice has `text` and `answerType`; `PartOfSolution` and `Solution` are not mixed in the same question
 - [ ] Every `ordering` question has at least 2 `items`; every ID in `correctOrder` matches an `id` in `items`; lengths match
+- [ ] Every `assemble-command` question has `command` and at least 2 `components`; every token needed by the `CommandSpec` appears in `components`
 - [ ] Every `manifest` element (display type) has `content`
 - [ ] Every `table` element has `columns` and `rows`; each row has the same number of entries as `columns`
 - [ ] No unknown/extra properties are present (the schema uses `additionalProperties: false` everywhere)

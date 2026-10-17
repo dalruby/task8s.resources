@@ -46,6 +46,7 @@ Run these steps in order. Ask one question at a time. Acknowledge each answer in
 > - `sequence` — multi-step questions answered in order
 > - `multiple-choice` — select from options
 > - `ordering` — drag items into the correct sequence
+> - `assemble-command` — tap shuffled buttons to build a command (mobile-friendly alternative to `command`)
 >
 > Note: `multiple-choice` is excluded by default (it tests recognition rather than recall) unless you explicitly include it.
 >

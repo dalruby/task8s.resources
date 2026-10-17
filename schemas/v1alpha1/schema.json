@@ -599,6 +599,37 @@
         }
       ]
     },
+    "AssembleCommandQuestion": {
+      "description": "A tap-to-build command question. The user is shown a shuffled set of buttons (executable, subcommands, flags, values, plus optional distractors) and taps them to assemble a command on a prompt line; tapping a selected button removes it. The assembled tokens are joined with single spaces and validated exactly like a command question (same CommandSpec, same optional cel), so argument order is as flexible as in a command question. Well suited to mobile, where typing commands is awkward.",
+      "allOf": [
+        { "$ref": "#/$defs/BaseQuestion" },
+        {
+          "type": "object",
+          "required": ["questionType", "command", "components"],
+          "additionalProperties": false,
+          "properties": {
+            "questionType": {
+              "const": "assemble-command",
+              "description": "Question type discriminator. Must be 'assemble-command'."
+            },
+            "command": {
+              "$ref": "#/$defs/CommandSpec",
+              "description": "Specification of the accepted command. Every token needed to satisfy it (executable, subcommands, flag names and values, positionals) must be available in components, written exactly as it should appear in the assembled command."
+            },
+            "components": {
+              "type": "array",
+              "minItems": 2,
+              "items": { "type": "string", "minLength": 1 },
+              "description": "The button labels, one per token. Each is inserted as a single space-separated token, so write flags and values as separate entries (e.g. '-n' and 'mynamespace') unless the flag uses '=' (e.g. '--namespace=mynamespace'). Include the correct tokens plus any distractors (wrong flags, wrong values, wrong resource names). Duplicates are allowed. Displayed in a randomised order."
+            },
+            "header": { "type": "string" },
+            "hint": { "type": "string" },
+            "correctAnswerInfo": { "type": "string" },
+            "cel": { "type": "string" }
+          }
+        }
+      ]
+    },
     "SequenceChildQuestion": {
       "description": "A step within a sequence question. Supports single-line, multiline, and command steps. Manifest steps are not supported.",
       "oneOf": [
@@ -638,7 +669,7 @@
       }
     },
     "Question": {
-      "description": "A question the user must answer correctly. Must be one of the supported question types: single-line, multiline, command, manifest, sequence, multiple-choice, or ordering.",
+      "description": "A question the user must answer correctly. Must be one of the supported question types: single-line, multiline, command, manifest, sequence, multiple-choice, ordering, or assemble-command.",
       "oneOf": [
         { "$ref": "#/$defs/SingleLineQuestion" },
         { "$ref": "#/$defs/MultilineQuestion" },
@@ -646,7 +677,8 @@
         { "$ref": "#/$defs/ManifestQuestion" },
         { "$ref": "#/$defs/SequenceQuestion" },
         { "$ref": "#/$defs/MultipleChoiceQuestion" },
-        { "$ref": "#/$defs/OrderingQuestion" }
+        { "$ref": "#/$defs/OrderingQuestion" },
+        { "$ref": "#/$defs/AssembleCommandQuestion" }
       ]
     },
     "ContextScenarioElement": {
