@@ -86,3 +86,13 @@ sets:
       - Egress
       - Multi-Namespace
       - Hard
+  - name: "CKS (Hands-On): AppArmor and seccomp"
+    filename: cks-hands-on-apparmor-seccomp.yaml
+    description: "No multiple choice. Exam-style practice for seccomp and AppArmor: write seccomp JSON and AppArmor profiles from a spec, load and distribute them across nodes, apply them to Pods and Deployments, fix Pods that fail to start, verify enforcement with /proc, crictl and kernel logs, and combine it all in two end-to-end capstone tasks."
+    tags:
+      - AppArmor
+      - seccomp
+      - Hands-On
+      - Node Setup
+      - Troubleshooting
+      - Hard
