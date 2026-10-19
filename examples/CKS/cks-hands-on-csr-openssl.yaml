@@ -299,8 +299,9 @@ scenarios:
     - type: context
       text: |
         Always inspect a request **before** you approve it: the requester chooses the subject, and
-        Kubernetes will faithfully put whatever is in it into the certificate. A request asking for
-        `O=system:masters` would yield a certificate that is cluster-admin — see the approval scenario.
+        Kubernetes will faithfully put whatever is in it into the certificate. A request whose
+        organization is a group bound to powerful roles would yield a certificate with those powers — see
+        the approval scenario.
 
         `openssl req -in x.csr -noout -text` shows everything (subject, key size, extensions);
         `-subject` shows just the identity. `-noout` suppresses the PEM re-encoding.
@@ -384,8 +385,8 @@ scenarios:
           - client auth
         ```
 
-        - **`signerName` is mandatory** in `certificates.k8s.io/v1` (the old default `legacy-unknown` is
-          gone and is never signed by the built-in controller).
+        - **`signerName` is mandatory** in `certificates.k8s.io/v1`. The old default `legacy-unknown` is
+          gone: the v1 API refuses to create a CSR that names it.
         - `usages` must be allowed by the signer: for `kube-apiserver-client` that is `client auth`,
           optionally with `digital signature` and `key encipherment`.
         - `expirationSeconds` is optional, minimum 600; without it the cluster default (usually one
@@ -493,7 +494,8 @@ scenarios:
         cel: answer.trim() == 'kubernetes.io/kubelet-serving'
       - questionType: single-line
         expectedAnswer: kubernetes.io/legacy-unknown
-        header: 'The signer name that exists for backwards compatibility but that the built-in controller never signs:'
+        header: 'The signer name that exists only for backwards compatibility: the v1 API refuses to create a CSR that names
+          it, and nothing in a current cluster signs it:'
         cel: answer.trim() == 'kubernetes.io/legacy-unknown'
   explanation:
     elements:
@@ -504,11 +506,12 @@ scenarios:
         | `kubernetes.io/kube-apiserver-client` | client certificates for users and workloads | `client auth` (+ `digital signature`, `key encipherment`) |
         | `kubernetes.io/kube-apiserver-client-kubelet` | a kubelet authenticating to the API server | `client auth` (+ ...) — subject must be `system:node:<name>` |
         | `kubernetes.io/kubelet-serving` | a kubelet's serving certificate | `server auth` (+ ...) |
-        | `kubernetes.io/legacy-unknown` | not signed by Kubernetes | — |
+        | `kubernetes.io/legacy-unknown` | backwards compatibility only: the `certificates.k8s.io/v1` API **refuses to create** a CSR with it | — |
 
         The first three are signed by the controller-manager with the **cluster CA**. A CSR with any other
-        signer name stays unsigned unless your own controller handles it. Approval and signing are
-        separate steps.
+        signer name (a custom one such as `example.com/my-signer`) is ignored by the built-in controller
+        and stays unsigned unless your own controller handles it. Approval and signing are separate
+        steps.
     - type: references
       links:
       - url: https://kubernetes.io/docs/reference/access-authn-authz/certificate-signing-requests/
@@ -545,7 +548,7 @@ scenarios:
       - Approved,Issued
     - - deploy-bot
       - 1h
-      - kubernetes.io/legacy-unknown
+      - example.com/ci-signer
       - kubernetes-admin
       - <none>
       - Approved
@@ -566,7 +569,8 @@ scenarios:
       questionType: single-line
       expectedAnswer: deploy-bot
       header: Which CSR was approved but will never be issued a certificate?
-      hint: Compare the condition column with what a healthy approved request looks like, then look at the signer.
+      hint: Compare the condition column with what a healthy approved request looks like, then look at which signer each request
+        names.
       cel: answer.trim() == 'deploy-bot'
   - type: context
     text: |
@@ -581,15 +585,16 @@ scenarios:
         name: deploy-bot
       spec:
         request: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURSBSRVFVRVNULS0tLS0KTUlJQ1p6Q0NBVThDQVFBd0lqRVRNQkVHQTFVRUF3d0taR1Z3Ykc5NUxXSnZkREVMTUFrR0ExVUVDZ3dDWTJrdwpnZ0VpTUEwR0NTcUdTSWIzRFFFQkFRVUFBNElCRHdBd2dnRUtBb0lCQVFEamYvVUx2bDNyRFc0LzVVN0xhM3dECmpDeHVOcDhWZ0xsVi9WZVhjY292VWFPNHBpZ3oyQktWZ1V4OVJ2eW5hY2kvcm9uYTV2WGIza2RmQ0NtU3lrVEMKRjF3Vy9Gb0dUekFlL2FIaGcvaXV4TVZPV3h6TTI1cUQvZ0kxaHpvVW42WXhHVzYzVjNRYVRLSnhTejh1MlRYVApFYmhCUXZSVVdoQ01QcEJyWkIwZDY4OGVLRTNLYlBDSjFJZmFRNXQ3VkV4WkU0Y01SQmhPbXc1T2sxZW1HeUxQCnJXeHdzb3RHQjh1SWJiY05TWDdGQ29sMk5lNldWZ3BmbGpsUG9VdHlRNWloWHNBS3JJbEozOWVHd01LSDhaMk0Kelp5SGVSYlNKY1cxU1FEQVFhdVVNZ3lkNG9RNGxENzZwOXdxZ1lEMVVJN2lYT0E0TWF4NkVKRmErMjd3QUZiVApBZ01CQUFHZ0FEQU5CZ2txaGtpRzl3MEJBUXNGQUFPQ0FRRUFXZUhMNCsrUWh2czZpbjN2Nmd5QzVEV290MGZHCktsSkVlRWJCb1FkRmNBU2k4WDNONGpYYktuTm5VWXdjNFJJbGExR2FPcnlKZ29KVG9xY1RFQVNmZ3lVL0liWXUKbjZML2xTdmZvZnY2Y3I1bnUzeFYrSTBzVDdmcGloOHdJVXhJbmQ3ektzaUN0RjBhZklFUlU4YkFwdzlpT0V4agpMZ2tVQWZXZDRKRU1IUWZyTDAzWWgyeHF1c3ZxL0x0cWNyYSszYXdjcnJEem90ZERVQk5CeGZPdFdtZWIvR01hCkVUb2lidTdVY3ViS1hPTzFRaUd0a3hoWThwWU9YNW5aK005d0s2Q0pvQnYyQmNMck5RU3AwTEtHVlcwZ3doZWEKR0x3OTE1OXZEcERQRXlJeENydDZUY0pLNmlGZ3lTY0RJR0VmdWJlT1JuUmIyN1NxajBTam9Zak9xZz09Ci0tLS0tRU5EIENFUlRJRklDQVRFIFJFUVVFU1QtLS0tLQo=
-        signerName: kubernetes.io/legacy-unknown
+        signerName: example.com/ci-signer
         usages:
-        - server auth
+        - client auth
   - type: question
     question:
       questionType: manifest
       manifestDefinitionId: csr-v1
-      header: Correct the manifest so that the built-in controller can sign the request.
-      hint: 'Two fields are wrong: who signs, and what the certificate may be used for.'
+      header: Correct the manifest so that the cluster's built-in controller can sign the request.
+      hint: Nothing in the cluster is looking for requests addressed to this signer. Which built-in signer issues certificates
+        that identify a client to the API server?
       cel: manifest.spec.usages.exists(u, u == 'client auth') && manifest.spec.usages.all(u, u in ['client auth', 'digital
         signature', 'key encipherment'])
       initialContent: |
@@ -599,9 +604,9 @@ scenarios:
           name: deploy-bot
         spec:
           request: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURSBSRVFVRVNULS0tLS0KTUlJQ1p6Q0NBVThDQVFBd0lqRVRNQkVHQTFVRUF3d0taR1Z3Ykc5NUxXSnZkREVMTUFrR0ExVUVDZ3dDWTJrdwpnZ0VpTUEwR0NTcUdTSWIzRFFFQkFRVUFBNElCRHdBd2dnRUtBb0lCQVFEamYvVUx2bDNyRFc0LzVVN0xhM3dECmpDeHVOcDhWZ0xsVi9WZVhjY292VWFPNHBpZ3oyQktWZ1V4OVJ2eW5hY2kvcm9uYTV2WGIza2RmQ0NtU3lrVEMKRjF3Vy9Gb0dUekFlL2FIaGcvaXV4TVZPV3h6TTI1cUQvZ0kxaHpvVW42WXhHVzYzVjNRYVRLSnhTejh1MlRYVApFYmhCUXZSVVdoQ01QcEJyWkIwZDY4OGVLRTNLYlBDSjFJZmFRNXQ3VkV4WkU0Y01SQmhPbXc1T2sxZW1HeUxQCnJXeHdzb3RHQjh1SWJiY05TWDdGQ29sMk5lNldWZ3BmbGpsUG9VdHlRNWloWHNBS3JJbEozOWVHd01LSDhaMk0Kelp5SGVSYlNKY1cxU1FEQVFhdVVNZ3lkNG9RNGxENzZwOXdxZ1lEMVVJN2lYT0E0TWF4NkVKRmErMjd3QUZiVApBZ01CQUFHZ0FEQU5CZ2txaGtpRzl3MEJBUXNGQUFPQ0FRRUFXZUhMNCsrUWh2czZpbjN2Nmd5QzVEV290MGZHCktsSkVlRWJCb1FkRmNBU2k4WDNONGpYYktuTm5VWXdjNFJJbGExR2FPcnlKZ29KVG9xY1RFQVNmZ3lVL0liWXUKbjZML2xTdmZvZnY2Y3I1bnUzeFYrSTBzVDdmcGloOHdJVXhJbmQ3ektzaUN0RjBhZklFUlU4YkFwdzlpT0V4agpMZ2tVQWZXZDRKRU1IUWZyTDAzWWgyeHF1c3ZxL0x0cWNyYSszYXdjcnJEem90ZERVQk5CeGZPdFdtZWIvR01hCkVUb2lidTdVY3ViS1hPTzFRaUd0a3hoWThwWU9YNW5aK005d0s2Q0pvQnYyQmNMck5RU3AwTEtHVlcwZ3doZWEKR0x3OTE1OXZEcERQRXlJeENydDZUY0pLNmlGZ3lTY0RJR0VmdWJlT1JuUmIyN1NxajBTam9Zak9xZz09Ci0tLS0tRU5EIENFUlRJRklDQVRFIFJFUVVFU1QtLS0tLQo=
-          signerName: kubernetes.io/legacy-unknown
+          signerName: example.com/ci-signer
           usages:
-          - server auth
+          - client auth
       expectedFields:
       - path: metadata.name
         expectedValue: deploy-bot
@@ -640,9 +645,127 @@ scenarios:
         | `Denied` | refused; will never be signed |
         | `Failed` | the signer could not sign (for example an unusable request) |
 
-        A request that stays `Approved` forever almost always has a **signer that nobody runs** (such as
-        `legacy-unknown`, or a custom name with no controller) or **usages that the signer does not
-        permit**. Fix the object and re-create it: `spec` is immutable.
+        A request that stays `Approved` forever has a **signer that nobody runs**: the built-in
+        controller only handles the `kubernetes.io/...` signers it recognises and silently ignores every
+        other name, so a custom signer such as `example.com/ci-signer` needs a controller of its own. (The
+        old `kubernetes.io/legacy-unknown` cannot even be used: the v1 API refuses to create the object.)
+
+        A request that the built-in signer *does* handle but **refuses** (for example because of its
+        usages) ends differently, as `Approved,Failed` — see the next scenario. In both cases, fix the
+        object and re-create it: `spec` is immutable.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/reference/access-authn-authz/certificate-signing-requests/
+        text: Certificate Signing Requests
+- title: Approved, but Failed
+  category: Kubernetes CSR API
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Another request, `web-client`, was approved this morning for a service that must identify itself
+      **to** the API server. The cluster shows this:
+  - type: table
+    style: terminal
+    columns:
+    - NAME
+    - AGE
+    - SIGNERNAME
+    - REQUESTOR
+    - REQUESTEDDURATION
+    - CONDITION
+    rows:
+    - - jane
+      - 3h
+      - kubernetes.io/kube-apiserver-client
+      - kubernetes-admin
+      - 24h
+      - Approved,Issued
+    - - web-client
+      - 5h
+      - kubernetes.io/kube-apiserver-client
+      - kubernetes-admin
+      - <none>
+      - Approved,Failed
+  - type: manifest
+    header: $ kubectl describe csr web-client  (excerpt)
+    content: |
+      Name:               web-client
+      Requesting User:    kubernetes-admin
+      Signer:             kubernetes.io/kube-apiserver-client
+      Status:             Approved, Failed
+      Subject:
+        Common Name:      web-client
+        Organization:     ci
+      Events:             <none>
+      Conditions:
+        Type      Status  Reason                   Message
+        ----      ------  ------                   -------
+        Approved  True    KubectlApprove           This CSR was approved by kubectl certificate approve.
+        Failed    True    SignerValidationFailure  invalid usage for client certificate: server auth
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: SignerValidationFailure
+      header: Which reason does the Failed condition of web-client carry?
+      hint: Read the Reason column of the Failed row.
+      correctAnswerInfo: The built-in signer recognised the signer name, checked the request against that signer's rules,
+        and recorded a permanent failure instead of issuing a certificate.
+      cel: answer.trim() == 'SignerValidationFailure'
+  - type: context
+    text: |
+      The original manifest of the request was:
+  - type: manifest
+    header: web-client-csr.yaml
+    content: |
+      apiVersion: certificates.k8s.io/v1
+      kind: CertificateSigningRequest
+      metadata:
+        name: web-client
+      spec:
+        request: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURSBSRVFVRVNULS0tLS0KTUlJQ1p6Q0NBVThDQVFBd0lqRVRNQkVHQTFVRUF3d0tkMlZpTFdOc2FXVnVkREVMTUFrR0ExVUVDZ3dDWTJrdwpnZ0VpTUEwR0NTcUdTSWIzRFFFQkFRVUFBNElCRHdBd2dnRUtBb0lCQVFDeHNCR0diYmcySTVDeFU3U2RpaVlwCjBFTHh3QW5Na3JpVW9KRmNaVXZrUzlzODFyN1RMRlQ5RTF4VW9QVG5XUnRWQlZ6cy9zSG52WjRRTDlmRk5SK1UKcVlPdFQ2QmcyS2xYMk1IeWI5czdRYytLVldBVVZjWkVWK0JNYW1WUzhsZVcvREZFWWxHVnZjWGFTT2plekNwdQpyK2JjRVVuTDFyM0Fya25OSmJQUGJmQU41dlBEZTJFWGp1MlZjR2grVEJvOGMydWxrc3ZadHJiRk1LUVpCMXRhCndYUzRjY3dkQ0EyY28rUXV3bkk4MVVndHNyTmRwNThnK0tNblh0eXZmQzQyaU40aFN1Q3VLL0M2UnY3ajFvZWEKcmVFaHFiZURaK1ZyUXBRbFMxZ0NZOUtlbEluYTRVMElldDlrMW9QK2FDcEFESjFnVzFjQXlZR1IvTjRpaUNhUgpBZ01CQUFHZ0FEQU5CZ2txaGtpRzl3MEJBUXNGQUFPQ0FRRUFNc0w2NTl2SHdKRE1GSzFVRWtubjBaVzFuU3A2CkVORzhuTkZxbW9HYUphRDA1bDdKYktpVXhEMURsMlpFV3I1YUQ3YXYwRktHWnVuZEd6UEZOS0NmM2hoRUk3N0gKZEZ2ZzBrdndPMnhUbDA3QnlPR0dCei9hZGJMakNNN08xQVYvanNuK2NyMHJRVFdwZG0vY2VZNFhjdklSSGNjZApwRTlKNFA1b04zMUFjUU94Wm1NeXNEMjFWamxGK09YYnQ5NmdqcnJyYjBqUGlpTVM4YUdMbWFMdFlZL2dGdHFPCjFQUXJ6OGVvY2lIYXZ5M244VDRiUC9xeDM5VEVYYnl6dkNEd1J5YW5qeXgvdk1kVkdwVjdZMDVsdURycmNxdEMKQ3IyV3dXdGoyZ29HN3JwcWU1OWhVYUxVOVNKZHc5eTFjZUpaakZjZHNpQmFYbGNnOHNYaTJMZ3pUZz09Ci0tLS0tRU5EIENFUlRJRklDQVRFIFJFUVVFU1QtLS0tLQo=
+        signerName: kubernetes.io/kube-apiserver-client
+        usages:
+        - server auth
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: csr-v1
+      header: Correct the manifest so that the signer accepts the request (the service is a plain client of the API server).
+      hint: The signer was right; the request asks for something that this signer will not allow.
+      cel: manifest.spec.usages.exists(u, u == 'client auth') && manifest.spec.usages.all(u, u in ['client auth', 'digital
+        signature', 'key encipherment'])
+      initialContent: |
+        apiVersion: certificates.k8s.io/v1
+        kind: CertificateSigningRequest
+        metadata:
+          name: web-client
+        spec:
+          request: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURSBSRVFVRVNULS0tLS0KTUlJQ1p6Q0NBVThDQVFBd0lqRVRNQkVHQTFVRUF3d0tkMlZpTFdOc2FXVnVkREVMTUFrR0ExVUVDZ3dDWTJrdwpnZ0VpTUEwR0NTcUdTSWIzRFFFQkFRVUFBNElCRHdBd2dnRUtBb0lCQVFDeHNCR0diYmcySTVDeFU3U2RpaVlwCjBFTHh3QW5Na3JpVW9KRmNaVXZrUzlzODFyN1RMRlQ5RTF4VW9QVG5XUnRWQlZ6cy9zSG52WjRRTDlmRk5SK1UKcVlPdFQ2QmcyS2xYMk1IeWI5czdRYytLVldBVVZjWkVWK0JNYW1WUzhsZVcvREZFWWxHVnZjWGFTT2plekNwdQpyK2JjRVVuTDFyM0Fya25OSmJQUGJmQU41dlBEZTJFWGp1MlZjR2grVEJvOGMydWxrc3ZadHJiRk1LUVpCMXRhCndYUzRjY3dkQ0EyY28rUXV3bkk4MVVndHNyTmRwNThnK0tNblh0eXZmQzQyaU40aFN1Q3VLL0M2UnY3ajFvZWEKcmVFaHFiZURaK1ZyUXBRbFMxZ0NZOUtlbEluYTRVMElldDlrMW9QK2FDcEFESjFnVzFjQXlZR1IvTjRpaUNhUgpBZ01CQUFHZ0FEQU5CZ2txaGtpRzl3MEJBUXNGQUFPQ0FRRUFNc0w2NTl2SHdKRE1GSzFVRWtubjBaVzFuU3A2CkVORzhuTkZxbW9HYUphRDA1bDdKYktpVXhEMURsMlpFV3I1YUQ3YXYwRktHWnVuZEd6UEZOS0NmM2hoRUk3N0gKZEZ2ZzBrdndPMnhUbDA3QnlPR0dCei9hZGJMakNNN08xQVYvanNuK2NyMHJRVFdwZG0vY2VZNFhjdklSSGNjZApwRTlKNFA1b04zMUFjUU94Wm1NeXNEMjFWamxGK09YYnQ5NmdqcnJyYjBqUGlpTVM4YUdMbWFMdFlZL2dGdHFPCjFQUXJ6OGVvY2lIYXZ5M244VDRiUC9xeDM5VEVYYnl6dkNEd1J5YW5qeXgvdk1kVkdwVjdZMDVsdURycmNxdEMKQ3IyV3dXdGoyZ29HN3JwcWU1OWhVYUxVOVNKZHc5eTFjZUpaakZjZHNpQmFYbGNnOHNYaTJMZ3pUZz09Ci0tLS0tRU5EIENFUlRJRklDQVRFIFJFUVVFU1QtLS0tLQo=
+          signerName: kubernetes.io/kube-apiserver-client
+          usages:
+          - server auth
+      expectedFields:
+      - path: metadata.name
+        expectedValue: web-client
+      - path: spec.request
+        expectedValue: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURSBSRVFVRVNULS0tLS0KTUlJQ1p6Q0NBVThDQVFBd0lqRVRNQkVHQTFVRUF3d0tkMlZpTFdOc2FXVnVkREVMTUFrR0ExVUVDZ3dDWTJrdwpnZ0VpTUEwR0NTcUdTSWIzRFFFQkFRVUFBNElCRHdBd2dnRUtBb0lCQVFDeHNCR0diYmcySTVDeFU3U2RpaVlwCjBFTHh3QW5Na3JpVW9KRmNaVXZrUzlzODFyN1RMRlQ5RTF4VW9QVG5XUnRWQlZ6cy9zSG52WjRRTDlmRk5SK1UKcVlPdFQ2QmcyS2xYMk1IeWI5czdRYytLVldBVVZjWkVWK0JNYW1WUzhsZVcvREZFWWxHVnZjWGFTT2plekNwdQpyK2JjRVVuTDFyM0Fya25OSmJQUGJmQU41dlBEZTJFWGp1MlZjR2grVEJvOGMydWxrc3ZadHJiRk1LUVpCMXRhCndYUzRjY3dkQ0EyY28rUXV3bkk4MVVndHNyTmRwNThnK0tNblh0eXZmQzQyaU40aFN1Q3VLL0M2UnY3ajFvZWEKcmVFaHFiZURaK1ZyUXBRbFMxZ0NZOUtlbEluYTRVMElldDlrMW9QK2FDcEFESjFnVzFjQXlZR1IvTjRpaUNhUgpBZ01CQUFHZ0FEQU5CZ2txaGtpRzl3MEJBUXNGQUFPQ0FRRUFNc0w2NTl2SHdKRE1GSzFVRWtubjBaVzFuU3A2CkVORzhuTkZxbW9HYUphRDA1bDdKYktpVXhEMURsMlpFV3I1YUQ3YXYwRktHWnVuZEd6UEZOS0NmM2hoRUk3N0gKZEZ2ZzBrdndPMnhUbDA3QnlPR0dCei9hZGJMakNNN08xQVYvanNuK2NyMHJRVFdwZG0vY2VZNFhjdklSSGNjZApwRTlKNFA1b04zMUFjUU94Wm1NeXNEMjFWamxGK09YYnQ5NmdqcnJyYjBqUGlpTVM4YUdMbWFMdFlZL2dGdHFPCjFQUXJ6OGVvY2lIYXZ5M244VDRiUC9xeDM5VEVYYnl6dkNEd1J5YW5qeXgvdk1kVkdwVjdZMDVsdURycmNxdEMKQ3IyV3dXdGoyZ29HN3JwcWU1OWhVYUxVOVNKZHc5eTFjZUpaakZjZHNpQmFYbGNnOHNYaTJMZ3pUZz09Ci0tLS0tRU5EIENFUlRJRklDQVRFIFJFUVVFU1QtLS0tLQo=
+      - path: spec.signerName
+        expectedValue: kubernetes.io/kube-apiserver-client
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Two different ways a CSR can fail to produce a certificate, with different symptoms:
+
+        | Situation | Result | Why |
+        |---|---|---|
+        | Signer name nobody runs (custom name without a controller) | stays `Approved` indefinitely | the built-in controller ignores signer names it does not recognise |
+        | Built-in signer, but the request violates its rules (disallowed **usages**, or a **subject** it will not accept) | `Approved,Failed` with reason `SignerValidationFailure` | the controller recognises the signer, validates the request and records a permanent failure |
+
+        For `kubernetes.io/kube-apiserver-client` the rules are: `client auth` is required, and only
+        `digital signature` and `key encipherment` may accompany it. A `Failed` CSR will never be signed —
+        correct the manifest and create a new object; `kubectl describe csr` shows the message.
     - type: references
       links:
       - url: https://kubernetes.io/docs/reference/access-authn-authz/certificate-signing-requests/
@@ -709,7 +832,7 @@ scenarios:
       Subject:
         Common Name:    mallory
         Serial Number:
-        Organization:   system:masters
+        Organization:   kubeadm:cluster-admins
   - type: question
     question:
       questionType: single-line
@@ -753,10 +876,16 @@ scenarios:
     - type: context
       text: |
         Approving a CSR is a **security decision**: whatever subject the requester wrote becomes a trusted
-        identity. `mallory`'s request asks for the organization `system:masters`, the group that is bound
-        to `cluster-admin` by default — approving it would hand a low-privilege ServiceAccount a
-        cluster-admin credential. Always read `Subject` and `Requesting User` in `kubectl describe csr`
-        (or `openssl req -noout -text` on the original file).
+        identity. `mallory`'s request asks for the organization `kubeadm:cluster-admins`, a group that
+        kubeadm (since 1.29) binds to `cluster-admin` — approving it would hand a low-privilege
+        ServiceAccount a cluster-admin credential. Always read `Subject` and `Requesting User` in
+        `kubectl describe csr` (or `openssl req -noout -text` on the original file).
+
+        Kubernetes protects only the most obvious case: the `CertificateSubjectRestriction` admission
+        plugin (on by default) rejects any `kubernetes.io/kube-apiserver-client` CSR that asks for the
+        group `system:masters` at creation time, so such a request never even appears in the list. Any
+        **other** group that happens to be bound to powerful roles (like this one, or one you created
+        yourself) is not blocked: the approver is the last line of defence.
 
         `kubectl certificate approve|deny <name>` records an `Approved` or `Denied` condition; the signer
         then issues (or never issues) the certificate. Denied and approved CSR objects are removed by the
@@ -1201,7 +1330,7 @@ scenarios:
   elements:
   - type: context
     text: |
-      Jane's laptop was stolen. Her private key and certificate (valid for another 29 days) must be
+      Jane's laptop was stolen. Her private key and certificate (still valid until tomorrow morning) must be
       considered compromised. Kubernetes has **no certificate revocation list** and no way to mark a
       single certificate invalid.
 
@@ -1260,8 +1389,9 @@ scenarios:
           expires. Your lever is **authorisation**: remove every Role/ClusterRole binding that refers to
           that user (CN) **and** to any group in its `O` values.
         - Short certificate lifetimes (`expirationSeconds`) are the real mitigation.
-        - If the leaked certificate is a powerful one (for example `O=system:masters`, which has a
-          built-in binding you cannot sensibly remove), the only fix is rotating the CA.
+        - If the leaked certificate carries the group `system:masters`, deleting bindings does not help at
+          all: that group **bypasses authorisation entirely** (there is no `cluster-admin` binding to
+          delete), so the only fix is rotating the CA. This is why such certificates must be avoided.
     - type: references
       links:
       - url: https://kubernetes.io/docs/reference/access-authn-authz/certificate-signing-requests/
@@ -1325,7 +1455,8 @@ scenarios:
       expectedAnswer: /etc/kubernetes/pki/ca.key
       header: Which single file, among those you just used, must be protected most carefully and must never leave the control
         plane?
-      correctAnswerInfo: Anyone with the CA private key can mint a certificate for any identity, including O=system:masters.
+      correctAnswerInfo: Anyone with the CA private key can mint a certificate for any identity, including O=system:masters,
+        which bypasses authorization entirely.
       cel: answer.trim() in ['/etc/kubernetes/pki/ca.key', 'ca.key']
   explanation:
     elements:
@@ -1582,8 +1713,9 @@ scenarios:
         | `TLS Web Client Authentication` | client certificate | users (`kube-apiserver-client` signer), `apiserver-kubelet-client.crt`, `apiserver-etcd-client.crt` |
 
         This is also what the CSR `usages` field controls: `client auth` → client EKU, `server auth` →
-        server EKU. A signer will refuse (or ignore) a CSR whose usages it does not allow — one of the
-        reasons a CSR stays `Approved` but never `Issued`.
+        server EKU. A built-in signer refuses a CSR whose usages it does not allow: the CSR ends as
+        `Approved,Failed` with reason `SignerValidationFailure` and a message such as
+        `invalid usage for client certificate: server auth`.
     - type: references
       links:
       - url: https://docs.openssl.org/3.0/man1/openssl-x509/
@@ -2465,8 +2597,9 @@ scenarios:
         9. `kubectl auth can-i ... --as ravi --as-group qa -n staging`, then try `--context ravi` for real
 
         If a step fails, the usual suspects are: wrapped base64 in `spec.request`, a wrong `signerName` or
-        `usages` (the CSR stays `Approved` and never `Issued`), group names that differ by case from the
-        `O` value, and a binding in the wrong namespace.
+        `usages` (a signer name that nobody runs leaves the CSR `Approved` forever; usages that the signer
+        rejects end as `Approved,Failed`), group names that differ by case from the `O` value, and a
+        binding in the wrong namespace.
     - type: references
       links:
       - url: https://kubernetes.io/docs/reference/access-authn-authz/certificate-signing-requests/
