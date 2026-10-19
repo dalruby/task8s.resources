@@ -1,0 +1,2477 @@
+apiVersion: v1alpha1
+name: 'CKS (Hands-On): CSRs, Certificates and OpenSSL'
+k8sVersion: 1.34.0
+timing:
+  enabled: true
+  limitSeconds: 7200
+introduction:
+  elements:
+  - type: context
+    text: |
+      Hands-on practice for the CKS topics **certificate signing requests** and **OpenSSL**: creating
+      users through the Kubernetes CSR API, and inspecting the cluster's own certificates. There is no
+      multiple choice: you type the commands, write the manifests and read the output, as on the exam.
+
+      **Lab environment**
+
+      - You work as `root` on `controlplane`; `kubectl`, `openssl` (3.0) and `kubeadm` are available.
+      - The cluster runs Kubernetes 1.34, built with kubeadm. Certificates are in `/etc/kubernetes/pki/`.
+      - The kubeconfig cluster entry is named `kubernetes`.
+      - Each scenario starts in a working directory that contains only the files the text mentions.
+
+      **How answers are checked**
+
+      - *Commands* are checked structurally (tool, sub-commands, flags and values); equivalent
+        spellings, short and long flags and flag order are accepted. Where a question needs a pipeline
+        (for example decoding base64 into a file), the pipeline itself is checked.
+      - *Manifests* are validated against the Kubernetes schema and then for the required fields.
+      - Question text states *what* is wanted, not which flags to use.
+
+      Exam content is under NDA: treat this as practice for the common patterns, not a prediction.
+  - type: references
+    links:
+    - url: https://kubernetes.io/docs/reference/access-authn-authz/certificate-signing-requests/
+      text: Certificate Signing Requests
+    - url: https://kubernetes.io/docs/tasks/tls/managing-tls-in-a-cluster/
+      text: Manage TLS Certificates in a Cluster
+    - url: https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/kubeadm-certs/
+      text: Certificate Management with kubeadm
+    - url: https://training.linuxfoundation.org/certification/certified-kubernetes-security-specialist-cks/
+      text: CKS Domains and Competencies
+manifestDefinitions:
+- id: csr-v1
+  kind: CertificateSigningRequest
+  apiVersion: certificates.k8s.io/v1
+  autoLoad: true
+- id: role-v1
+  kind: Role
+  apiVersion: rbac.authorization.k8s.io/v1
+  autoLoad: true
+- id: rolebinding-v1
+  kind: RoleBinding
+  apiVersion: rbac.authorization.k8s.io/v1
+  autoLoad: true
+- id: kubelet-config
+  kind: KubeletConfiguration
+  apiVersion: kubelet.config.k8s.io/v1beta1
+  schema:
+    type: object
+    required:
+    - apiVersion
+    - kind
+    properties:
+      apiVersion:
+        type: string
+      kind:
+        type: string
+      rotateCertificates:
+        type: boolean
+      serverTLSBootstrap:
+        type: boolean
+scenarios:
+- title: Creating the Private Key
+  category: 'OpenSSL: Keys and CSRs'
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      A new developer, **Jane**, needs access to the cluster with a client certificate. The first step
+      is hers alone: a private key that never leaves her machine. You are working as `root` on
+      `controlplane`, in an empty working directory.
+
+      Create a **2048-bit RSA** private key in a file named `jane.key`.
+  - type: question
+    question:
+      questionType: command
+      header: Generate the private key.
+      hint: OpenSSL has a sub-command named after the algorithm that generates keys, and one generic one; both write the key
+        where -out tells them to.
+      correctAnswerInfo: 'Both genrsa and genpkey are accepted. Keep the key file private: its permissions should allow only
+        its owner to read it.'
+      command:
+        executable: openssl
+        subcommands:
+        - name: genrsa
+          aliases:
+          - genpkey
+        positionals:
+        - index: 0
+          required: false
+          regex: ^(2048|3072|4096)$
+        flags:
+        - name: out
+          singleDash: true
+          required: true
+          value: jane.key
+        - name: algorithm
+          singleDash: true
+          value: RSA
+        - name: pkeyopt
+          singleDash: true
+          regex: ^rsa_keygen_bits:(2048|3072|4096)$
+      cel: (subcommands[0] == 'genrsa' && !('algorithm' in flags)) || (subcommands[0] == 'genpkey' && 'algorithm' in flags)
+  - type: manifest
+    header: $ ls -l
+    content: |
+      total 4
+      -rw------- 1 root root 1704 Oct 19 09:14 jane.key
+  explanation:
+    elements:
+    - type: context
+      text: |
+        `openssl genrsa -out jane.key 2048` writes a PEM-encoded RSA private key. In OpenSSL 3 the
+        generic `openssl genpkey -algorithm RSA -out jane.key` does the same (add
+        `-pkeyopt rsa_keygen_bits:2048` to be explicit about the size).
+
+        The key must be created by — and stay with — the person who will use the certificate. The
+        cluster never needs it: only the **certificate signing request** derived from it is sent to the
+        cluster, which is why this whole workflow is safe to do through the Kubernetes API.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/tasks/administer-cluster/certificates/
+        text: Generate Certificates Manually
+      - url: https://kubernetes.io/docs/tasks/tls/managing-tls-in-a-cluster/
+        text: Manage TLS Certificates in a Cluster
+- title: A Certificate Request with the Right Identity
+  category: 'OpenSSL: Keys and CSRs'
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Jane's key `jane.key` exists. Kubernetes has no user database: the identity of a client
+      certificate comes **from the certificate itself**. Jane must authenticate as the user `jane` and
+      belong to the group `developers`.
+
+      Create a certificate signing request file `jane.csr` from `jane.key` that carries that identity in
+      its subject, without being prompted interactively for any field.
+  - type: question
+    question:
+      questionType: command
+      header: Create the signing request.
+      hint: The subject can be given on the command line as a string of slash-separated attribute=value pairs. Which attribute
+        names carry the user and the group in Kubernetes?
+      correctAnswerInfo: Kubernetes takes the username from the Common Name (CN) and every Organization (O) value becomes
+        a group. OU, C, ST and so on are ignored for authentication.
+      command:
+        executable: openssl
+        subcommands:
+        - name: req
+        flags:
+        - name: new
+          singleDash: true
+          required: true
+          boolean: true
+        - name: key
+          singleDash: true
+          required: true
+          value: jane.key
+        - name: out
+          singleDash: true
+          required: true
+          value: jane.csr
+        - name: subj
+          singleDash: true
+          required: true
+          regex: ^/(CN=jane/O=developers|O=developers/CN=jane)/?$
+  explanation:
+    elements:
+    - type: context
+      text: |
+        How the API server turns a client certificate into an identity:
+
+        | Subject attribute | Kubernetes meaning |
+        |---|---|
+        | `CN` (Common Name) | the **username** |
+        | `O` (Organization), repeatable | one **group** per value |
+        | anything else (`OU`, `C`, `L`, ...) | ignored for authentication |
+
+        `-subj` supplies the subject non-interactively; without it `openssl req` prompts for each field.
+        The order of attributes in the subject does not matter to Kubernetes.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/reference/access-authn-authz/certificate-signing-requests/
+        text: Certificate Signing Requests
+      - url: https://kubernetes.io/docs/tasks/administer-cluster/certificates/
+        text: Generate Certificates Manually
+- title: One User, Several Groups
+  category: 'OpenSSL: Keys and CSRs'
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Tom is a developer who also does QA work. His key is `tom.key`. His identity must be the user
+      `tom`, and he must be a member of **two** groups: `dev` and `qa`.
+  - type: question
+    question:
+      questionType: command
+      header: Create tom.csr from tom.key with that identity.
+      hint: An attribute may appear more than once in a subject.
+      command:
+        executable: openssl
+        subcommands:
+        - name: req
+        flags:
+        - name: new
+          singleDash: true
+          required: true
+          boolean: true
+        - name: key
+          singleDash: true
+          required: true
+          value: tom.key
+        - name: out
+          singleDash: true
+          required: true
+          value: tom.csr
+        - name: subj
+          singleDash: true
+          required: true
+          regex: ^/(CN=tom/O=dev/O=qa|CN=tom/O=qa/O=dev|O=dev/CN=tom/O=qa|O=dev/O=qa/CN=tom|O=qa/CN=tom/O=dev|O=qa/O=dev/CN=tom)/?$
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Repeat the `O` attribute once per group: `-subj "/CN=tom/O=dev/O=qa"`. Joining values with commas
+        inside a single `O` does **not** create two groups — Kubernetes would see one group literally
+        named `dev,qa`.
+
+        Group names matter later: RBAC bindings to `kind: Group` must use these values **exactly**
+        (case-sensitive).
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/reference/access-authn-authz/certificate-signing-requests/
+        text: Certificate Signing Requests
+- title: Inspecting a Request Before Submitting It
+  category: 'OpenSSL: Keys and CSRs'
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      A colleague left a signing request, `maria.csr`, on the server and asks you to submit it to the
+      cluster. Before anything is signed you want to see which identity it **actually** asks for —
+      without printing the encoded request itself.
+  - type: question
+    question:
+      questionType: command
+      header: Display the decoded content (or just the subject) of maria.csr.
+      hint: Without a flag that suppresses it, the tool prints the PEM request again; and a request is not a certificate,
+        so the sub-command is the one for requests.
+      command:
+        executable: openssl
+        subcommands:
+        - name: req
+        flags:
+        - name: in
+          singleDash: true
+          required: true
+          value: maria.csr
+        - name: noout
+          singleDash: true
+          required: true
+          boolean: true
+        - name: text
+          singleDash: true
+          boolean: true
+        - name: subject
+          singleDash: true
+          boolean: true
+      cel: '''text'' in flags || ''subject'' in flags'
+  - type: manifest
+    header: $ openssl req -in maria.csr -noout -subject
+    content: |
+      subject=O = platform, O = oncall, CN = maria
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: maria
+      header: Which username would Kubernetes authenticate this request's certificate as?
+      hint: Only one of the three attributes names a user.
+      cel: answer.trim() == 'maria'
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: platform, oncall
+      header: List the groups that the certificate would carry, separated by commas.
+      correctAnswerInfo: Each O attribute is a group; the CN is not.
+      cel: answer.replace(' ', '').split(',').size() == 2 && answer.contains('platform') && answer.contains('oncall') && !answer.contains('maria')
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Always inspect a request **before** you approve it: the requester chooses the subject, and
+        Kubernetes will faithfully put whatever is in it into the certificate. A request asking for
+        `O=system:masters` would yield a certificate that is cluster-admin — see the approval scenario.
+
+        `openssl req -in x.csr -noout -text` shows everything (subject, key size, extensions);
+        `-subject` shows just the identity. `-noout` suppresses the PEM re-encoding.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/reference/access-authn-authz/certificate-signing-requests/
+        text: Certificate Signing Requests
+      - url: https://docs.openssl.org/3.0/man1/openssl-req/
+        text: openssl-req manual page
+- title: Submitting the Request to the Cluster
+  category: Kubernetes CSR API
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      `jane.csr` is ready. To have the cluster sign it, it must be wrapped in a
+      **CertificateSigningRequest** object, whose `request` field holds the CSR file content
+      base64-encoded **on a single line** (a wrapped, multi-line value is a classic mistake).
+  - type: question
+    question:
+      questionType: command
+      header: Base64-encode jane.csr into one unbroken line on standard output.
+      hint: The coreutils base64 wraps its output at 76 characters unless you tell it otherwise; 0 disables wrapping.
+      command:
+        executable: base64
+        positionals:
+        - index: 0
+          value: jane.csr
+          description: file
+        flags:
+        - name: wrap
+          short: w
+          required: true
+          value: '0'
+  - type: manifest
+    header: $ base64 -w 0 jane.csr
+    content: |
+      LS0tLS1CRUdJTiBDRVJUSUZJQ0FURSBSRVFVRVNULS0tLS0KTUlJQ2FUQ0NBVkVDQVFBd0pERU5NQXNHQTFVRUF3d0VhbUZ1WlRFVE1CRUdBMVVFQ2d3S1pHVjJaV3h2Y0dWeQpjekNDQVNJd0RRWUpLb1pJaHZjTkFRRUJCUUFEZ2dFUEFEQ0NBUW9DZ2dFQkFNams4YWh2QUVYc0k3S05LVFJYClVGQkl1TGtzZk1uUllrc3RaV2xGOFdpalo2cG5JTEJFMFhpWk4xNkxyZS9Ta3BxeHl2bWROb2doUTJLU1VoRXYKbzd6VjJRdXFxZ2ZkOUpCK3JSOXdRc1hQc3hqd1J4emxkcHdpNWs0S2pwSGQzQ3JEaERUclFMNG4yNXk3TjRBcQpUYVlnZVpucmY2TU96TjZrRDZqWHRFSWVnWmo0RnhNQ25lVEFCajVFSWVkcnQ0b2hoWFpRMS9MS0cxQm8xdzIyCjA3SDNmVStOeStNckRFK1U0d3R6QlU1UXpTd2R5SHExZmo1Ym5WeURDNTBHeUlrbHNYYXhjRDhPSUhsa1Rna3MKK2dvQkRUKy9tN2tTeDBUbXdKcEtaSndyR3dzalRhZ3RSeWZYWldCazdOL0EyRCthdUJIdWgraVVMRjZueGZNcQpKbFVDQXdFQUFhQUFNQTBHQ1NxR1NJYjNEUUVCQ3dVQUE0SUJBUURCdFIyWlNzVVlZejRIUFpDeDY0ZWVTUnJvClM3QlZqSUp1b2pObExpMUJrcGNCNGtiY093YmZsVDg3bXdzNjFWOUZHUEJhUlc4WXRZSE1JQ1U0RWdoTlk0TjMKLzBwV0ZIUGYxa2E5MHNib3VsMEZieHpLY1FaZFRGMVJVVzFtTlgzbE5raUI3QzltZFRqdkhjY3JCZXIwZHBYRwpub0RSKzhIVkdkZ3NrbDkwdlNoMDBiWFRvamRIUkhUUnVIU3N5VjkzOFF1QTNwbWhoWWw1S1dJbEpVVXV5N1hRCmpiai9KTnViUnNrOGtxM3FBMzN6eVZia0s5SnByajNZUUoxb2JiNm5RNkdwMng5TWRCWk01dmM0UjRrMFU2dFMKelRmK2NDeW42bnF6MU5WZEJ3OUdaQ285NDZPalFTUStuWXFBOHB2V3dHekhHZlRxdE9hNG02T2FBcVhOCi0tLS0tRU5EIENFUlRJRklDQVRFIFJFUVVFU1QtLS0tLQo=
+  - type: context
+    text: |
+      Write the manifest for a CertificateSigningRequest named `jane` that:
+
+      - uses the output above as its request,
+      - is signed by the built-in signer meant for **client certificates presented to the API server**,
+      - may only be used to authenticate a client (no other key usages),
+      - asks for a certificate that is valid for **one day**.
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: csr-v1
+      header: Write the CertificateSigningRequest manifest.
+      hint: Both the signer name and the key usages must be accepted by that signer. 'One day' has to be expressed in seconds.
+      correctAnswerInfo: 'spec.usages must contain ''client auth'' for this signer; ''digital signature'' and ''key encipherment''
+        may be listed as well. expirationSeconds is a request: the signer may issue a shorter lifetime, and the minimum is
+        600 seconds.'
+      cel: manifest.spec.usages.exists(u, u == 'client auth') && manifest.spec.usages.all(u, u in ['client auth', 'digital
+        signature', 'key encipherment'])
+      expectedFields:
+      - path: metadata.name
+        expectedValue: jane
+      - path: spec.request
+        expectedValue: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURSBSRVFVRVNULS0tLS0KTUlJQ2FUQ0NBVkVDQVFBd0pERU5NQXNHQTFVRUF3d0VhbUZ1WlRFVE1CRUdBMVVFQ2d3S1pHVjJaV3h2Y0dWeQpjekNDQVNJd0RRWUpLb1pJaHZjTkFRRUJCUUFEZ2dFUEFEQ0NBUW9DZ2dFQkFNams4YWh2QUVYc0k3S05LVFJYClVGQkl1TGtzZk1uUllrc3RaV2xGOFdpalo2cG5JTEJFMFhpWk4xNkxyZS9Ta3BxeHl2bWROb2doUTJLU1VoRXYKbzd6VjJRdXFxZ2ZkOUpCK3JSOXdRc1hQc3hqd1J4emxkcHdpNWs0S2pwSGQzQ3JEaERUclFMNG4yNXk3TjRBcQpUYVlnZVpucmY2TU96TjZrRDZqWHRFSWVnWmo0RnhNQ25lVEFCajVFSWVkcnQ0b2hoWFpRMS9MS0cxQm8xdzIyCjA3SDNmVStOeStNckRFK1U0d3R6QlU1UXpTd2R5SHExZmo1Ym5WeURDNTBHeUlrbHNYYXhjRDhPSUhsa1Rna3MKK2dvQkRUKy9tN2tTeDBUbXdKcEtaSndyR3dzalRhZ3RSeWZYWldCazdOL0EyRCthdUJIdWgraVVMRjZueGZNcQpKbFVDQXdFQUFhQUFNQTBHQ1NxR1NJYjNEUUVCQ3dVQUE0SUJBUURCdFIyWlNzVVlZejRIUFpDeDY0ZWVTUnJvClM3QlZqSUp1b2pObExpMUJrcGNCNGtiY093YmZsVDg3bXdzNjFWOUZHUEJhUlc4WXRZSE1JQ1U0RWdoTlk0TjMKLzBwV0ZIUGYxa2E5MHNib3VsMEZieHpLY1FaZFRGMVJVVzFtTlgzbE5raUI3QzltZFRqdkhjY3JCZXIwZHBYRwpub0RSKzhIVkdkZ3NrbDkwdlNoMDBiWFRvamRIUkhUUnVIU3N5VjkzOFF1QTNwbWhoWWw1S1dJbEpVVXV5N1hRCmpiai9KTnViUnNrOGtxM3FBMzN6eVZia0s5SnByajNZUUoxb2JiNm5RNkdwMng5TWRCWk01dmM0UjRrMFU2dFMKelRmK2NDeW42bnF6MU5WZEJ3OUdaQ285NDZPalFTUStuWXFBOHB2V3dHekhHZlRxdE9hNG02T2FBcVhOCi0tLS0tRU5EIENFUlRJRklDQVRFIFJFUVVFU1QtLS0tLQo=
+      - path: spec.signerName
+        expectedValue: kubernetes.io/kube-apiserver-client
+      - path: spec.expirationSeconds
+        expectedValue: 86400
+  explanation:
+    elements:
+    - type: context
+      text: |
+        ```yaml
+        apiVersion: certificates.k8s.io/v1
+        kind: CertificateSigningRequest
+        metadata:
+          name: jane
+        spec:
+          request: <base64 of jane.csr, one line>
+          signerName: kubernetes.io/kube-apiserver-client
+          expirationSeconds: 86400
+          usages:
+          - client auth
+        ```
+
+        - **`signerName` is mandatory** in `certificates.k8s.io/v1` (the old default `legacy-unknown` is
+          gone and is never signed by the built-in controller).
+        - `usages` must be allowed by the signer: for `kube-apiserver-client` that is `client auth`,
+          optionally with `digital signature` and `key encipherment`.
+        - `expirationSeconds` is optional, minimum 600; without it the cluster default (usually one
+          year) applies.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/reference/access-authn-authz/certificate-signing-requests/
+        text: Certificate Signing Requests
+      - url: https://kubernetes.io/docs/tasks/tls/managing-tls-in-a-cluster/
+        text: Manage TLS Certificates in a Cluster
+- title: A Request the API Server Refuses
+  category: Kubernetes CSR API
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Tom needs a certificate that is valid for only **15 minutes**, for a temporary test. The manifest
+      below was prepared, but applying it fails:
+  - type: manifest
+    header: tom-csr.yaml
+    content: |
+      apiVersion: certificates.k8s.io/v1
+      kind: CertificateSigningRequest
+      metadata:
+        name: tom
+      spec:
+        request: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURSBSRVFVRVNULS0tLS0KTUlJQ2JqQ0NBVllDQVFBd0tURU1NQW9HQTFVRUF3d0RkRzl0TVF3d0NnWURWUVFLREFOa1pYWXhDekFKQmdOVgpCQW9NQW5GaE1JSUJJakFOQmdrcWhraUc5dzBCQVFFRkFBT0NBUThBTUlJQkNnS0NBUUVBcUgrMmQ5VmFXKytqCmYyaC9QQVZMYVFHeUVHSXJpY3RDTUFHd0UyUUJPUDhYdUR5b2tETXlEL1o5cUI3WjlaOFhOZGRhanFONlJMQ04Kc1hPY2YzSWZqWjR4YW5PZUhJSHRrOUNZODl4SWk4ZnBDRkpZUy94Y1cybmJZTUtlZldPd1BCbXNsRjRVZmNPUwpGVDFFVTBUbVZHVWJMNmxRNFdZN1l6WUJ6ZlhGMUdGWExucFdUZ2hPNEkwM29uQTVSN0gvRFBTNUhjN3c0dGtPCnowelhweFVOdU9jVHdiQlR3MnN6NnNBU0dSOWhac3AzWkhrUU9JbGtBUDE1L2ZGc1V3NTVMaXVLU21JQnhSdHAKRTdBNFlDdjI4V2wySDRxUmdUWlREODBMUFJncVgrMnNHcGlQQ21rSTZVS0NKb0w4QzZHdWJxdStudW92K0Y4LwpoeE9jVTJXeXB3SURBUUFCb0FBd0RRWUpLb1pJaHZjTkFRRUxCUUFEZ2dFQkFKamhZMzJMazFCbTFiSHBZSTlvCllOWEliUElqeFI4VlkvbEsyRkRNbUJDZi80T3J2MjJBWG5za1ZMMUdzcW9uTzY2bHF6UDRGaFVTai80cUw5ODcKRHJjU2tXZnpXQzRjODZXeVZpTDhTQTE4YS94aWh3eGhDaG9vcmJDZkxLZ29ZTXFYM05HVWNQUWZMOWRmdlE2SwpaY2drVnlFNTB1SXJxalRRbXY4aXUrQkJNbkZCajNMU0M1azRpQVdpNnJHQXhEQ3FLVmhKYTdLZnlJUmFxbU9WCmd1L3FsVVJ1ZDZ2c2kvbnhUajJuUDhjYk9IcHZ3eXhudHVVeUIyY2ZYZS9hcG1ZbVpRV0Z3M1ByWUdjSUM5bzMKc01ucm5MdmtXZ042c21GZU5xc0gyMWs0akdGUkV5blJnajVISThpUysrYWx4cGlWMGVHYTJNeUNRQm9kQzRDYQozMmc9Ci0tLS0tRU5EIENFUlRJRklDQVRFIFJFUVVFU1QtLS0tLQo=
+        signerName: kubernetes.io/kube-apiserver-client
+        expirationSeconds: 300
+        usages:
+        - client auth
+  - type: manifest
+    header: $ kubectl apply -f tom-csr.yaml
+    content: |
+      The CertificateSigningRequest "tom" is invalid: spec.expirationSeconds: Invalid value: 300: may not specify a duration less than 600 seconds (10 minutes)
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: csr-v1
+      header: Correct the manifest so that it is accepted and still asks for a 15-minute certificate.
+      hint: The field is in seconds, and the message names the lower limit.
+      correctAnswerInfo: The signer may still issue a slightly different lifetime than requested, but it will never be shorter
+        than the minimum the API enforces (10 minutes).
+      cel: manifest.spec.usages == ['client auth']
+      initialContent: |
+        apiVersion: certificates.k8s.io/v1
+        kind: CertificateSigningRequest
+        metadata:
+          name: tom
+        spec:
+          request: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURSBSRVFVRVNULS0tLS0KTUlJQ2JqQ0NBVllDQVFBd0tURU1NQW9HQTFVRUF3d0RkRzl0TVF3d0NnWURWUVFLREFOa1pYWXhDekFKQmdOVgpCQW9NQW5GaE1JSUJJakFOQmdrcWhraUc5dzBCQVFFRkFBT0NBUThBTUlJQkNnS0NBUUVBcUgrMmQ5VmFXKytqCmYyaC9QQVZMYVFHeUVHSXJpY3RDTUFHd0UyUUJPUDhYdUR5b2tETXlEL1o5cUI3WjlaOFhOZGRhanFONlJMQ04Kc1hPY2YzSWZqWjR4YW5PZUhJSHRrOUNZODl4SWk4ZnBDRkpZUy94Y1cybmJZTUtlZldPd1BCbXNsRjRVZmNPUwpGVDFFVTBUbVZHVWJMNmxRNFdZN1l6WUJ6ZlhGMUdGWExucFdUZ2hPNEkwM29uQTVSN0gvRFBTNUhjN3c0dGtPCnowelhweFVOdU9jVHdiQlR3MnN6NnNBU0dSOWhac3AzWkhrUU9JbGtBUDE1L2ZGc1V3NTVMaXVLU21JQnhSdHAKRTdBNFlDdjI4V2wySDRxUmdUWlREODBMUFJncVgrMnNHcGlQQ21rSTZVS0NKb0w4QzZHdWJxdStudW92K0Y4LwpoeE9jVTJXeXB3SURBUUFCb0FBd0RRWUpLb1pJaHZjTkFRRUxCUUFEZ2dFQkFKamhZMzJMazFCbTFiSHBZSTlvCllOWEliUElqeFI4VlkvbEsyRkRNbUJDZi80T3J2MjJBWG5za1ZMMUdzcW9uTzY2bHF6UDRGaFVTai80cUw5ODcKRHJjU2tXZnpXQzRjODZXeVZpTDhTQTE4YS94aWh3eGhDaG9vcmJDZkxLZ29ZTXFYM05HVWNQUWZMOWRmdlE2SwpaY2drVnlFNTB1SXJxalRRbXY4aXUrQkJNbkZCajNMU0M1azRpQVdpNnJHQXhEQ3FLVmhKYTdLZnlJUmFxbU9WCmd1L3FsVVJ1ZDZ2c2kvbnhUajJuUDhjYk9IcHZ3eXhudHVVeUIyY2ZYZS9hcG1ZbVpRV0Z3M1ByWUdjSUM5bzMKc01ucm5MdmtXZ042c21GZU5xc0gyMWs0akdGUkV5blJnajVISThpUysrYWx4cGlWMGVHYTJNeUNRQm9kQzRDYQozMmc9Ci0tLS0tRU5EIENFUlRJRklDQVRFIFJFUVVFU1QtLS0tLQo=
+          signerName: kubernetes.io/kube-apiserver-client
+          expirationSeconds: 300
+          usages:
+          - client auth
+      expectedFields:
+      - path: metadata.name
+        expectedValue: tom
+      - path: spec.request
+        expectedValue: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURSBSRVFVRVNULS0tLS0KTUlJQ2JqQ0NBVllDQVFBd0tURU1NQW9HQTFVRUF3d0RkRzl0TVF3d0NnWURWUVFLREFOa1pYWXhDekFKQmdOVgpCQW9NQW5GaE1JSUJJakFOQmdrcWhraUc5dzBCQVFFRkFBT0NBUThBTUlJQkNnS0NBUUVBcUgrMmQ5VmFXKytqCmYyaC9QQVZMYVFHeUVHSXJpY3RDTUFHd0UyUUJPUDhYdUR5b2tETXlEL1o5cUI3WjlaOFhOZGRhanFONlJMQ04Kc1hPY2YzSWZqWjR4YW5PZUhJSHRrOUNZODl4SWk4ZnBDRkpZUy94Y1cybmJZTUtlZldPd1BCbXNsRjRVZmNPUwpGVDFFVTBUbVZHVWJMNmxRNFdZN1l6WUJ6ZlhGMUdGWExucFdUZ2hPNEkwM29uQTVSN0gvRFBTNUhjN3c0dGtPCnowelhweFVOdU9jVHdiQlR3MnN6NnNBU0dSOWhac3AzWkhrUU9JbGtBUDE1L2ZGc1V3NTVMaXVLU21JQnhSdHAKRTdBNFlDdjI4V2wySDRxUmdUWlREODBMUFJncVgrMnNHcGlQQ21rSTZVS0NKb0w4QzZHdWJxdStudW92K0Y4LwpoeE9jVTJXeXB3SURBUUFCb0FBd0RRWUpLb1pJaHZjTkFRRUxCUUFEZ2dFQkFKamhZMzJMazFCbTFiSHBZSTlvCllOWEliUElqeFI4VlkvbEsyRkRNbUJDZi80T3J2MjJBWG5za1ZMMUdzcW9uTzY2bHF6UDRGaFVTai80cUw5ODcKRHJjU2tXZnpXQzRjODZXeVZpTDhTQTE4YS94aWh3eGhDaG9vcmJDZkxLZ29ZTXFYM05HVWNQUWZMOWRmdlE2SwpaY2drVnlFNTB1SXJxalRRbXY4aXUrQkJNbkZCajNMU0M1azRpQVdpNnJHQXhEQ3FLVmhKYTdLZnlJUmFxbU9WCmd1L3FsVVJ1ZDZ2c2kvbnhUajJuUDhjYk9IcHZ3eXhudHVVeUIyY2ZYZS9hcG1ZbVpRV0Z3M1ByWUdjSUM5bzMKc01ucm5MdmtXZ042c21GZU5xc0gyMWs0akdGUkV5blJnajVISThpUysrYWx4cGlWMGVHYTJNeUNRQm9kQzRDYQozMmc9Ci0tLS0tRU5EIENFUlRJRklDQVRFIFJFUVVFU1QtLS0tLQo=
+      - path: spec.signerName
+        expectedValue: kubernetes.io/kube-apiserver-client
+      - path: spec.expirationSeconds
+        expectedValue: 900
+  explanation:
+    elements:
+    - type: context
+      text: |
+        `spec.expirationSeconds` is validated by the API server: it must be **at least 600** (10 minutes).
+        A value that cannot be honoured is rejected, not silently raised. Also remember:
+
+        - The built-in signers may issue a **shorter** lifetime than requested (never longer than the
+          controller-manager's `--cluster-signing-duration`, one year by default).
+        - A CSR's `spec` is **immutable** once created: to change it you must delete and re-create the
+          object.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/reference/access-authn-authz/certificate-signing-requests/
+        text: Certificate Signing Requests
+- title: Choosing the Right Signer
+  category: Kubernetes CSR API
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      A `CertificateSigningRequest` needs a `spec.signerName`. For each situation below, give the full
+      built-in signer name. Only certain signers are signed by the cluster's own controller-manager.
+  - type: question
+    question:
+      questionType: sequence
+      header: Name the signer for each case.
+      hint: 'The names say who the certificate is for: a client of the API server, a kubelet as a client, a kubelet as a server.'
+      steps:
+      - questionType: single-line
+        expectedAnswer: kubernetes.io/kube-apiserver-client
+        header: 'A human developer''s certificate used to authenticate to the API server as a client:'
+        cel: answer.trim() == 'kubernetes.io/kube-apiserver-client'
+      - questionType: single-line
+        expectedAnswer: kubernetes.io/kube-apiserver-client-kubelet
+        header: 'A kubelet''s certificate for authenticating to the API server (subject names the node, for example system:node:node01):'
+        cel: answer.trim() == 'kubernetes.io/kube-apiserver-client-kubelet'
+      - questionType: single-line
+        expectedAnswer: kubernetes.io/kubelet-serving
+        header: 'The certificate a kubelet presents on its own HTTPS port (10250) when others connect to it:'
+        cel: answer.trim() == 'kubernetes.io/kubelet-serving'
+      - questionType: single-line
+        expectedAnswer: kubernetes.io/legacy-unknown
+        header: 'The signer name that exists for backwards compatibility but that the built-in controller never signs:'
+        cel: answer.trim() == 'kubernetes.io/legacy-unknown'
+  explanation:
+    elements:
+    - type: context
+      text: |
+        | `signerName` | Purpose | Allowed usages |
+        |---|---|---|
+        | `kubernetes.io/kube-apiserver-client` | client certificates for users and workloads | `client auth` (+ `digital signature`, `key encipherment`) |
+        | `kubernetes.io/kube-apiserver-client-kubelet` | a kubelet authenticating to the API server | `client auth` (+ ...) — subject must be `system:node:<name>` |
+        | `kubernetes.io/kubelet-serving` | a kubelet's serving certificate | `server auth` (+ ...) |
+        | `kubernetes.io/legacy-unknown` | not signed by Kubernetes | — |
+
+        The first three are signed by the controller-manager with the **cluster CA**. A CSR with any other
+        signer name stays unsigned unless your own controller handles it. Approval and signing are
+        separate steps.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/reference/access-authn-authz/certificate-signing-requests/
+        text: Certificate Signing Requests
+- title: Approved, but Never Issued
+  category: Kubernetes CSR API
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      A pipeline account's request was approved an hour ago, yet the certificate never arrived. This is
+      the current state of the CSRs on the cluster:
+  - type: table
+    style: terminal
+    columns:
+    - NAME
+    - AGE
+    - SIGNERNAME
+    - REQUESTOR
+    - REQUESTEDDURATION
+    - CONDITION
+    rows:
+    - - jane
+      - 3m
+      - kubernetes.io/kube-apiserver-client
+      - kubernetes-admin
+      - 24h
+      - Approved,Issued
+    - - csr-8fq2z
+      - 41m
+      - kubernetes.io/kube-apiserver-client-kubelet
+      - system:bootstrap:abcdef
+      - <none>
+      - Approved,Issued
+    - - deploy-bot
+      - 1h
+      - kubernetes.io/legacy-unknown
+      - kubernetes-admin
+      - <none>
+      - Approved
+    - - old-tmp
+      - 50m
+      - kubernetes.io/kube-apiserver-client
+      - kubernetes-admin
+      - <none>
+      - Denied
+    - - build-agent
+      - 9m
+      - kubernetes.io/kube-apiserver-client
+      - system:serviceaccount:ci:runner
+      - <none>
+      - Pending
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: deploy-bot
+      header: Which CSR was approved but will never be issued a certificate?
+      hint: Compare the condition column with what a healthy approved request looks like, then look at the signer.
+      cel: answer.trim() == 'deploy-bot'
+  - type: context
+    text: |
+      `deploy-bot` is a pipeline identity that must authenticate to the API server as a **client**. Its
+      original manifest was:
+  - type: manifest
+    header: deploy-bot-csr.yaml
+    content: |
+      apiVersion: certificates.k8s.io/v1
+      kind: CertificateSigningRequest
+      metadata:
+        name: deploy-bot
+      spec:
+        request: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURSBSRVFVRVNULS0tLS0KTUlJQ1p6Q0NBVThDQVFBd0lqRVRNQkVHQTFVRUF3d0taR1Z3Ykc5NUxXSnZkREVMTUFrR0ExVUVDZ3dDWTJrdwpnZ0VpTUEwR0NTcUdTSWIzRFFFQkFRVUFBNElCRHdBd2dnRUtBb0lCQVFEamYvVUx2bDNyRFc0LzVVN0xhM3dECmpDeHVOcDhWZ0xsVi9WZVhjY292VWFPNHBpZ3oyQktWZ1V4OVJ2eW5hY2kvcm9uYTV2WGIza2RmQ0NtU3lrVEMKRjF3Vy9Gb0dUekFlL2FIaGcvaXV4TVZPV3h6TTI1cUQvZ0kxaHpvVW42WXhHVzYzVjNRYVRLSnhTejh1MlRYVApFYmhCUXZSVVdoQ01QcEJyWkIwZDY4OGVLRTNLYlBDSjFJZmFRNXQ3VkV4WkU0Y01SQmhPbXc1T2sxZW1HeUxQCnJXeHdzb3RHQjh1SWJiY05TWDdGQ29sMk5lNldWZ3BmbGpsUG9VdHlRNWloWHNBS3JJbEozOWVHd01LSDhaMk0Kelp5SGVSYlNKY1cxU1FEQVFhdVVNZ3lkNG9RNGxENzZwOXdxZ1lEMVVJN2lYT0E0TWF4NkVKRmErMjd3QUZiVApBZ01CQUFHZ0FEQU5CZ2txaGtpRzl3MEJBUXNGQUFPQ0FRRUFXZUhMNCsrUWh2czZpbjN2Nmd5QzVEV290MGZHCktsSkVlRWJCb1FkRmNBU2k4WDNONGpYYktuTm5VWXdjNFJJbGExR2FPcnlKZ29KVG9xY1RFQVNmZ3lVL0liWXUKbjZML2xTdmZvZnY2Y3I1bnUzeFYrSTBzVDdmcGloOHdJVXhJbmQ3ektzaUN0RjBhZklFUlU4YkFwdzlpT0V4agpMZ2tVQWZXZDRKRU1IUWZyTDAzWWgyeHF1c3ZxL0x0cWNyYSszYXdjcnJEem90ZERVQk5CeGZPdFdtZWIvR01hCkVUb2lidTdVY3ViS1hPTzFRaUd0a3hoWThwWU9YNW5aK005d0s2Q0pvQnYyQmNMck5RU3AwTEtHVlcwZ3doZWEKR0x3OTE1OXZEcERQRXlJeENydDZUY0pLNmlGZ3lTY0RJR0VmdWJlT1JuUmIyN1NxajBTam9Zak9xZz09Ci0tLS0tRU5EIENFUlRJRklDQVRFIFJFUVVFU1QtLS0tLQo=
+        signerName: kubernetes.io/legacy-unknown
+        usages:
+        - server auth
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: csr-v1
+      header: Correct the manifest so that the built-in controller can sign the request.
+      hint: 'Two fields are wrong: who signs, and what the certificate may be used for.'
+      cel: manifest.spec.usages.exists(u, u == 'client auth') && manifest.spec.usages.all(u, u in ['client auth', 'digital
+        signature', 'key encipherment'])
+      initialContent: |
+        apiVersion: certificates.k8s.io/v1
+        kind: CertificateSigningRequest
+        metadata:
+          name: deploy-bot
+        spec:
+          request: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURSBSRVFVRVNULS0tLS0KTUlJQ1p6Q0NBVThDQVFBd0lqRVRNQkVHQTFVRUF3d0taR1Z3Ykc5NUxXSnZkREVMTUFrR0ExVUVDZ3dDWTJrdwpnZ0VpTUEwR0NTcUdTSWIzRFFFQkFRVUFBNElCRHdBd2dnRUtBb0lCQVFEamYvVUx2bDNyRFc0LzVVN0xhM3dECmpDeHVOcDhWZ0xsVi9WZVhjY292VWFPNHBpZ3oyQktWZ1V4OVJ2eW5hY2kvcm9uYTV2WGIza2RmQ0NtU3lrVEMKRjF3Vy9Gb0dUekFlL2FIaGcvaXV4TVZPV3h6TTI1cUQvZ0kxaHpvVW42WXhHVzYzVjNRYVRLSnhTejh1MlRYVApFYmhCUXZSVVdoQ01QcEJyWkIwZDY4OGVLRTNLYlBDSjFJZmFRNXQ3VkV4WkU0Y01SQmhPbXc1T2sxZW1HeUxQCnJXeHdzb3RHQjh1SWJiY05TWDdGQ29sMk5lNldWZ3BmbGpsUG9VdHlRNWloWHNBS3JJbEozOWVHd01LSDhaMk0Kelp5SGVSYlNKY1cxU1FEQVFhdVVNZ3lkNG9RNGxENzZwOXdxZ1lEMVVJN2lYT0E0TWF4NkVKRmErMjd3QUZiVApBZ01CQUFHZ0FEQU5CZ2txaGtpRzl3MEJBUXNGQUFPQ0FRRUFXZUhMNCsrUWh2czZpbjN2Nmd5QzVEV290MGZHCktsSkVlRWJCb1FkRmNBU2k4WDNONGpYYktuTm5VWXdjNFJJbGExR2FPcnlKZ29KVG9xY1RFQVNmZ3lVL0liWXUKbjZML2xTdmZvZnY2Y3I1bnUzeFYrSTBzVDdmcGloOHdJVXhJbmQ3ektzaUN0RjBhZklFUlU4YkFwdzlpT0V4agpMZ2tVQWZXZDRKRU1IUWZyTDAzWWgyeHF1c3ZxL0x0cWNyYSszYXdjcnJEem90ZERVQk5CeGZPdFdtZWIvR01hCkVUb2lidTdVY3ViS1hPTzFRaUd0a3hoWThwWU9YNW5aK005d0s2Q0pvQnYyQmNMck5RU3AwTEtHVlcwZ3doZWEKR0x3OTE1OXZEcERQRXlJeENydDZUY0pLNmlGZ3lTY0RJR0VmdWJlT1JuUmIyN1NxajBTam9Zak9xZz09Ci0tLS0tRU5EIENFUlRJRklDQVRFIFJFUVVFU1QtLS0tLQo=
+          signerName: kubernetes.io/legacy-unknown
+          usages:
+          - server auth
+      expectedFields:
+      - path: metadata.name
+        expectedValue: deploy-bot
+      - path: spec.request
+        expectedValue: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURSBSRVFVRVNULS0tLS0KTUlJQ1p6Q0NBVThDQVFBd0lqRVRNQkVHQTFVRUF3d0taR1Z3Ykc5NUxXSnZkREVMTUFrR0ExVUVDZ3dDWTJrdwpnZ0VpTUEwR0NTcUdTSWIzRFFFQkFRVUFBNElCRHdBd2dnRUtBb0lCQVFEamYvVUx2bDNyRFc0LzVVN0xhM3dECmpDeHVOcDhWZ0xsVi9WZVhjY292VWFPNHBpZ3oyQktWZ1V4OVJ2eW5hY2kvcm9uYTV2WGIza2RmQ0NtU3lrVEMKRjF3Vy9Gb0dUekFlL2FIaGcvaXV4TVZPV3h6TTI1cUQvZ0kxaHpvVW42WXhHVzYzVjNRYVRLSnhTejh1MlRYVApFYmhCUXZSVVdoQ01QcEJyWkIwZDY4OGVLRTNLYlBDSjFJZmFRNXQ3VkV4WkU0Y01SQmhPbXc1T2sxZW1HeUxQCnJXeHdzb3RHQjh1SWJiY05TWDdGQ29sMk5lNldWZ3BmbGpsUG9VdHlRNWloWHNBS3JJbEozOWVHd01LSDhaMk0Kelp5SGVSYlNKY1cxU1FEQVFhdVVNZ3lkNG9RNGxENzZwOXdxZ1lEMVVJN2lYT0E0TWF4NkVKRmErMjd3QUZiVApBZ01CQUFHZ0FEQU5CZ2txaGtpRzl3MEJBUXNGQUFPQ0FRRUFXZUhMNCsrUWh2czZpbjN2Nmd5QzVEV290MGZHCktsSkVlRWJCb1FkRmNBU2k4WDNONGpYYktuTm5VWXdjNFJJbGExR2FPcnlKZ29KVG9xY1RFQVNmZ3lVL0liWXUKbjZML2xTdmZvZnY2Y3I1bnUzeFYrSTBzVDdmcGloOHdJVXhJbmQ3ektzaUN0RjBhZklFUlU4YkFwdzlpT0V4agpMZ2tVQWZXZDRKRU1IUWZyTDAzWWgyeHF1c3ZxL0x0cWNyYSszYXdjcnJEem90ZERVQk5CeGZPdFdtZWIvR01hCkVUb2lidTdVY3ViS1hPTzFRaUd0a3hoWThwWU9YNW5aK005d0s2Q0pvQnYyQmNMck5RU3AwTEtHVlcwZ3doZWEKR0x3OTE1OXZEcERQRXlJeENydDZUY0pLNmlGZ3lTY0RJR0VmdWJlT1JuUmIyN1NxajBTam9Zak9xZz09Ci0tLS0tRU5EIENFUlRJRklDQVRFIFJFUVVFU1QtLS0tLQo=
+      - path: spec.signerName
+        expectedValue: kubernetes.io/kube-apiserver-client
+  - type: question
+    question:
+      questionType: command
+      header: The spec of an existing CSR cannot be edited. Remove the old deploy-bot object so the corrected one can be created.
+      hint: Certificate signing requests are cluster-scoped objects, so no namespace is involved.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: delete
+        positionals:
+        - index: 0
+          oneOf:
+          - csr
+          - certificatesigningrequest
+          - certificatesigningrequests
+        - index: 1
+          value: deploy-bot
+  explanation:
+    elements:
+    - type: context
+      text: |
+        "Approved" and "Issued" are **separate** steps:
+
+        | Condition | Meaning |
+        |---|---|
+        | `Pending` | waiting for someone to approve or deny |
+        | `Approved` | allowed, waiting for the signer to produce a certificate |
+        | `Approved,Issued` | the certificate is in `status.certificate` |
+        | `Denied` | refused; will never be signed |
+        | `Failed` | the signer could not sign (for example an unusable request) |
+
+        A request that stays `Approved` forever almost always has a **signer that nobody runs** (such as
+        `legacy-unknown`, or a custom name with no controller) or **usages that the signer does not
+        permit**. Fix the object and re-create it: `spec` is immutable.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/reference/access-authn-authz/certificate-signing-requests/
+        text: Certificate Signing Requests
+- title: Reviewing, Approving and Denying Requests
+  category: Kubernetes CSR API
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Two requests are waiting. You are `kubernetes-admin`, who may approve CSRs.
+  - type: question
+    question:
+      questionType: command
+      header: List the certificate signing requests.
+      hint: The short name is three letters, and the objects are not namespaced.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: get
+        positionals:
+        - index: 0
+          oneOf:
+          - csr
+          - certificatesigningrequest
+          - certificatesigningrequests
+      cel: '!(''namespace'' in flags)'
+  - type: table
+    style: terminal
+    columns:
+    - NAME
+    - AGE
+    - SIGNERNAME
+    - REQUESTOR
+    - REQUESTEDDURATION
+    - CONDITION
+    rows:
+    - - jane
+      - 2m
+      - kubernetes.io/kube-apiserver-client
+      - kubernetes-admin
+      - 24h
+      - Pending
+    - - mallory
+      - 1m
+      - kubernetes.io/kube-apiserver-client
+      - system:serviceaccount:default:builder
+      - <none>
+      - Pending
+  - type: manifest
+    header: $ kubectl describe csr jane mallory  (excerpt)
+    content: |
+      Name:         jane
+      Requesting User:  kubernetes-admin
+      Signer:       kubernetes.io/kube-apiserver-client
+      Subject:
+        Common Name:    jane
+        Serial Number:
+        Organization:   developers
+
+      Name:         mallory
+      Requesting User:  system:serviceaccount:default:builder
+      Signer:       kubernetes.io/kube-apiserver-client
+      Subject:
+        Common Name:    mallory
+        Serial Number:
+        Organization:   system:masters
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: mallory
+      header: Which of the two requests must be denied?
+      hint: Look at what group the certificate would put its holder in, and who is asking.
+      cel: answer.trim() == 'mallory'
+  - type: question
+    question:
+      questionType: command
+      header: Approve the legitimate request.
+      hint: Approving and denying live under their own sub-command named after the resource's purpose.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: certificate
+        - name: approve
+        positionals:
+        - index: 0
+          value: jane
+  - type: question
+    question:
+      questionType: command
+      header: Deny the other one.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: certificate
+        - name: deny
+        positionals:
+        - index: 0
+          value: mallory
+  - type: manifest
+    header: $ kubectl get csr
+    content: |
+      NAME      AGE   SIGNERNAME                            REQUESTOR                              REQUESTEDDURATION   CONDITION
+      jane      3m    kubernetes.io/kube-apiserver-client   kubernetes-admin                       24h                 Approved,Issued
+      mallory   2m    kubernetes.io/kube-apiserver-client   system:serviceaccount:default:builder  <none>              Denied
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Approving a CSR is a **security decision**: whatever subject the requester wrote becomes a trusted
+        identity. `mallory`'s request asks for the organization `system:masters`, the group that is bound
+        to `cluster-admin` by default — approving it would hand a low-privilege ServiceAccount a
+        cluster-admin credential. Always read `Subject` and `Requesting User` in `kubectl describe csr`
+        (or `openssl req -noout -text` on the original file).
+
+        `kubectl certificate approve|deny <name>` records an `Approved` or `Denied` condition; the signer
+        then issues (or never issues) the certificate. Denied and approved CSR objects are removed by the
+        garbage collector after roughly an hour.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/reference/access-authn-authz/certificate-signing-requests/
+        text: Certificate Signing Requests
+      - url: https://kubernetes.io/docs/reference/access-authn-authz/rbac/
+        text: Using RBAC Authorization
+- title: Retrieving the Signed Certificate
+  category: Kubernetes CSR API
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      `jane` is `Approved,Issued`. The signed certificate sits **base64-encoded** in the CSR's status.
+      Write it, decoded, to the file `jane.crt` in the current directory with a single command line.
+  - type: question
+    question:
+      questionType: command
+      header: Extract the certificate from the CSR object into jane.crt.
+      hint: The value in the status is encoded; you need to decode it on the way into the file, and pick the right JSON path.
+      correctAnswerInfo: Use -o jsonpath to select status.certificate, then pipe through base64 -d and redirect into jane.crt.
+      command:
+        executable: kubectl
+        strictness: permissive
+        subcommands:
+        - name: get
+        positionals:
+        - index: 0
+          oneOf:
+          - csr
+          - certificatesigningrequest
+          - certificatesigningrequests
+        - index: 1
+          value: jane
+        flags:
+        - name: output
+          short: o
+          required: true
+          regex: ^jsonpath=.*status\.certificate
+      cel: answer.matches(r'\|\s*base64\s+(-d|--decode|-D)\s*>\s*jane\.crt\s*$')
+  - type: manifest
+    header: $ openssl x509 -in jane.crt -noout -subject -issuer -enddate
+    content: |
+      subject=CN = jane, O = developers
+      issuer=CN = kubernetes
+      notAfter=Oct 20 09:21:07 2026 GMT
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: 1 hour
+      header: Roughly how long after being approved or denied does the cluster garbage-collect a CSR object?
+      hint: Short enough that you must not postpone extracting the certificate.
+      correctAnswerInfo: Issued, approved-but-not-issued, and denied CSRs are cleaned up on a schedule measured in hours (approved
+        and issued after one hour, pending after 24 hours, denied after an hour). The certificate itself stays valid after
+        the object is gone.
+      cel: answer.lowerAscii().matches(r'(^|\b)(1 ?h(our)?|one hour|an hour|60 ?min(ute)?s?|1 hr)\b')
+  explanation:
+    elements:
+    - type: context
+      text: |
+        `status.certificate` contains the PEM certificate **base64-encoded again** (the API stores bytes),
+        hence the double handling:
+
+        ```
+        kubectl get csr jane -o jsonpath='{.status.certificate}' | base64 -d > jane.crt
+        ```
+
+        The CSR object is **not** a permanent record. Approved/issued and denied CSRs are removed by the
+        garbage collector after about an hour; pending ones after about a day. Extract the certificate
+        promptly (it keeps working even after the CSR object is gone — validity is a property of the
+        certificate and the CA, not of the object).
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/reference/access-authn-authz/certificate-signing-requests/
+        text: Certificate Signing Requests
+      - url: https://kubernetes.io/docs/tasks/tls/managing-tls-in-a-cluster/
+        text: Manage TLS Certificates in a Cluster
+- title: Turning the Certificate into a kubeconfig User
+  category: Using the Certificate
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      `jane.crt` (signed by the cluster) and `jane.key` are in the current directory. Add Jane to your
+      kubeconfig so that `kubectl` can authenticate as her. The cluster entry in the kubeconfig is named
+      `kubernetes`, and the files should be **embedded** in the kubeconfig rather than referenced by
+      path, so the kubeconfig can be copied to Jane's laptop on its own.
+  - type: question
+    question:
+      questionType: command
+      header: Add the credentials for the user jane to the kubeconfig.
+      hint: Credentials are a separate kubeconfig entry type from clusters and contexts. Embedding is controlled by a dedicated
+        flag.
+      correctAnswerInfo: Without embedding, the kubeconfig stores only the paths to the files, and breaks as soon as it is
+        moved to another machine.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: config
+        - name: set-credentials
+        positionals:
+        - index: 0
+          value: jane
+        flags:
+        - name: client-key
+          required: true
+          value: jane.key
+        - name: client-certificate
+          required: true
+          value: jane.crt
+        - name: embed-certs
+          required: true
+          boolean: true
+  - type: context
+    text: |
+      A kubeconfig **user** by itself is not usable. You also need a **context** that combines a cluster
+      with that user. Create one named `jane` for the cluster `kubernetes` and the user `jane`.
+  - type: question
+    question:
+      questionType: command
+      header: Create the context.
+      hint: A context ties together a cluster entry and a user entry (and optionally a default namespace).
+      command:
+        executable: kubectl
+        subcommands:
+        - name: config
+        - name: set-context
+        positionals:
+        - index: 0
+          value: jane
+        flags:
+        - name: cluster
+          required: true
+          value: kubernetes
+        - name: user
+          required: true
+          value: jane
+        - name: namespace
+          value: dev
+  - type: question
+    question:
+      questionType: command
+      header: Make jane the active context for all following kubectl commands.
+      hint: Switching the active context has its own config sub-command.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: config
+        - name: use-context
+        positionals:
+        - index: 0
+          value: jane
+  - type: manifest
+    header: $ kubectl config use-context jane
+    content: |
+      Switched to context "jane".
+  explanation:
+    elements:
+    - type: context
+      text: |
+        The kubeconfig has three kinds of entries:
+
+        | Entry | Created with | Holds |
+        |---|---|---|
+        | cluster | `set-cluster` | API server URL and CA |
+        | user | `set-credentials` | the client certificate and key (or a token) |
+        | context | `set-context` | a (cluster, user, namespace) triple |
+
+        `--embed-certs=true` copies the base64 of the files into the kubeconfig
+        (`client-certificate-data`, `client-key-data`). You can also leave the active context alone and
+        pass `--context jane` per command, which is safer when you are working as an administrator.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/tasks/access-application-cluster/configure-access-multiple-clusters/
+        text: Configure Access to Multiple Clusters
+      - url: https://kubernetes.io/docs/tasks/administer-cluster/certificates/
+        text: Generate Certificates Manually
+- title: 'Authorisation: A Role and a Binding for the User'
+  category: Using the Certificate
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Authentication succeeds now — but a user with no RBAC bindings can do nothing. Jane (user `jane`
+      from the certificate's CN) should be able to **get, list and watch Pods** in the namespace `dev`,
+      and nothing else.
+
+      First, the permissions themselves: a namespaced Role named `pod-reader` in `dev`.
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: role-v1
+      header: Write the Role manifest.
+      hint: Pods belong to the core API group, which is written as an empty string.
+      correctAnswerInfo: 'apiGroups: [''''] selects the core group. The verbs list should only contain read verbs here: least
+        privilege.'
+      cel: manifest.rules.size() == 1 && manifest.rules[0].verbs.exists(v, v == 'get') && manifest.rules[0].verbs.exists(v,
+        v == 'list') && manifest.rules[0].verbs.all(v, v in ['get', 'list', 'watch'])
+      expectedFields:
+      - path: metadata.name
+        expectedValue: pod-reader
+      - path: metadata.namespace
+        expectedValue: dev
+      - path: rules.0.apiGroups
+        expectedValue:
+        - ''
+      - path: rules.0.resources
+        expectedValue:
+        - pods
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: rolebinding-v1
+      header: Now bind that Role to the user jane in the same namespace. Name the RoleBinding jane-pod-reader.
+      hint: The subject's name must match the certificate's CN exactly, and users and groups are different subject kinds.
+      correctAnswerInfo: A RoleBinding only grants permissions inside its own namespace, even when it refers to a ClusterRole.
+      expectedFields:
+      - path: metadata.name
+        expectedValue: jane-pod-reader
+      - path: metadata.namespace
+        expectedValue: dev
+      - path: subjects.0.kind
+        expectedValue: User
+      - path: subjects.0.name
+        expectedValue: jane
+      - path: roleRef.kind
+        expectedValue: Role
+      - path: roleRef.name
+        expectedValue: pod-reader
+      - path: roleRef.apiGroup
+        expectedValue: rbac.authorization.k8s.io
+  explanation:
+    elements:
+    - type: context
+      text: |
+        ```yaml
+        subjects:
+        - kind: User
+          name: jane                       # exactly the certificate's CN
+          apiGroup: rbac.authorization.k8s.io
+        roleRef:
+          kind: Role
+          name: pod-reader
+          apiGroup: rbac.authorization.k8s.io
+        ```
+
+        `roleRef` is **immutable**: to bind a different role you delete and re-create the binding.
+        Subject names are **case-sensitive** and there is no validation that the user exists — a typo
+        silently grants nothing. (Equivalent imperative form:
+        `kubectl create rolebinding jane-pod-reader --role=pod-reader --user=jane -n dev`.)
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/reference/access-authn-authz/rbac/
+        text: Using RBAC Authorization
+- title: 'Authorisation: Granting Access to a Group'
+  category: Using the Certificate
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Policy changed: instead of binding individuals, **everyone whose certificate carries the
+      organization `developers`** (Jane and anyone who joins later) must get read-only access to the
+      namespace `dev` through the built-in ClusterRole `view`. No per-user bindings.
+
+      Name the binding `developers-view`.
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: rolebinding-v1
+      header: Write the RoleBinding manifest.
+      hint: A certificate's Organization values are groups. A ClusterRole can be granted inside a single namespace via a RoleBinding.
+      correctAnswerInfo: Binding a ClusterRole with a RoleBinding limits its effect to the binding's namespace — a common
+        way to reuse the built-in view, edit and admin roles.
+      expectedFields:
+      - path: metadata.name
+        expectedValue: developers-view
+      - path: metadata.namespace
+        expectedValue: dev
+      - path: subjects.0.kind
+        expectedValue: Group
+      - path: subjects.0.name
+        expectedValue: developers
+      - path: roleRef.kind
+        expectedValue: ClusterRole
+      - path: roleRef.name
+        expectedValue: view
+      - path: roleRef.apiGroup
+        expectedValue: rbac.authorization.k8s.io
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Because the group comes from the certificate's `O` values, access can be managed **at issuance
+        time**: anyone given a certificate with `O=developers` is automatically covered by this binding,
+        and anyone without it is not.
+
+        Two details:
+
+        - A **RoleBinding that references a ClusterRole** grants those permissions only inside the
+          RoleBinding's namespace. A `ClusterRoleBinding` would grant them cluster-wide.
+        - There is no group object in Kubernetes: nothing validates that `developers` exists, and a
+          misspelt group name (or wrong case) silently matches nobody.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/reference/access-authn-authz/rbac/
+        text: Using RBAC Authorization
+- title: Testing the New Identity
+  category: Using the Certificate
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      You are `kubernetes-admin`. Before telling Jane she is done, test her access. The Role
+      `pod-reader` and the RoleBinding `jane-pod-reader` exist in `dev`; the group binding
+      `developers-view` does too.
+  - type: question
+    question:
+      questionType: command
+      header: Ask the API server whether the user jane may list Pods in the namespace dev, by impersonating her.
+      hint: One of the auth sub-commands answers yes/no questions about permissions; a global flag lets you act as another
+        user.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: auth
+        - name: can-i
+        positionals:
+        - index: 0
+          value: list
+        - index: 1
+          oneOf:
+          - pods
+          - pod
+          - po
+        flags:
+        - name: as
+          required: true
+          value: jane
+        - name: namespace
+          short: n
+          required: true
+          value: dev
+  - type: manifest
+    header: $ kubectl auth can-i list pods --as jane -n dev
+    content: |
+      yes
+  - type: context
+    text: |
+      Now test the **group-based** permission for a person who has no user binding at all. `newhire` has
+      a certificate with the organization `developers`. Ask whether `newhire`, acting as a member of the
+      group `developers`, may get Pods in `dev`.
+  - type: question
+    question:
+      questionType: command
+      header: Run the group-aware check.
+      hint: Impersonating a user does not add that user's groups; you must name them. There is a flag for that.
+      correctAnswerInfo: '--as-group can only be used together with --as. Group memberships are not looked up anywhere: you
+        assert them.'
+      command:
+        executable: kubectl
+        subcommands:
+        - name: auth
+        - name: can-i
+        positionals:
+        - index: 0
+          value: get
+        - index: 1
+          oneOf:
+          - pods
+          - pod
+          - po
+        flags:
+        - name: as
+          required: true
+          value: newhire
+        - name: as-group
+          required: true
+          value: developers
+        - name: namespace
+          short: n
+          required: true
+          value: dev
+  - type: manifest
+    header: $ kubectl auth can-i get pods --as newhire --as-group developers -n dev
+    content: |
+      yes
+  - type: question
+    question:
+      questionType: command
+      header: 'Finally, use the real identity: list the Pods in dev through the jane context instead of impersonating.'
+      hint: A global flag selects which kubeconfig context a single command uses.
+      correctAnswerInfo: 'This exercises the whole chain: the certificate is accepted, the CN and O map to jane and developers,
+        and RBAC allows the request.'
+      command:
+        executable: kubectl
+        subcommands:
+        - name: get
+        positionals:
+        - index: 0
+          oneOf:
+          - pods
+          - pod
+          - po
+        flags:
+        - name: context
+          required: true
+          value: jane
+        - name: namespace
+          short: n
+          required: true
+          value: dev
+  - type: manifest
+    header: $ kubectl get pods --context jane -n dev
+    content: |
+      NAME        READY   STATUS    RESTARTS   AGE
+      web-7d4b9   1/1     Running   0          2h
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Two different tests:
+
+        - **Impersonation** (`--as`, `--as-group`) tests *authorisation* only: "if this identity arrived,
+          would RBAC allow it?" It cannot tell you whether the certificate itself works.
+        - **Using the context** (`--context jane`) is an end-to-end test of the certificate **and** RBAC.
+
+        A useful third view: `kubectl auth can-i --list --as jane -n dev` prints everything the identity
+        may do in that namespace. Remember that `--as` does **not** grant the user's groups: a binding to
+        a group is only seen when you pass `--as-group` as well.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/reference/access-authn-authz/rbac/
+        text: Using RBAC Authorization
+      - url: https://kubernetes.io/docs/reference/access-authn-authz/authorization/#checking-api-access
+        text: Checking API access
+- title: There Is No Revocation
+  category: Using the Certificate
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Jane's laptop was stolen. Her private key and certificate (valid for another 29 days) must be
+      considered compromised. Kubernetes has **no certificate revocation list** and no way to mark a
+      single certificate invalid.
+
+      Cut off her access. In namespace `dev`, her only direct grant is the RoleBinding
+      `jane-pod-reader`.
+  - type: question
+    question:
+      questionType: command
+      header: Remove the RoleBinding that grants user jane access.
+      hint: The certificate itself stays valid; what you can remove is what it is allowed to do.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: delete
+        positionals:
+        - index: 0
+          oneOf:
+          - rolebinding
+          - rolebindings
+          - rolebinding.rbac.authorization.k8s.io
+        - index: 1
+          value: jane-pod-reader
+        flags:
+        - name: namespace
+          short: n
+          required: true
+          value: dev
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: remove the group binding
+      header: Her certificate also carries the group developers, which a different binding covers (developers-view). What
+        must you do about that, besides deleting the RoleBinding above? Answer in a few words.
+      hint: Authorisation follows the identity in the certificate, and a group grants access to every holder of that group.
+      correctAnswerInfo: Deleting the group binding would also remove access for every other developer, so in practice you
+        would re-issue their certificates with a different organization, or accept the temporary loss of access for the group.
+      cel: answer.lowerAscii().matches(r'remove|delete|revoke|unbind|drop') && answer.lowerAscii().matches(r'group|developers|developers-view|binding')
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: rotate the CA
+      header: What is the only way to make every certificate signed by the cluster CA stop working at once?
+      correctAnswerInfo: Every client certificate is trusted because it chains to the CA named in --client-ca-file. Replacing
+        that CA invalidates them all, which is why it is a last resort.
+      cel: answer.lowerAscii().matches(r'\b(rotate|replace|regenerate|change|renew|new)\b.*\bca\b|\bca\b.*\b(rotat|replac|regenerat|renew)')
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Why this is a classic CKS point:
+
+        - The API server **only** verifies the certificate's signature, validity period and key usages. It
+          has no CRL or OCSP check, and no record of which certificates it issued once the CSR object is
+          garbage-collected.
+        - Therefore the identity inside a leaked certificate stays *authenticated* until the certificate
+          expires. Your lever is **authorisation**: remove every Role/ClusterRole binding that refers to
+          that user (CN) **and** to any group in its `O` values.
+        - Short certificate lifetimes (`expirationSeconds`) are the real mitigation.
+        - If the leaked certificate is a powerful one (for example `O=system:masters`, which has a
+          built-in binding you cannot sensibly remove), the only fix is rotating the CA.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/reference/access-authn-authz/certificate-signing-requests/
+        text: Certificate Signing Requests
+      - url: https://kubernetes.io/docs/reference/access-authn-authz/rbac/
+        text: Using RBAC Authorization
+- title: Signing with the Cluster CA by Hand
+  category: Using the Certificate
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The API is unavailable (it is being repaired), but an operator needs a client certificate **now**.
+      You have `jane.csr` and root access to the control plane, where the cluster CA lives in the
+      default kubeadm location. Create `jane.crt`, valid for **30 days**, signed directly with the
+      CA's certificate and key, creating the CA's serial-number file if it does not exist.
+  - type: question
+    question:
+      questionType: command
+      header: Sign the request.
+      hint: The x509 utility can act as a CA when you give it a request, a CA certificate and the CA's private key. Note the
+        capitalisation of the CA-related options.
+      correctAnswerInfo: -CAcreateserial creates ca.srl next to the CA certificate when it does not exist, which is needed
+        the first time you sign with that CA.
+      command:
+        executable: openssl
+        subcommands:
+        - name: x509
+        flags:
+        - name: req
+          singleDash: true
+          required: true
+          boolean: true
+        - name: in
+          singleDash: true
+          required: true
+          value: jane.csr
+        - name: CA
+          singleDash: true
+          required: true
+          value: /etc/kubernetes/pki/ca.crt
+        - name: CAkey
+          singleDash: true
+          required: true
+          value: /etc/kubernetes/pki/ca.key
+        - name: CAcreateserial
+          singleDash: true
+          required: true
+          boolean: true
+        - name: out
+          singleDash: true
+          required: true
+          value: jane.crt
+        - name: days
+          singleDash: true
+          required: true
+          value: '30'
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: /etc/kubernetes/pki/ca.key
+      header: Which single file, among those you just used, must be protected most carefully and must never leave the control
+        plane?
+      correctAnswerInfo: Anyone with the CA private key can mint a certificate for any identity, including O=system:masters.
+      cel: answer.trim() in ['/etc/kubernetes/pki/ca.key', 'ca.key']
+  explanation:
+    elements:
+    - type: context
+      text: |
+        This works because the API server trusts whatever chains to `/etc/kubernetes/pki/ca.crt`. But it
+        **bypasses everything the CSR API gives you**:
+
+        - no approval step and no check of the requested subject,
+        - no audit trail (the CSR object and its events are the record of who asked and who approved),
+        - the CA private key is used on a machine and shell session of your choosing, rather than only by
+          the controller-manager.
+
+        That is why the CSR API is the preferred route, and manual signing is a break-glass procedure.
+        The certificate created here also has no key-usage extension unless you add one with `-extfile`.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/tasks/administer-cluster/certificates/
+        text: Generate Certificates Manually
+      - url: https://kubernetes.io/docs/reference/access-authn-authz/certificate-signing-requests/
+        text: Certificate Signing Requests
+- title: Which Names Is the API Server Certificate Valid For?
+  category: Inspecting Certificates
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Clients validate the API server's serving certificate against the name or IP address they connect
+      to. That list is the certificate's **Subject Alternative Names (SANs)**. The API server's serving
+      certificate is `/etc/kubernetes/pki/apiserver.crt`.
+  - type: question
+    question:
+      questionType: command
+      header: Print only the Subject Alternative Names of that certificate, without dumping the whole certificate.
+      hint: The x509 utility can print selected extensions by name; the extension you want is named after the 'alternative'
+        part.
+      command:
+        executable: openssl
+        subcommands:
+        - name: x509
+        flags:
+        - name: in
+          singleDash: true
+          required: true
+          value: /etc/kubernetes/pki/apiserver.crt
+        - name: noout
+          singleDash: true
+          required: true
+          boolean: true
+        - name: ext
+          singleDash: true
+          required: true
+          regex: ^subjectAltName$
+  - type: manifest
+    header: $ openssl x509 -in /etc/kubernetes/pki/apiserver.crt -noout -ext subjectAltName
+    content: |
+      X509v3 Subject Alternative Name:
+          DNS:controlplane, DNS:kubernetes, DNS:kubernetes.default, DNS:kubernetes.default.svc, DNS:kubernetes.default.svc.cluster.local, IP Address:10.96.0.1, IP Address:10.0.0.10
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: 'no'
+      header: Clients will start to reach the API server through the name k8s-api.corp.example. Would the current certificate
+        be accepted for that name? (yes or no)
+      hint: Compare the name with the DNS and IP entries in the list.
+      correctAnswerInfo: 'A hostname must appear in the SAN list (or be matched by a wildcard) — the subject''s CN is not
+        used by modern clients. To add the name you must re-issue the certificate (for kubeadm: certSANs in the ClusterConfiguration,
+        then regenerate).'
+      cel: answer.lowerAscii().trim() in ['no', 'n']
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: 10.96.0.1
+      header: Which IP address in that list is the in-cluster Service address of the kubernetes Service (the first IP of the
+        Service CIDR)?
+      correctAnswerInfo: Pods reach the API through https://kubernetes.default.svc, which resolves to this ClusterIP. If it
+        were missing from the SANs, in-cluster clients would get TLS errors.
+      cel: answer.trim() == '10.96.0.1'
+  explanation:
+    elements:
+    - type: context
+      text: |
+        The SANs of the API server certificate must cover **every name and address clients use**: the
+        node hostname, the node IP, the in-cluster names (`kubernetes`, `kubernetes.default`,
+        `kubernetes.default.svc`, `kubernetes.default.svc.cluster.local`), the Service ClusterIP, and any
+        load balancer name or IP.
+
+        `openssl x509 -noout -ext subjectAltName` prints exactly that extension (`-text` prints
+        everything). A missing SAN produces the familiar error
+        `x509: certificate is valid for ..., not <what you connected to>`.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/setup/best-practices/certificates/
+        text: PKI certificates and requirements
+      - url: https://docs.openssl.org/3.0/man1/openssl-x509/
+        text: openssl-x509 manual page
+- title: Reading Issuer and Expiry
+  category: Inspecting Certificates
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      `kubectl` suddenly fails on `controlplane`:
+
+      ```
+      $ date
+      Mon Oct 19 09:12:03 UTC 2026
+      $ kubectl get nodes
+      Unable to connect to the server: tls: failed to verify certificate: x509: certificate has expired or is not yet valid
+      ```
+
+      You suspect the API server's serving certificate, `/etc/kubernetes/pki/apiserver.crt`.
+  - type: question
+    question:
+      questionType: command
+      header: Print only the issuer of that certificate.
+      hint: The x509 utility has one output flag for each field; the one you need is named after the signer.
+      command:
+        executable: openssl
+        subcommands:
+        - name: x509
+        flags:
+        - name: in
+          singleDash: true
+          required: true
+          value: /etc/kubernetes/pki/apiserver.crt
+        - name: noout
+          singleDash: true
+          required: true
+          boolean: true
+        - name: issuer
+          singleDash: true
+          required: true
+          boolean: true
+  - type: manifest
+    header: $ openssl x509 -in /etc/kubernetes/pki/apiserver.crt -noout -issuer
+    content: |
+      issuer=CN = kubernetes
+  - type: question
+    question:
+      questionType: command
+      header: Print only the date on which the certificate stops being valid.
+      hint: There is an end-date flag, and a combined flag that prints both ends of the validity period.
+      command:
+        executable: openssl
+        subcommands:
+        - name: x509
+        flags:
+        - name: in
+          singleDash: true
+          required: true
+          value: /etc/kubernetes/pki/apiserver.crt
+        - name: noout
+          singleDash: true
+          required: true
+          boolean: true
+        - name: enddate
+          singleDash: true
+          boolean: true
+        - name: dates
+          singleDash: true
+          boolean: true
+      cel: '''enddate'' in flags || ''dates'' in flags'
+  - type: manifest
+    header: $ openssl x509 -in /etc/kubernetes/pki/apiserver.crt -noout -dates
+    content: |
+      notBefore=Oct 15 08:15:42 2025 GMT
+      notAfter=Oct 15 08:15:42 2026 GMT
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: 'no'
+      header: Given the date on the machine, is the certificate currently valid? (yes or no)
+      correctAnswerInfo: notAfter is October 15, four days before 'now'. A certificate is only valid between notBefore and
+        notAfter; the check also depends on the clock of the machine doing it.
+      cel: answer.lowerAscii().trim() in ['no', 'n', 'expired']
+  explanation:
+    elements:
+    - type: context
+      text: |
+        The focused flags save you from reading the whole `-text` dump:
+
+        | Flag | Prints |
+        |---|---|
+        | `-subject` | who the certificate is for |
+        | `-issuer` | who signed it |
+        | `-startdate` / `-enddate` / `-dates` | `notBefore` / `notAfter` / both |
+        | `-serial` | the serial number |
+        | `-fingerprint` | a digest of the certificate |
+
+        `-noout` stops OpenSSL from also re-printing the PEM. A kubeadm control-plane certificate is valid
+        for one year by default, so an expired `apiserver.crt` on a cluster nobody has upgraded for a year
+        is a very common failure — the fix is in the kubeadm lifecycle scenario.
+    - type: references
+      links:
+      - url: https://docs.openssl.org/3.0/man1/openssl-x509/
+        text: openssl-x509 manual page
+      - url: https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/kubeadm-certs/
+        text: Certificate Management with kubeadm
+- title: Client or Server Certificate?
+  category: Inspecting Certificates
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Two certificates live in `/etc/kubernetes/pki/`: `apiserver.crt` (the API server's serving
+      certificate) and `apiserver-kubelet-client.crt` (what the API server uses when it connects to
+      kubelets). A tool complains about "unsuitable key usage". A certificate's **extended key usage**
+      says which role it may play.
+  - type: question
+    question:
+      questionType: command
+      header: Print only the extended key usage of the API server's serving certificate.
+      hint: Do not confuse it with the plain key usage extension; the one you want has 'extended' in its name.
+      command:
+        executable: openssl
+        subcommands:
+        - name: x509
+        flags:
+        - name: in
+          singleDash: true
+          required: true
+          value: /etc/kubernetes/pki/apiserver.crt
+        - name: noout
+          singleDash: true
+          required: true
+          boolean: true
+        - name: ext
+          singleDash: true
+          required: true
+          regex: ^extendedKeyUsage$
+  - type: manifest
+    header: $ openssl x509 -in /etc/kubernetes/pki/apiserver.crt -noout -ext extendedKeyUsage
+    content: "X509v3 Extended Key Usage: \n    TLS Web Server Authentication\n"
+  - type: manifest
+    header: $ openssl x509 -in /etc/kubernetes/pki/apiserver-kubelet-client.crt -noout -ext extendedKeyUsage
+    content: "X509v3 Extended Key Usage: \n    TLS Web Client Authentication\n"
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: apiserver-kubelet-client.crt
+      header: Which of the two files is a client certificate (answer with the file name only)?
+      hint: 'Read the usage text: which one says Client?'
+      cel: answer.trim() == 'apiserver-kubelet-client.crt'
+  explanation:
+    elements:
+    - type: context
+      text: |
+        The **extended key usage** (EKU) decides the role a certificate may take in TLS:
+
+        | EKU text | Role | Kubernetes examples |
+        |---|---|---|
+        | `TLS Web Server Authentication` | server certificate | `apiserver.crt`, kubelet serving, etcd server |
+        | `TLS Web Client Authentication` | client certificate | users (`kube-apiserver-client` signer), `apiserver-kubelet-client.crt`, `apiserver-etcd-client.crt` |
+
+        This is also what the CSR `usages` field controls: `client auth` → client EKU, `server auth` →
+        server EKU. A signer will refuse (or ignore) a CSR whose usages it does not allow — one of the
+        reasons a CSR stays `Approved` but never `Issued`.
+    - type: references
+      links:
+      - url: https://docs.openssl.org/3.0/man1/openssl-x509/
+        text: openssl-x509 manual page
+      - url: https://kubernetes.io/docs/reference/access-authn-authz/certificate-signing-requests/
+        text: Certificate Signing Requests
+- title: Does the Certificate Chain to the Right CA?
+  category: Inspecting Certificates
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Jane's certificate `jane.crt` should be signed by the cluster CA `/etc/kubernetes/pki/ca.crt`.
+      Confirm that, using OpenSSL's chain verification.
+  - type: question
+    question:
+      questionType: command
+      header: Verify jane.crt against the cluster CA.
+      hint: The verify sub-command takes the trusted CA with a capitalised file option, then the certificate to check as the
+        last argument.
+      command:
+        executable: openssl
+        subcommands:
+        - name: verify
+        positionals:
+        - index: 0
+          value: jane.crt
+        flags:
+        - name: CAfile
+          singleDash: true
+          required: true
+          value: /etc/kubernetes/pki/ca.crt
+  - type: manifest
+    header: $ openssl verify -CAfile /etc/kubernetes/pki/ca.crt jane.crt
+    content: |
+      jane.crt: OK
+  - type: context
+    text: |
+      Next, the certificate the API server uses to talk to **etcd**,
+      `/etc/kubernetes/pki/apiserver-etcd-client.crt`. Someone verified it against the cluster CA and got
+      an error:
+  - type: manifest
+    header: $ openssl verify -CAfile /etc/kubernetes/pki/ca.crt /etc/kubernetes/pki/apiserver-etcd-client.crt
+    content: |
+      O = system:masters, CN = kube-apiserver-etcd-client
+      error 20 at 0 depth lookup: unable to get local issuer certificate
+      error /etc/kubernetes/pki/apiserver-etcd-client.crt: verification failed
+  - type: question
+    question:
+      questionType: command
+      header: The certificate is fine; the wrong CA was used. Verify it against the CA that actually issued it (kubeadm keeps
+        etcd's CA in a separate directory).
+      hint: etcd has its own CA, in a subdirectory of the PKI directory.
+      command:
+        executable: openssl
+        subcommands:
+        - name: verify
+        positionals:
+        - index: 0
+          value: /etc/kubernetes/pki/apiserver-etcd-client.crt
+        flags:
+        - name: CAfile
+          singleDash: true
+          required: true
+          value: /etc/kubernetes/pki/etcd/ca.crt
+  - type: manifest
+    header: $ openssl verify -CAfile /etc/kubernetes/pki/etcd/ca.crt /etc/kubernetes/pki/apiserver-etcd-client.crt
+    content: |
+      /etc/kubernetes/pki/apiserver-etcd-client.crt: OK
+  explanation:
+    elements:
+    - type: context
+      text: |
+        `openssl verify -CAfile <ca.crt> <cert>` checks the signature chain, the validity dates and (with
+        `-purpose` options) the usage. `error 20 ... unable to get local issuer certificate` means "I could
+        not find the issuer of this certificate in the CA file you gave me" — usually the wrong CA.
+
+        kubeadm runs **several independent CAs**:
+
+        | CA | Directory | Signs |
+        |---|---|---|
+        | cluster CA | `/etc/kubernetes/pki/ca.crt` | API server, kubelet client, users, ... |
+        | etcd CA | `/etc/kubernetes/pki/etcd/ca.crt` | etcd server/peer, API server → etcd client |
+        | front-proxy CA | `/etc/kubernetes/pki/front-proxy-ca.crt` | aggregation layer |
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/setup/best-practices/certificates/
+        text: PKI certificates and requirements
+      - url: https://docs.openssl.org/3.0/man1/openssl-verify/
+        text: openssl-verify manual page
+- title: Does This Key Belong to This Certificate?
+  category: Inspecting Certificates
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Someone renewed `ravi.crt` and left two private keys in the directory: `ravi-old.key` and
+      `ravi-new.key`. A certificate and its key belong together if they contain the **same public key**.
+      You will compare the public key found in the certificate with the public key derived from a private
+      key.
+  - type: question
+    question:
+      questionType: command
+      header: Print the public key contained in the certificate ravi.crt (PEM, without the certificate itself).
+      hint: The certificate utility has an output flag named after the public key.
+      command:
+        executable: openssl
+        subcommands:
+        - name: x509
+        flags:
+        - name: in
+          singleDash: true
+          required: true
+          value: ravi.crt
+        - name: noout
+          singleDash: true
+          required: true
+          boolean: true
+        - name: pubkey
+          singleDash: true
+          required: true
+          boolean: true
+  - type: question
+    question:
+      questionType: command
+      header: Print the public key derived from the private key ravi-new.key.
+      hint: The key-handling utility is named after what it handles, and it needs a flag that outputs the public half.
+      command:
+        executable: openssl
+        subcommands:
+        - name: pkey
+        flags:
+        - name: in
+          singleDash: true
+          required: true
+          value: ravi-new.key
+        - name: pubout
+          singleDash: true
+          required: true
+          boolean: true
+  - type: context
+    text: |
+      Comparing long PEM blocks by eye is error-prone, so you hashed each public key's DER form:
+  - type: table
+    style: terminal
+    columns:
+    - SOURCE
+    - SHA-256 OF PUBLIC KEY
+    rows:
+    - - ravi.crt
+      - 6f3a91c2d8e4b705a1c6f20e93d7b4a85c1e0f62d9a37b48e5c10f6a2d8b9e34
+    - - ravi-old.key
+      - b81d4e07a93c25f6e1d08b7a4c39f52e6a0d1c85b47e9f20d3a6c18e5b9f7042
+    - - ravi-new.key
+      - 6f3a91c2d8e4b705a1c6f20e93d7b4a85c1e0f62d9a37b48e5c10f6a2d8b9e34
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: ravi-new.key
+      header: Which key file belongs to ravi.crt? (file name only)
+      hint: Matching digests mean identical public keys.
+      cel: answer.trim() == 'ravi-new.key'
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Two equivalent ways to test a key/certificate pair:
+
+        ```
+        openssl x509 -noout -pubkey -in cert.crt        # public key from the certificate
+        openssl pkey -in key.key -pubout                 # public key from the private key
+        ```
+
+        The two outputs must be **identical**. For RSA you can also compare the moduli
+        (`openssl x509 -noout -modulus -in cert.crt` against `openssl rsa -noout -modulus -in key.key`).
+        Typical symptoms of a mismatch are `tls: private key does not match public key` from the
+        control-plane components, or a kubeconfig user that is rejected as `Unauthorized`.
+    - type: references
+      links:
+      - url: https://docs.openssl.org/3.0/man1/openssl-x509/
+        text: openssl-x509 manual page
+      - url: https://kubernetes.io/docs/tasks/administer-cluster/certificates/
+        text: Generate Certificates Manually
+- title: Decoding a Certificate Inside a kubeconfig
+  category: Inspecting Certificates
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Jane's kubeconfig was created with embedded credentials, so there is no `.crt` file to inspect:
+      her certificate is stored base64-encoded in the field `client-certificate-data` of the user named
+      `jane`. Show that certificate's **subject** and **expiry date** with a single command line that
+      reads the kubeconfig through kubectl (including the values that kubectl normally hides), extracts
+      that one field, decodes it and hands it to OpenSSL.
+  - type: question
+    question:
+      questionType: command
+      header: Write the command line.
+      hint: kubectl redacts certificate data in 'config view' unless you ask for the raw values. After decoding, openssl reads
+        the certificate from standard input.
+      correctAnswerInfo: --raw prevents kubectl from replacing the data with DATA+OMITTED; the jsonpath filter selects the
+        user by name; base64 -d turns the PEM text back into a certificate for openssl x509.
+      command:
+        executable: kubectl
+        strictness: permissive
+        subcommands:
+        - name: config
+        - name: view
+        flags:
+        - name: raw
+          required: true
+          boolean: true
+      cel: answer.matches(r'-o\s*=?\s*[\x27"]?jsonpath=?.*client-certificate-data') && answer.matches(r'\|\s*base64\s+(-d|--decode|-D)\s*\|\s*openssl\s+x509\b')
+        && answer.matches(r'\|\s*openssl\s+x509\b[^|]*-subject') && answer.matches(r'\|\s*openssl\s+x509\b[^|]*-(enddate|dates)')
+        && answer.matches(r'\|\s*openssl\s+x509\b[^|]*-noout')
+  - type: manifest
+    header: (output)
+    content: |
+      subject=CN = jane, O = developers
+      notAfter=Oct 20 09:21:07 2026 GMT
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: 'no'
+      header: Today is October 19, 2026. Will this certificate still be valid in a week? (yes or no)
+      correctAnswerInfo: It expires on October 20, so Jane has about a day left. Short-lived certificates make a stolen credential
+        less valuable but need regular reissue.
+      cel: answer.lowerAscii().trim() in ['no', 'n']
+  explanation:
+    elements:
+    - type: context
+      text: |
+        A kubeconfig with `--embed-certs=true` stores `client-certificate-data` and `client-key-data`
+        (base64). To audit who a kubeconfig really authenticates as, and until when:
+
+        ```
+        kubectl config view --raw -o jsonpath='{.users[?(@.name=="jane")].user.client-certificate-data}' \
+          | base64 -d | openssl x509 -noout -subject -enddate
+        ```
+
+        Without `--raw`, kubectl prints `DATA+OMITTED`. The same pipeline with `client-key-data` would
+        reveal the private key — handle that output with care.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/reference/kubectl/generated/kubectl_config/kubectl_config_view/
+        text: kubectl config view
+- title: What Certificate Is the Endpoint Really Serving?
+  category: Inspecting Certificates
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The files on disk say one thing; what a client actually receives from the live API server on
+      `controlplane:6443` may differ (for example, if the server was not restarted after a renewal).
+      From a shell, show the **subject** and the **validity dates** of the certificate that endpoint
+      presents, by opening a TLS connection with OpenSSL and piping what it receives into the x509
+      utility. Do not let the connection wait for input.
+  - type: question
+    question:
+      questionType: command
+      header: Write the command line.
+      hint: s_client prints the server certificate in PEM among other text, then waits for you to type. Redirecting input
+        from the null device ends the session immediately.
+      correctAnswerInfo: </dev/null closes standard input so s_client exits after the handshake; x509 then parses the first
+        PEM block it finds in the output.
+      command:
+        executable: openssl
+        strictness: permissive
+        subcommands:
+        - name: s_client
+        flags:
+        - name: connect
+          singleDash: true
+          required: true
+          regex: ^[\w.-]+:6443$
+      cel: answer.matches(r'</?\s*/dev/null') && answer.matches(r'\|\s*openssl\s+x509\b[^|]*-noout') && answer.matches(r'\|\s*openssl\s+x509\b[^|]*-subject')
+        && answer.matches(r'\|\s*openssl\s+x509\b[^|]*-(dates|enddate)')
+  - type: manifest
+    header: (output)
+    content: |
+      subject=CN = kube-apiserver
+      notBefore=Oct 15 08:15:42 2025 GMT
+      notAfter=Oct 15 08:15:42 2026 GMT
+  explanation:
+    elements:
+    - type: context
+      text: |
+        `openssl s_client -connect host:port` performs a TLS handshake and prints the certificate chain
+        the server presented. Piping its output into `openssl x509` extracts the first certificate in it.
+        The result is **what the endpoint really serves right now**, which is the ground truth when a file
+        on disk was replaced but the process still holds the old certificate in memory — typical after
+        `kubeadm certs renew` without restarting the control-plane static Pods.
+
+        `-servername <name>` selects the SNI name, and `-showcerts` prints the full chain.
+    - type: references
+      links:
+      - url: https://docs.openssl.org/3.0/man1/openssl-s_client/
+        text: openssl-s_client manual page
+- title: Where Do the Certificates Live?
+  category: Inspecting Certificates
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      On a kubeadm-built node, certificates sit at well-known locations. Give each directory as an
+      absolute path.
+  - type: question
+    question:
+      questionType: sequence
+      header: Where are these found?
+      hint: Two of the three live under /etc/kubernetes; the kubelet's state is under /var/lib.
+      steps:
+      - questionType: single-line
+        expectedAnswer: /etc/kubernetes/pki
+        header: 'The directory with the API server''s certificate and key, the cluster CA and the other control-plane certificates
+          (on a control-plane node):'
+        cel: answer.trim() in ['/etc/kubernetes/pki', '/etc/kubernetes/pki/']
+      - questionType: single-line
+        expectedAnswer: /etc/kubernetes/pki/etcd
+        header: 'The subdirectory of that directory with etcd''s CA and etcd''s own certificates:'
+        cel: answer.trim() in ['/etc/kubernetes/pki/etcd', '/etc/kubernetes/pki/etcd/']
+      - questionType: single-line
+        expectedAnswer: /var/lib/kubelet/pki
+        header: 'The directory holding a kubelet''s own certificates and keys (client and serving), on any node:'
+        cel: answer.trim() in ['/var/lib/kubelet/pki', '/var/lib/kubelet/pki/']
+  explanation:
+    elements:
+    - type: context
+      text: |
+        | Location | Contents |
+        |---|---|
+        | `/etc/kubernetes/pki/` | cluster CA, `apiserver.*`, `apiserver-kubelet-client.*`, `front-proxy-*`, `sa.*` (ServiceAccount signing key pair) |
+        | `/etc/kubernetes/pki/etcd/` | etcd CA, `server.*`, `peer.*`, `healthcheck-client.*` |
+        | `/etc/kubernetes/*.conf` | kubeconfigs (`admin.conf`, `controller-manager.conf`, `scheduler.conf`) with **embedded** client certificates |
+        | `/var/lib/kubelet/pki/` | `kubelet-client-current.pem` (symlink to the rotated client cert), `kubelet.crt`/`kubelet.key` (serving) |
+
+        The control-plane components are static Pods whose manifests, in `/etc/kubernetes/manifests/`,
+        mount `/etc/kubernetes/pki` as a hostPath.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/setup/best-practices/certificates/
+        text: PKI certificates and requirements
+- title: Cluster Certificate Lifecycle with kubeadm
+  category: Certificate Lifecycle
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The staging cluster was built with kubeadm almost a year ago. Today is October 19, 2026. You are on
+      its control-plane node and want an overview of how long every certificate that kubeadm manages is
+      still valid.
+  - type: question
+    question:
+      questionType: command
+      header: Show the expiration of all kubeadm-managed certificates.
+      hint: The 'certs' group of kubeadm has a sub-command for exactly this question.
+      command:
+        executable: kubeadm
+        subcommands:
+        - name: certs
+        - name: check-expiration
+  - type: manifest
+    header: $ kubeadm certs check-expiration
+    content: |
+      [check-expiration] Reading configuration from the "kubeadm-config" ConfigMap in namespace "kube-system"...
+      [check-expiration] Use 'kubeadm init phase upload-config --config your-config-file' to re-upload it.
+
+      CERTIFICATE                EXPIRES                  RESIDUAL TIME   CERTIFICATE AUTHORITY   EXTERNALLY MANAGED
+      admin.conf                 Oct 21, 2027 08:15 UTC   364d            ca                      no
+      apiserver                  Oct 22, 2026 08:15 UTC   2d              ca                      no
+      apiserver-etcd-client      Oct 21, 2027 08:15 UTC   364d            etcd-ca                 no
+      apiserver-kubelet-client   Oct 20, 2026 08:15 UTC   1d              ca                      no
+      controller-manager.conf    Oct 21, 2027 08:15 UTC   364d            ca                      no
+      etcd-healthcheck-client    Oct 21, 2027 08:15 UTC   364d            etcd-ca                 no
+      etcd-peer                  Oct 21, 2027 08:15 UTC   364d            etcd-ca                 no
+      etcd-server                Oct 21, 2027 08:15 UTC   364d            etcd-ca                 no
+      front-proxy-client         Oct 21, 2027 08:15 UTC   364d            front-proxy-ca          no
+      scheduler.conf             Oct 21, 2027 08:15 UTC   364d            ca                      no
+      super-admin.conf           Oct 21, 2027 08:15 UTC   364d            ca                      no
+
+      CERTIFICATE AUTHORITY   EXPIRES                  RESIDUAL TIME   EXTERNALLY MANAGED
+      ca                      Oct 18, 2035 08:15 UTC   9y              no
+      etcd-ca                 Oct 18, 2035 08:15 UTC   9y              no
+      front-proxy-ca          Oct 18, 2035 08:15 UTC   9y              no
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: apiserver-kubelet-client
+      header: Which certificate (name as shown in the first column) is the closest to expiring?
+      hint: Compare the residual time column.
+      cel: answer.trim() == 'apiserver-kubelet-client'
+  - type: question
+    question:
+      questionType: command
+      header: Renew only that certificate.
+      hint: The renew sub-command takes the certificate's name as shown in the table.
+      command:
+        executable: kubeadm
+        subcommands:
+        - name: certs
+        - name: renew
+        positionals:
+        - index: 0
+          value: apiserver-kubelet-client
+  - type: question
+    question:
+      questionType: command
+      header: Now renew every certificate that kubeadm manages in one go.
+      hint: There is a special argument that stands for every certificate.
+      command:
+        executable: kubeadm
+        subcommands:
+        - name: certs
+        - name: renew
+        positionals:
+        - index: 0
+          value: all
+  - type: manifest
+    header: $ kubeadm certs renew all  (excerpt)
+    content: |
+      certificate embedded in the kubeconfig file for the admin to use and for kubeadm itself renewed
+      certificate for serving the Kubernetes API renewed
+      certificate for the API server to connect to kubelet renewed
+
+      Done renewing certificates. You must restart the kube-apiserver, kube-controller-manager, kube-scheduler and etcd, so that they can use the new certificates.
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: restart the control plane static pods
+      header: What must be done before the control-plane components actually use the renewed certificates? Answer in a few
+        words.
+      hint: The files on disk have changed, but the running processes loaded the old ones at start.
+      correctAnswerInfo: Static Pods are restarted by briefly moving their manifests out of /etc/kubernetes/manifests (the
+        kubelet stops them) and back, or by restarting the container with crictl. Also copy the renewed admin.conf to ~/.kube/config.
+      cel: answer.lowerAscii().matches(r'restart|recreat|bounce|reload')
+  explanation:
+    elements:
+    - type: context
+      text: |
+        `kubeadm certs check-expiration` lists the certificates in the `pki` directory and those embedded
+        in the `*.conf` kubeconfigs. Client and serving certificates last **one year** unless renewed; the
+        CAs last ten.
+
+        - `kubeadm certs renew <name>` renews one; `kubeadm certs renew all` renews them all.
+        - Renewal rewrites files; **running** control-plane processes keep the old certificates in memory.
+          Restart the static Pods, then verify the live endpoint with `openssl s_client`.
+        - **kubeadm upgrades** renew these certificates automatically, which is why long-lived clusters
+          that are upgraded regularly rarely hit this.
+        - Certificates marked `EXTERNALLY MANAGED yes` (you supplied them yourself) are not renewed by
+          kubeadm.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/kubeadm-certs/
+        text: Certificate Management with kubeadm
+- title: Which API Server Flag Controls Which Certificate?
+  category: Certificate Lifecycle
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Certificates are wired into the kube-apiserver through command-line flags in its static Pod manifest.
+      For each symptom, name the flag you would check first (including the leading dashes).
+  - type: question
+    question:
+      questionType: sequence
+      header: Name the flag for each symptom.
+      hint: 'Match the role in each flag''s name: ''client-ca'' for validating clients, ''tls-cert'' for serving, ''kubelet-client''
+        for dialing kubelets, ''etcd-ca'' for etcd.'
+      steps:
+      - questionType: single-line
+        expectedAnswer: --client-ca-file
+        header: 'A user''s client certificate is rejected with ''x509: certificate signed by unknown authority''. Which flag
+          points to the CA that the API server uses to validate client certificates?'
+        cel: answer.trim() == '--client-ca-file'
+      - questionType: single-line
+        expectedAnswer: --tls-cert-file
+        header: kubectl complains that the API server's serving certificate is for the wrong name. Which flag sets the serving
+          certificate the API server presents?
+        cel: answer.trim() == '--tls-cert-file'
+      - questionType: single-line
+        expectedAnswer: --kubelet-client-certificate
+        header: kubectl logs and kubectl exec fail because kubelets reject the API server. Which flag sets the client certificate
+          the API server uses when it connects to kubelets?
+        cel: answer.trim() == '--kubelet-client-certificate'
+      - questionType: single-line
+        expectedAnswer: --etcd-cafile
+        header: The API server cannot verify etcd's serving certificate. Which flag names the CA that signed etcd's server
+          certificate?
+        cel: answer.trim() == '--etcd-cafile'
+  explanation:
+    elements:
+    - type: context
+      text: |
+        The certificate-related flags of `kube-apiserver` (all in `/etc/kubernetes/manifests/kube-apiserver.yaml`):
+
+        | Flag | Role |
+        |---|---|
+        | `--client-ca-file` | CA used to validate **client certificates** presented to the API server (users, kubelets, controllers) |
+        | `--tls-cert-file`, `--tls-private-key-file` | the API server's own **serving** certificate and key |
+        | `--kubelet-client-certificate`, `--kubelet-client-key` | credentials the API server uses to **connect to kubelets** |
+        | `--etcd-cafile`, `--etcd-certfile`, `--etcd-keyfile` | trust anchor and client credentials for **talking to etcd** |
+        | `--service-account-key-file`, `--service-account-signing-key-file` | ServiceAccount token verification and signing |
+
+        `--client-ca-file` is the one that decides which user certificates are trusted at all: every
+        certificate signed by that CA is accepted as an identity, which is why protecting the CA key and
+        approving only what you have inspected matters.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/setup/best-practices/certificates/
+        text: PKI certificates and requirements
+      - url: https://kubernetes.io/docs/reference/command-line-tools-reference/kube-apiserver/
+        text: kube-apiserver options
+- title: Kubelet Certificate Rotation and Serving Certificates
+  category: Certificate Lifecycle
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Two hardening goals for the kubelet on `node01`, whose configuration file is
+      `/var/lib/kubelet/config.yaml`:
+
+      1. The kubelet must **renew its own client certificate** automatically as it nears expiry.
+      2. The kubelet's **serving certificate** (the one on port 10250) must no longer be a self-signed
+         one that it generates itself: it must instead request a certificate from the cluster through
+         the CSR API.
+  - type: manifest
+    header: /var/lib/kubelet/config.yaml
+    content: |
+      apiVersion: kubelet.config.k8s.io/v1beta1
+      kind: KubeletConfiguration
+      authentication:
+        anonymous:
+          enabled: false
+        webhook:
+          enabled: true
+        x509:
+          clientCAFile: /etc/kubernetes/pki/ca.crt
+      authorization:
+        mode: Webhook
+      cgroupDriver: systemd
+      clusterDNS:
+      - 10.96.0.10
+      clusterDomain: cluster.local
+      containerRuntimeEndpoint: unix:///var/run/containerd/containerd.sock
+      staticPodPath: /etc/kubernetes/manifests
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: kubelet-config
+      header: Edit the kubelet configuration to achieve both goals. Submit the complete resulting file.
+      hint: 'Two separate boolean fields: one for the client certificate''s rotation, one for how the serving certificate
+        is obtained.'
+      correctAnswerInfo: rotateCertificates covers only the client certificate. serverTLSBootstrap makes the kubelet request
+        its serving certificate through the CSR API with the kubelet-serving signer; those CSRs are not auto-approved.
+      initialContent: |
+        apiVersion: kubelet.config.k8s.io/v1beta1
+        kind: KubeletConfiguration
+        authentication:
+          anonymous:
+            enabled: false
+          webhook:
+            enabled: true
+          x509:
+            clientCAFile: /etc/kubernetes/pki/ca.crt
+        authorization:
+          mode: Webhook
+        cgroupDriver: systemd
+        clusterDNS:
+        - 10.96.0.10
+        clusterDomain: cluster.local
+        containerRuntimeEndpoint: unix:///var/run/containerd/containerd.sock
+        staticPodPath: /etc/kubernetes/manifests
+      expectedFields:
+      - path: rotateCertificates
+        expectedValue: true
+      - path: serverTLSBootstrap
+        expectedValue: true
+  - type: question
+    question:
+      questionType: command
+      header: Make the kubelet pick up the new configuration.
+      command:
+        executable: systemctl
+        subcommands:
+        - name: restart
+        positionals:
+        - index: 0
+          regex: ^kubelet(\.service)?$
+  - type: context
+    text: |
+      The kubelets request their serving certificates. This is what the cluster shows a moment later:
+  - type: manifest
+    header: $ kubectl get csr
+    content: |
+      NAME        AGE   SIGNERNAME                      REQUESTOR            REQUESTEDDURATION   CONDITION
+      csr-5hk2x   14s   kubernetes.io/kubelet-serving   system:node:node01   <none>              Pending
+      csr-w8d4n   9s    kubernetes.io/kubelet-serving   system:node:node02   <none>              Pending
+  - type: question
+    question:
+      questionType: command
+      header: Both requests come from your own nodes and are expected. Approve both with one command.
+      hint: The sub-command accepts several names at once.
+      correctAnswerInfo: Kubernetes does not auto-approve kubelet-serving CSRs because it cannot verify the requested names.
+        Check that the requestor and the subject names (SANs) match the node before approving.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: certificate
+        - name: approve
+        positionals:
+        - index: 0
+          oneOf:
+          - csr-5hk2x
+          - csr-w8d4n
+        - index: 1
+          oneOf:
+          - csr-5hk2x
+          - csr-w8d4n
+      cel: positionals[0] != positionals[1]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Two different kubelet certificates with two different mechanisms:
+
+        | Setting | Concerns | Mechanism |
+        |---|---|---|
+        | `rotateCertificates: true` | the **client** certificate (kubelet → API server) | the kubelet requests a new one before expiry; `kube-apiserver-client-kubelet` CSRs are **auto-approved** by the controller-manager |
+        | `serverTLSBootstrap: true` | the **serving** certificate (others → kubelet:10250) | the kubelet submits a `kubelet-serving` CSR; **not auto-approved**, an administrator must approve it |
+
+        Without `serverTLSBootstrap`, kubelets use a self-signed serving certificate that clients cannot
+        verify, which is why `kubectl logs`/`exec` work only because the API server skips verification.
+        With it, the API server can verify kubelets using `--kubelet-certificate-authority`.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/kubeadm-certs/#certificate-rotation
+        text: Certificate rotation (kubelet)
+      - url: https://kubernetes.io/docs/reference/access-authn-authz/kubelet-tls-bootstrapping/
+        text: TLS bootstrapping
+- title: 'Capstone: A New User from Key to Working Access'
+  category: Capstone
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      **Task** (access ticket ACC-204). Ravi joins the QA team and needs to **create and edit
+      workloads in the `staging` namespace** — and nothing outside it. Policy: access is granted through
+      the group `qa` (the certificate's organization), never through a binding to the individual user.
+      His certificate must be valid for **12 hours**.
+
+      You do the work on `controlplane` as `root`, in an empty directory, from a clean start: key,
+      request, cluster signing, kubeconfig, authorisation, and a final test.
+  - type: question
+    question:
+      questionType: command
+      header: 1. Generate Ravi's 2048-bit RSA private key as ravi.key.
+      command:
+        executable: openssl
+        subcommands:
+        - name: genrsa
+          aliases:
+          - genpkey
+        positionals:
+        - index: 0
+          required: false
+          regex: ^(2048|3072|4096)$
+        flags:
+        - name: out
+          singleDash: true
+          required: true
+          value: ravi.key
+        - name: algorithm
+          singleDash: true
+          value: RSA
+        - name: pkeyopt
+          singleDash: true
+          regex: ^rsa_keygen_bits:(2048|3072|4096)$
+      cel: (subcommands[0] == 'genrsa' && !('algorithm' in flags)) || (subcommands[0] == 'genpkey' && 'algorithm' in flags)
+  - type: question
+    question:
+      questionType: command
+      header: '2. Create ravi.csr with the identity: user ravi, member of the group qa.'
+      command:
+        executable: openssl
+        subcommands:
+        - name: req
+        flags:
+        - name: new
+          singleDash: true
+          required: true
+          boolean: true
+        - name: key
+          singleDash: true
+          required: true
+          value: ravi.key
+        - name: out
+          singleDash: true
+          required: true
+          value: ravi.csr
+        - name: subj
+          singleDash: true
+          required: true
+          regex: ^/(CN=ravi/O=qa|O=qa/CN=ravi)/?$
+  - type: context
+    text: |
+      The encoded request, produced with the single-line option of `base64`, is:
+  - type: manifest
+    header: $ base64 -w 0 ravi.csr
+    content: |
+      LS0tLS1CRUdJTiBDRVJUSUZJQ0FURSBSRVFVRVNULS0tLS0KTUlJQ1lUQ0NBVWtDQVFBd0hERU5NQXNHQTFVRUF3d0VjbUYyYVRFTE1Ba0dBMVVFQ2d3Q2NXRXdnZ0VpTUEwRwpDU3FHU0liM0RRRUJBUVVBQTRJQkR3QXdnZ0VLQW9JQkFRRE5nWml5bHp1Vjk0R29TRXRnd2pzZkppTU1xUVJlCkZjc0dQcVRmNDZ2Nk5EOG9LVlVJUzUvZmdzU3NiNE0rZWZiVy9HbHQ5TXFkT2Y1VE5QSS9JL0RBY0EzUmtJYlcKeXhhR2lzZ2UzeGxBcFMvaFFMWFF5dTI4aU53ZjAyR05zS2JDUk5YeWIwUHAreUxjaWNCdTRZUDdFVGdvZzFMUgpONUt6WnpvYkxHSkQ0Ky9zbVNSYmlhVGpSSEkyRE9uNlgvL2p3YnVGUHIxQVNDZVVCRm5DYmJ1QU5FVDZncC9IClNua280V1MwQTAxTlZaU05XaUhDZDZTV1RUbWFNOVZRVlJQcjQ0RlFaQXlTUXo0citZdW9TNU9DaVVFbXZXTk4KajFxeE9IQWxDODgyYnRKZVNucEN1WWRIT0pPMk9xUXhvUTZObUJyVWNveHpXYmNndUNpemphU3hBZ01CQUFHZwpBREFOQmdrcWhraUc5dzBCQVFzRkFBT0NBUUVBSmF3SENnZitzRThXSklQdWRzdmwyZXpFdlVGbnp6c201Rk9DCkVsOHBkRzlReTl0NVZXRlpFOHNReER1R3JZUFNpSzlhb3kyamsyakpudlV6MENLbE44SUJxN0VkNTd4L25ZQXIKSkRSa3A0WHZ3cmcrd3ZOMGVPVTB0V0ZoNWVrdHdEN0dOYmZYSmN6QXhYMjFPWlhic0ZweElSUlpJNXE4c3cyTwpGUmJrbTA1cCtQaGNSbUpjbXUvSm85UVFUb1ZQT3FUMDZ4aU5vYnVHcWZrOVVsWDluV0I1TjFsTUlkc2o1QldOCk5zdjFBQU85bWIrMUNFZkNyK2dwVW1MNUVvd0cyTE0zNmZnZVFWMnZoaU1yTENUay96YWoraW40YWpiMkU0MUIKb3NnQ2VVL1NrWTJ6djhSV3FsQXBISDJ3MzNtaXpCb1loSDhCV2FzaFdsTUVySnZVMlE9PQotLS0tLUVORCBDRVJUSUZJQ0FURSBSRVFVRVNULS0tLS0K
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: csr-v1
+      header: 3. Write the CertificateSigningRequest manifest for ravi (client certificate for the API server, valid for 12
+        hours).
+      cel: manifest.spec.usages.exists(u, u == 'client auth') && manifest.spec.usages.all(u, u in ['client auth', 'digital
+        signature', 'key encipherment'])
+      expectedFields:
+      - path: metadata.name
+        expectedValue: ravi
+      - path: spec.request
+        expectedValue: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURSBSRVFVRVNULS0tLS0KTUlJQ1lUQ0NBVWtDQVFBd0hERU5NQXNHQTFVRUF3d0VjbUYyYVRFTE1Ba0dBMVVFQ2d3Q2NXRXdnZ0VpTUEwRwpDU3FHU0liM0RRRUJBUVVBQTRJQkR3QXdnZ0VLQW9JQkFRRE5nWml5bHp1Vjk0R29TRXRnd2pzZkppTU1xUVJlCkZjc0dQcVRmNDZ2Nk5EOG9LVlVJUzUvZmdzU3NiNE0rZWZiVy9HbHQ5TXFkT2Y1VE5QSS9JL0RBY0EzUmtJYlcKeXhhR2lzZ2UzeGxBcFMvaFFMWFF5dTI4aU53ZjAyR05zS2JDUk5YeWIwUHAreUxjaWNCdTRZUDdFVGdvZzFMUgpONUt6WnpvYkxHSkQ0Ky9zbVNSYmlhVGpSSEkyRE9uNlgvL2p3YnVGUHIxQVNDZVVCRm5DYmJ1QU5FVDZncC9IClNua280V1MwQTAxTlZaU05XaUhDZDZTV1RUbWFNOVZRVlJQcjQ0RlFaQXlTUXo0citZdW9TNU9DaVVFbXZXTk4KajFxeE9IQWxDODgyYnRKZVNucEN1WWRIT0pPMk9xUXhvUTZObUJyVWNveHpXYmNndUNpemphU3hBZ01CQUFHZwpBREFOQmdrcWhraUc5dzBCQVFzRkFBT0NBUUVBSmF3SENnZitzRThXSklQdWRzdmwyZXpFdlVGbnp6c201Rk9DCkVsOHBkRzlReTl0NVZXRlpFOHNReER1R3JZUFNpSzlhb3kyamsyakpudlV6MENLbE44SUJxN0VkNTd4L25ZQXIKSkRSa3A0WHZ3cmcrd3ZOMGVPVTB0V0ZoNWVrdHdEN0dOYmZYSmN6QXhYMjFPWlhic0ZweElSUlpJNXE4c3cyTwpGUmJrbTA1cCtQaGNSbUpjbXUvSm85UVFUb1ZQT3FUMDZ4aU5vYnVHcWZrOVVsWDluV0I1TjFsTUlkc2o1QldOCk5zdjFBQU85bWIrMUNFZkNyK2dwVW1MNUVvd0cyTE0zNmZnZVFWMnZoaU1yTENUay96YWoraW40YWpiMkU0MUIKb3NnQ2VVL1NrWTJ6djhSV3FsQXBISDJ3MzNtaXpCb1loSDhCV2FzaFdsTUVySnZVMlE9PQotLS0tLUVORCBDRVJUSUZJQ0FURSBSRVFVRVNULS0tLS0K
+      - path: spec.signerName
+        expectedValue: kubernetes.io/kube-apiserver-client
+      - path: spec.expirationSeconds
+        expectedValue: 43200
+  - type: question
+    question:
+      questionType: command
+      header: 4. The request was inspected and is correct. Approve it.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: certificate
+        - name: approve
+        positionals:
+        - index: 0
+          value: ravi
+  - type: question
+    question:
+      questionType: command
+      header: 5. Save the issued certificate, decoded, as ravi.crt.
+      command:
+        executable: kubectl
+        strictness: permissive
+        subcommands:
+        - name: get
+        positionals:
+        - index: 0
+          oneOf:
+          - csr
+          - certificatesigningrequest
+          - certificatesigningrequests
+        - index: 1
+          value: ravi
+        flags:
+        - name: output
+          short: o
+          required: true
+          regex: ^jsonpath=.*status\.certificate
+      cel: answer.matches(r'\|\s*base64\s+(-d|--decode|-D)\s*>\s*ravi\.crt\s*$')
+  - type: question
+    question:
+      questionType: command
+      header: 6. Add the user ravi to the kubeconfig with the embedded key and certificate.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: config
+        - name: set-credentials
+        positionals:
+        - index: 0
+          value: ravi
+        flags:
+        - name: client-key
+          required: true
+          value: ravi.key
+        - name: client-certificate
+          required: true
+          value: ravi.crt
+        - name: embed-certs
+          required: true
+          boolean: true
+  - type: question
+    question:
+      questionType: command
+      header: 7. Create a context ravi for the cluster kubernetes and the user ravi, with staging as its default namespace.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: config
+        - name: set-context
+        positionals:
+        - index: 0
+          value: ravi
+        flags:
+        - name: cluster
+          required: true
+          value: kubernetes
+        - name: user
+          required: true
+          value: ravi
+        - name: namespace
+          required: true
+          value: staging
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: rolebinding-v1
+      header: 8. Grant the group qa the built-in ClusterRole edit, but only inside the namespace staging. Name the binding
+        qa-edit.
+      expectedFields:
+      - path: metadata.name
+        expectedValue: qa-edit
+      - path: metadata.namespace
+        expectedValue: staging
+      - path: subjects.0.kind
+        expectedValue: Group
+      - path: subjects.0.name
+        expectedValue: qa
+      - path: roleRef.kind
+        expectedValue: ClusterRole
+      - path: roleRef.name
+        expectedValue: edit
+      - path: roleRef.apiGroup
+        expectedValue: rbac.authorization.k8s.io
+  - type: question
+    question:
+      questionType: command
+      header: '9. Test the setup: ask whether ravi, acting as a member of the group qa, may create Deployments in staging.'
+      command:
+        executable: kubectl
+        subcommands:
+        - name: auth
+        - name: can-i
+        positionals:
+        - index: 0
+          value: create
+        - index: 1
+          oneOf:
+          - deployments
+          - deployment
+          - deploy
+        flags:
+        - name: as
+          required: true
+          value: ravi
+        - name: as-group
+          required: true
+          value: qa
+        - name: namespace
+          short: n
+          required: true
+          value: staging
+  - type: manifest
+    header: $ kubectl auth can-i create deployments --as ravi --as-group qa -n staging
+    content: |
+      yes
+  - type: manifest
+    header: $ kubectl auth can-i create deployments --as ravi --as-group qa -n default
+    content: |
+      no
+  explanation:
+    elements:
+    - type: context
+      text: |
+        The full user loop, in the order you should be able to run it without looking anything up:
+
+        1. `openssl genrsa -out ravi.key 2048`
+        2. `openssl req -new -key ravi.key -out ravi.csr -subj "/CN=ravi/O=qa"`
+        3. `base64 -w 0 ravi.csr`, then a `CertificateSigningRequest` with `signerName:
+           kubernetes.io/kube-apiserver-client`, `usages: [client auth]`, `expirationSeconds`
+        4. `kubectl certificate approve ravi` (after reading the subject!)
+        5. `kubectl get csr ravi -o jsonpath='{.status.certificate}' | base64 -d > ravi.crt`
+        6. `kubectl config set-credentials ravi --client-key=... --client-certificate=... --embed-certs=true`
+        7. `kubectl config set-context ravi --cluster=kubernetes --user=ravi --namespace=staging`
+        8. RoleBinding to `kind: Group` / `qa` with ClusterRole `edit` in `staging`
+        9. `kubectl auth can-i ... --as ravi --as-group qa -n staging`, then try `--context ravi` for real
+
+        If a step fails, the usual suspects are: wrapped base64 in `spec.request`, a wrong `signerName` or
+        `usages` (the CSR stays `Approved` and never `Issued`), group names that differ by case from the
+        `O` value, and a binding in the wrong namespace.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/reference/access-authn-authz/certificate-signing-requests/
+        text: Certificate Signing Requests
+      - url: https://kubernetes.io/docs/reference/access-authn-authz/rbac/
+        text: Using RBAC Authorization
+      - url: https://kubernetes.io/docs/tasks/administer-cluster/certificates/
+        text: Generate Certificates Manually

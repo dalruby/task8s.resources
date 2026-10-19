@@ -96,3 +96,14 @@ sets:
       - Node Setup
       - Troubleshooting
       - Hard
+  - name: "CKS (Hands-On): CSRs, Certificates and OpenSSL"
+    filename: cks-hands-on-csr-openssl.yaml
+    description: "No multiple choice. Create users through the Kubernetes CSR API and inspect cluster certificates: OpenSSL keys and CSRs, the CertificateSigningRequest object and signers, approving and extracting certificates, kubeconfig and RBAC for the new user, the lack of revocation, manual CA signing, reading SANs, issuers, expiry and key usage, verifying chains, kubeadm certificate renewal, and an end-to-end capstone."
+    tags:
+      - CSR
+      - OpenSSL
+      - Certificates
+      - RBAC
+      - kubeadm
+      - Hands-On
+      - Hard
