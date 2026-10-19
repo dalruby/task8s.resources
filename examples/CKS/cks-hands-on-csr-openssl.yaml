@@ -522,7 +522,7 @@ scenarios:
   elements:
   - type: context
     text: |
-      A pipeline account's request was approved an hour ago, yet the certificate never arrived. This is
+      A pipeline account's request was approved forty minutes ago, yet the certificate never arrived. This is
       the current state of the CSRs on the cluster:
   - type: table
     style: terminal
@@ -547,13 +547,13 @@ scenarios:
       - <none>
       - Approved,Issued
     - - deploy-bot
-      - 1h
+      - 40m
       - example.com/ci-signer
       - kubernetes-admin
       - <none>
       - Approved
     - - old-tmp
-      - 50m
+      - 30m
       - kubernetes.io/kube-apiserver-client
       - kubernetes-admin
       - <none>
@@ -663,7 +663,7 @@ scenarios:
   elements:
   - type: context
     text: |
-      Another request, `web-client`, was approved this morning for a service that must identify itself
+      Another request, `web-client`, was approved a few minutes ago for a service that must identify itself
       **to** the API server. The cluster shows this:
   - type: table
     style: terminal
@@ -676,13 +676,13 @@ scenarios:
     - CONDITION
     rows:
     - - jane
-      - 3h
+      - 25m
       - kubernetes.io/kube-apiserver-client
       - kubernetes-admin
       - 24h
       - Approved,Issued
     - - web-client
-      - 5h
+      - 20m
       - kubernetes.io/kube-apiserver-client
       - kubernetes-admin
       - <none>
@@ -1390,8 +1390,9 @@ scenarios:
           that user (CN) **and** to any group in its `O` values.
         - Short certificate lifetimes (`expirationSeconds`) are the real mitigation.
         - If the leaked certificate carries the group `system:masters`, deleting bindings does not help at
-          all: that group **bypasses authorisation entirely** (there is no `cluster-admin` binding to
-          delete), so the only fix is rotating the CA. This is why such certificates must be avoided.
+          all: that group **bypasses authorisation entirely**, so even removing the default
+          `cluster-admin` ClusterRoleBinding changes nothing for it. The only fix is rotating the CA,
+          which is why such certificates must be avoided.
     - type: references
       links:
       - url: https://kubernetes.io/docs/reference/access-authn-authz/certificate-signing-requests/
