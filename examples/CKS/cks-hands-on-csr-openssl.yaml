@@ -1158,10 +1158,11 @@ scenarios:
     question:
       questionType: manifest
       manifestDefinitionId: rolebinding-v1
-      header: Write the RoleBinding manifest.
+      header: Write the RoleBinding manifest. State the API group of every subject and of the role reference explicitly.
       hint: A certificate's Organization values are groups. A ClusterRole can be granted inside a single namespace via a RoleBinding.
       correctAnswerInfo: Binding a ClusterRole with a RoleBinding limits its effect to the binding's namespace — a common
-        way to reuse the built-in view, edit and admin roles.
+        way to reuse the built-in view, edit and admin roles. For User and Group subjects the apiGroup is rbac.authorization.k8s.io
+        (the API server fills it in when it is omitted, but write it out in manifests).
       expectedFields:
       - path: metadata.name
         expectedValue: developers-view
@@ -1171,6 +1172,8 @@ scenarios:
         expectedValue: Group
       - path: subjects.0.name
         expectedValue: developers
+      - path: subjects.0.apiGroup
+        expectedValue: rbac.authorization.k8s.io
       - path: roleRef.kind
         expectedValue: ClusterRole
       - path: roleRef.name
