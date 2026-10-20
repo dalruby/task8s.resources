@@ -107,3 +107,13 @@ sets:
       - kubeadm
       - Hands-On
       - Hard
+  - name: "CKS (Hands-On): Falco and Runtime Security"
+    filename: cks-hands-on-falco.yaml
+    description: "No multiple choice. Operate Falco as a systemd service or DaemonSet, read alerts, configure outputs and priorities in falco.yaml, customise default rules with override syntax, write new rules from a spec, validate and test them, then trace an alert to the offending Pod and contain it. Written against Falco 0.45."
+    tags:
+      - Falco
+      - Runtime Security
+      - Hands-On
+      - Rules
+      - Incident Response
+      - Hard

