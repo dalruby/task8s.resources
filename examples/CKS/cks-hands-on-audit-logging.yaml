@@ -1,0 +1,2527 @@
+apiVersion: v1alpha1
+name: 'CKS (Hands-On): Kubernetes Audit Logging'
+k8sVersion: 1.34.0
+timing:
+  enabled: true
+  limitSeconds: 7200
+introduction:
+  elements:
+  - type: context
+    text: |
+      Hands-on practice for **Kubernetes audit logging** in the CKS exam's monitoring, logging and runtime
+      security domain: writing an audit policy, enabling it in the kube-apiserver static Pod, recovering
+      an API server that no longer starts, and finding a specific actor in the log. There is no multiple
+      choice: you write policies and manifests, type commands and read audit events.
+
+      **Lab environment**
+
+      - You are `root` on the control-plane node of a kubeadm cluster (Kubernetes 1.34, containerd,
+        `crictl` configured). `kubectl` works unless a scenario says the API server is down.
+      - Paths used throughout: the policy is `/etc/kubernetes/audit-policy.yaml`, the log is
+        `/var/log/kubernetes/audit/audit.log`, and the API server manifest is
+        `/etc/kubernetes/manifests/kube-apiserver.yaml`.
+      - `jq` may not be installed on the nodes: `grep` is the dependable tool, `jq` appears in one scenario.
+
+      **How answers are checked**
+
+      - *Audit policies* are validated as manifests (apiVersion `audit.k8s.io/v1`, kind `Policy`) against a
+        schema of the policy fields, then for the required rules and their **order**. Unlike the real API
+        server, the schema also rejects unknown field names, so a typo is reported to you.
+      - *kube-apiserver manifests* are validated as Pods and then checked for the new flags, the volumes
+        and mounts, and for **every original flag and volume still being present**.
+      - *Commands* are checked structurally; pipelines and redirects are checked on the whole line.
+      - Question text states what is wanted, not which flags or fields to use.
+
+      Exam content is under NDA: this is practice for the common patterns, not a prediction.
+  - type: references
+    links:
+    - url: https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/
+      text: Auditing
+    - url: https://kubernetes.io/docs/reference/config-api/apiserver-audit.v1/
+      text: Audit API reference (Policy and Event)
+    - url: https://training.linuxfoundation.org/certification/certified-kubernetes-security-specialist-cks/
+      text: CKS Domains and Competencies
+manifestDefinitions:
+- id: audit-policy-v1
+  kind: Policy
+  apiVersion: audit.k8s.io/v1
+  schema:
+    type: object
+    required:
+    - apiVersion
+    - kind
+    - rules
+    additionalProperties: false
+    properties:
+      apiVersion:
+        type: string
+      kind:
+        type: string
+      metadata:
+        type: object
+      omitStages:
+        type: array
+        items:
+          enum: &id002
+          - RequestReceived
+          - ResponseStarted
+          - ResponseComplete
+          - Panic
+      omitManagedFields:
+        type: boolean
+      rules:
+        type: array
+        minItems: 1
+        items:
+          type: object
+          required:
+          - level
+          additionalProperties: false
+          properties:
+            level:
+              enum:
+              - None
+              - Metadata
+              - Request
+              - RequestResponse
+            users: &id001
+              type: array
+              items:
+                type: string
+            userGroups: *id001
+            verbs: *id001
+            namespaces: *id001
+            nonResourceURLs: *id001
+            resources:
+              type: array
+              items:
+                type: object
+                additionalProperties: false
+                properties:
+                  group:
+                    type: string
+                  resources: *id001
+                  resourceNames: *id001
+            omitStages:
+              type: array
+              items:
+                enum: *id002
+            omitManagedFields:
+              type: boolean
+- id: pod-v1
+  kind: Pod
+  apiVersion: v1
+  autoLoad: true
+scenarios:
+- title: The Four Audit Levels
+  category: Audit Policy
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Kubernetes audit **policy** rules decide how much of each API request is recorded. Name the level
+      that matches each description (spelled as in a policy file).
+  - type: question
+    question:
+      questionType: sequence
+      header: Name the level.
+      hint: The names grow in detail from the first to the last; two of them are almost identical in spelling.
+      steps:
+      - questionType: single-line
+        expectedAnswer: None
+        header: 'Records nothing for the matching requests:'
+        cel: answer.trim().lowerAscii() == 'none'
+      - questionType: single-line
+        expectedAnswer: Metadata
+        header: 'Records who did what and when (user, timestamp, verb, resource), but neither the request body nor the response
+          body:'
+        cel: answer.trim().lowerAscii() == 'metadata'
+      - questionType: single-line
+        expectedAnswer: Request
+        header: 'Records the request metadata and the request body, but not the response body:'
+        cel: answer.trim().lowerAscii() == 'request'
+      - questionType: single-line
+        expectedAnswer: RequestResponse
+        header: 'Records the request metadata, the request body and the response body:'
+        cel: answer.trim().lowerAscii() == 'requestresponse'
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: metadata only
+      header: A rule with the level RequestResponse matches a request to the non-resource URL /healthz. What is recorded for
+        it? Answer in one or two words.
+      correctAnswerInfo: 'Request and RequestResponse do not apply to non-resource requests: only metadata is recorded, because
+        there is no object body to record.'
+      cel: answer.lowerAscii().matches(r'metadata')
+  explanation:
+    elements:
+    - type: context
+      text: |
+        | Level | Records |
+        |---|---|
+        | `None` | nothing |
+        | `Metadata` | user, time, verb, resource, response code — **no bodies** |
+        | `Request` | Metadata + the **request** body (not for non-resource URLs) |
+        | `RequestResponse` | Request + the **response** body (not for non-resource URLs) |
+
+        More detail costs log volume, memory and — for Secrets — confidentiality: a body can contain the
+        very data you are trying to protect. Choose the lowest level that answers the question you will
+        later ask of the log.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/
+        text: Auditing
+- title: Stages and the Smallest Valid Policy
+  category: Audit Policy
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Each request passes through **stages**, and the API server can write an audit event at each of
+      them. A policy can leave stages out with `omitStages`.
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: ResponseStarted
+      header: Which stage is generated only for long-running requests such as watches, once the response headers have been
+        sent?
+      cel: answer.trim().lowerAscii() == 'responsestarted'
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: RequestReceived
+      header: 'Normally every request produces two events: one when it arrives and one when the response is complete. Which
+        stage do you omit to roughly halve the number of events?'
+      hint: The first of the two events is written before anything has been done with the request.
+      cel: answer.trim().lowerAscii() == 'requestreceived'
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: audit-policy-v1
+      header: 'Write the smallest valid audit policy: it logs every request at the Metadata level and, for the whole policy,
+        leaves out the stage you named above.'
+      hint: Three things are required at the top (apiVersion, kind, rules); the rule list may not be empty, and the omitted
+        stages go next to rules, not inside one.
+      correctAnswerInfo: 'A policy without any rule is illegal and keeps the API server from starting: ''loaded illegal policy
+        with 0 rules''.'
+      cel: has(manifest.omitStages) && manifest.omitStages == ['RequestReceived'] && manifest.rules.size() == 1 && manifest.rules[0].level
+        == 'Metadata' && manifest.rules[0].size() == 1 && manifest.apiVersion == 'audit.k8s.io/v1'
+  explanation:
+    elements:
+    - type: context
+      text: |
+        The four stages:
+
+        | Stage | When |
+        |---|---|
+        | `RequestReceived` | as soon as the request arrives, before any handling |
+        | `ResponseStarted` | headers sent, body not yet — **only for long-running requests** (watch) |
+        | `ResponseComplete` | the response is finished |
+        | `Panic` | a panic occurred |
+
+        The smallest valid policy:
+
+        ```yaml
+        apiVersion: audit.k8s.io/v1
+        kind: Policy
+        omitStages:
+        - RequestReceived
+        rules:
+        - level: Metadata
+        ```
+
+        `omitStages` can be set for the whole policy or per rule. `rules` is **mandatory**: with no rule
+        the API server refuses to start.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/
+        text: Auditing
+      - url: https://kubernetes.io/docs/reference/config-api/apiserver-audit.v1/
+        text: Audit API reference (Policy and Event)
+- title: First Match Wins
+  category: Audit Policy
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      A colleague wants every change to Pods logged with full bodies (`RequestResponse`) and everything
+      else at `Metadata`. This is the policy that is in use:
+  - type: manifest
+    header: /etc/kubernetes/audit-policy.yaml
+    content: |
+      apiVersion: audit.k8s.io/v1
+      kind: Policy
+      rules:
+      - level: Metadata
+      - level: RequestResponse
+        resources:
+        - group: ''
+          resources:
+          - pods
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: Metadata
+      header: Which level does the creation of a Pod get under this policy?
+      hint: Rules are checked from the top, and the checking stops somewhere.
+      cel: answer.trim().lowerAscii() == 'metadata'
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: audit-policy-v1
+      header: Correct the policy so that Pod requests really are logged at RequestResponse and every other request at Metadata.
+      hint: The specific rule has to be reached before the general one.
+      correctAnswerInfo: The first rule whose selectors all match the request sets the level; later rules are never consulted
+        for that request.
+      cel: manifest.rules.size() == 2 && manifest.rules[0].level == 'RequestResponse' && manifest.rules[0].resources.exists(g,
+        g.group == '' && 'pods' in g.resources) && manifest.rules[1].level == 'Metadata' && manifest.rules[1].size() == 1
+      initialContent: |
+        apiVersion: audit.k8s.io/v1
+        kind: Policy
+        rules:
+        - level: Metadata
+        - level: RequestResponse
+          resources:
+          - group: ''
+            resources:
+            - pods
+  explanation:
+    elements:
+    - type: context
+      text: |
+        An audit event is compared with the rules **in order**; the **first matching rule** decides the
+        level, and nothing after it is looked at. A rule without any selector matches every request, so it
+        can only be the **last** rule — a catch-all placed first makes everything below it dead code.
+
+        The usual shape of a policy is therefore: the most specific exceptions first (`None` for noise,
+        careful `Metadata` rules for sensitive objects), broader rules next, one catch-all last.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/
+        text: Auditing
+- title: Which Level Does Each Request Get?
+  category: Audit Policy
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      This policy is installed on the cluster:
+  - type: manifest
+    header: /etc/kubernetes/audit-policy.yaml
+    content: |
+      apiVersion: audit.k8s.io/v1
+      kind: Policy
+      rules:
+      - level: None
+        users:
+        - system:kube-proxy
+        verbs:
+        - watch
+        resources:
+        - group: ''
+          resources:
+          - endpoints
+          - services
+      - level: Metadata
+        resources:
+        - group: ''
+          resources:
+          - secrets
+          - configmaps
+      - level: RequestResponse
+        resources:
+        - group: apps
+        namespaces:
+        - prod
+      - level: Request
+        resources:
+        - group: ''
+          resources:
+          - pods
+      - level: Metadata
+  - type: question
+    question:
+      questionType: sequence
+      header: For each request, which level is recorded? (None, Metadata, Request or RequestResponse)
+      hint: Go through the rules from the top for each request; a rule only matches when all of its selectors (user, verb,
+        resource, namespace) match.
+      steps:
+      - questionType: single-line
+        expectedAnswer: None
+        header: system:kube-proxy runs a watch on Services (in all namespaces).
+        cel: answer.trim().lowerAscii() == 'none'
+      - questionType: single-line
+        expectedAnswer: Metadata
+        header: alice reads the Secret db-creds (verb get) in the namespace prod.
+        cel: answer.trim().lowerAscii() == 'metadata'
+      - questionType: single-line
+        expectedAnswer: RequestResponse
+        header: bob creates a Deployment in the namespace prod.
+        cel: answer.trim().lowerAscii() == 'requestresponse'
+      - questionType: single-line
+        expectedAnswer: Metadata
+        header: bob creates a Deployment in the namespace dev.
+        cel: answer.trim().lowerAscii() == 'metadata'
+      - questionType: single-line
+        expectedAnswer: Request
+        header: dave deletes a Pod in the namespace dev.
+        cel: answer.trim().lowerAscii() == 'request'
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Selectors inside **one rule are combined with AND**; a request matches the rule only if every
+        selector that the rule names matches. Walking through the five requests:
+
+        1. kube-proxy's *watch* on Services matches rule 1 → `None`.
+        2. A Secret *get* misses rule 1 (wrong user/verb) and hits rule 2 → `Metadata`.
+        3. Deployments are in the group `apps`; with the namespace `prod` rule 3 matches → `RequestResponse`.
+        4. The same request in `dev` fails rule 3's namespace selector and ends at the catch-all → `Metadata`.
+        5. Deleting a Pod hits rule 4 → `Request`.
+
+        Notes: a rule with `group: apps` but no `resources` matches **every** resource of that group, and a rule
+        with `namespaces` and no `resources` matches every resource request in those namespaces.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/
+        text: Auditing
+      - url: https://kubernetes.io/docs/reference/config-api/apiserver-audit.v1/
+        text: Audit API reference (Policy and Event)
+- title: Groups, Versions and Subresources
+  category: Audit Policy
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      A policy rule's `resources` entries name an **API group** and a list of **resources**. Answer
+      exactly as you would write the value in the policy file.
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: apps
+      header: Which group value selects Deployments?
+      hint: Versions are not part of the group name.
+      correctAnswerInfo: 'The version is never included: ''apps'', not ''apps/v1''. A group with a version in it is not a
+        valid group name.'
+      cel: answer.trim() == 'apps'
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: '""'
+      header: Which group value selects the core resources such as Pods, Secrets and ConfigMaps? (the value, with quotes if
+        needed)
+      hint: The core group has no name at all.
+      cel: answer.trim() in ['""', "''", '""', 'empty string', 'empty']
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: 'no'
+      header: 'A rule lists resources: [pods]. Does it also match requests to pods/exec? (yes or no)'
+      correctAnswerInfo: 'Subresources are separate entries: pods does not match pods/exec, pods/log or pods/status.'
+      cel: answer.trim().lowerAscii() == 'no'
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: '*/scale'
+      header: Which resources entry matches the scale subresource of every resource (deployments/scale, statefulsets/scale,
+        ...)?
+      hint: A wildcard can stand for the resource part.
+      cel: answer.trim() == '*/scale'
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: audit-policy-v1
+      header: Write a policy that logs every kubectl exec and attach session into a Pod, in any namespace, at the Request
+        level, and everything else at Metadata.
+      hint: The two sessions are subresources of Pods, so they have to be named as such.
+      correctAnswerInfo: Request-level logging of exec records the request URI (with the command and container) even though
+        the exec request has no body.
+      cel: |-
+        manifest.rules.size() == 2 && manifest.rules[0].level == 'Request' && !has(manifest.rules[0].namespaces) && manifest.rules[0].resources.exists(g, g.group == '' && 'pods/exec' in g.resources) &&
+        manifest.rules[0].resources.exists(g, g.group == '' && 'pods/attach' in g.resources) && manifest.rules[1].level == 'Metadata' && manifest.rules[1].size() == 1
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Rules for subresources:
+
+        | Entry | Matches |
+        |---|---|
+        | `pods` | only the Pod itself — **not** `pods/exec`, `pods/log`, `pods/status` |
+        | `pods/exec` | the exec subresource |
+        | `pods/*` | the Pod and all of its subresources |
+        | `*/scale` | the `scale` subresource of any resource |
+        | group only (`group: apps`) | every resource of that group |
+
+        The core group is `group: ""`; other groups are written without a version (`apps`,
+        `rbac.authorization.k8s.io`).
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/reference/config-api/apiserver-audit.v1/
+        text: Audit API reference (Policy and Event)
+- title: A Typo That Does Not Stop the API Server
+  category: Audit Policy
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The intention of this policy: Secrets at `Metadata`, Pods at `RequestResponse`. The API server
+      started without problems, and its log contains only this line about the policy:
+
+      `Audit policy contains errors, falling back to lenient decoding: strict decoding error: unknown field "rules[0].resource"`
+  - type: manifest
+    header: /etc/kubernetes/audit-policy.yaml
+    content: |
+      apiVersion: audit.k8s.io/v1
+      kind: Policy
+      rules:
+      - level: Metadata
+        resource:
+        - group: ""
+          resources: ["secrets"]
+      - level: RequestResponse
+        resources:
+        - group: ""
+          resources: ["pods"]
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: Metadata
+      header: Which level does the creation of a Pod get with the policy as loaded by the API server?
+      hint: Unknown fields are dropped when the policy is decoded. What does a rule without selectors match?
+      correctAnswerInfo: The misspelt key is ignored, so the first rule has no selector at all and matches every request —
+        including Pod creation.
+      cel: answer.trim().lowerAscii() == 'metadata'
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: audit-policy-v1
+      header: Correct the policy so that it does what was intended.
+      hint: Compare the spelling of the selector key in the two rules.
+      correctAnswerInfo: Note that the learning environment checks the field names strictly; the real API server only warns.
+      cel: |-
+        manifest.rules.size() == 2 && manifest.rules[0].level == 'Metadata' && manifest.rules[0].resources.exists(g, g.group == '' && 'secrets' in g.resources) &&
+        manifest.rules[1].level == 'RequestResponse' && manifest.rules[1].resources.exists(g, g.group == '' && 'pods' in g.resources)
+      initialContent: |
+        apiVersion: audit.k8s.io/v1
+        kind: Policy
+        rules:
+        - level: Metadata
+          resource:
+          - group: ""
+            resources: ["secrets"]
+        - level: RequestResponse
+          resources:
+          - group: ""
+            resources: ["pods"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        The API server decodes the policy **strictly** first. If it finds unknown fields it does not give
+        up: it logs a warning and **falls back to lenient decoding**, which silently drops them. A
+        misspelt selector (`resource:` instead of `resources:`, `verb:` instead of `verbs:`) thus does not
+        fail — it makes the rule **broader**, here matching every request.
+
+        Because of this, always (1) read the API server log after a policy change, (2) test the policy by
+        looking at what actually lands in the audit log, and (3) remember that an *invalid value* — a
+        misspelt level, for example — does stop the API server (see the troubleshooting scenarios).
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/
+        text: Auditing
+- title: Never Log Secret Contents
+  category: Audit Policy
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Your predecessor wrote a policy that logs everything in the core API group with full request and
+      response bodies:
+  - type: manifest
+    header: /etc/kubernetes/audit-policy.yaml
+    content: |
+      apiVersion: audit.k8s.io/v1
+      kind: Policy
+      rules:
+      - level: RequestResponse
+        resources:
+        - group: ''
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: secrets
+      header: Which core-group resource type would put sensitive data into the audit log in readable form under this policy?
+        (plural resource name)
+      hint: Think of what a request body of a create or update contains, and what a response body of a get or list contains.
+      cel: answer.trim().lowerAscii() == 'secrets'
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: audit-policy-v1
+      header: Change the policy so that Secrets are logged at Metadata only, while everything else in the core group stays
+        at RequestResponse.
+      hint: A more specific rule for one resource must be reached before the broad rule that would also match it.
+      correctAnswerInfo: 'Not logging bodies is not the same as not logging: Metadata still records who read or changed which
+        Secret, and that is what you need for an investigation.'
+      cel: |-
+        manifest.rules.size() >= 2 && manifest.rules[0].level == 'Metadata' && manifest.rules[0].resources.exists(g, g.group == '' && 'secrets' in g.resources) &&
+        manifest.rules.exists(r, r.level == 'RequestResponse' && r.resources.exists(g, g.group == '' && !has(g.resources)))
+      initialContent: |
+        apiVersion: audit.k8s.io/v1
+        kind: Policy
+        rules:
+        - level: RequestResponse
+          resources:
+          - group: ''
+  explanation:
+    elements:
+    - type: context
+      text: |
+        With a broad rule at `Request` or `RequestResponse`, the **bodies of Secrets end up in the audit
+        log**: the request body of a create/update (the data), and the response body of a get/list (all
+        values, base64 only encoded, not encrypted). Anyone with access to the log files then has the
+        cluster's credentials. Therefore:
+
+        - put a **`Metadata` (or `None`) rule for `secrets` before any broader rule**;
+        - consider the same for other sensitive kinds (`configmaps` that carry credentials, TokenRequests);
+        - protect the log file itself.
+
+        This is the first-match rule at work: the specific `secrets` rule has to come first.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/
+        text: Auditing
+- title: Writing a Policy from a Specification
+  category: Audit Policy
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      **Task.** Write `/etc/kubernetes/audit-policy.yaml` for this specification:
+
+      - Do not generate events for the `RequestReceived` stage (for the whole policy).
+      - Do not log `watch` requests made by the user `system:kube-proxy` on `endpoints` and `services`.
+      - Log `secrets` and `configmaps` at the level `Metadata`.
+      - Log `create`, `update`, `patch` and `delete` requests on `deployments` (API group `apps`) in the
+        namespace `prod` at the level `RequestResponse`.
+      - Log everything else at the level `Request`.
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: audit-policy-v1
+      header: Write the policy.
+      hint: Order matters only where rules overlap — and the rule that overlaps with everything belongs at the end.
+      correctAnswerInfo: Only the catch-all must be last. The other three rules cover disjoint requests, so their relative
+        order is free.
+      cel: |-
+        has(manifest.omitStages) && 'RequestReceived' in manifest.omitStages &&
+        manifest.rules.exists(r, r.level == 'None' && has(r.users) && 'system:kube-proxy' in r.users && has(r.verbs) && 'watch' in r.verbs && has(r.resources) && r.resources.exists(g, g.group == '' && 'endpoints' in g.resources) && r.resources.exists(g, g.group == '' && 'services' in g.resources)) &&
+        manifest.rules.exists(r, r.level == 'Metadata' && has(r.resources) && r.resources.exists(g, g.group == '' && 'secrets' in g.resources)) &&
+        manifest.rules.exists(r, r.level == 'Metadata' && has(r.resources) && r.resources.exists(g, g.group == '' && 'configmaps' in g.resources)) &&
+        manifest.rules.exists(r, r.level == 'RequestResponse' && has(r.verbs) && ['create', 'update', 'patch', 'delete'].all(v, v in r.verbs) && has(r.namespaces) && 'prod' in r.namespaces && has(r.resources) && r.resources.exists(g, g.group == 'apps' && 'deployments' in g.resources)) &&
+        manifest.rules[manifest.rules.size() - 1].level == 'Request' && manifest.rules[manifest.rules.size() - 1].size() == 1
+  explanation:
+    elements:
+    - type: context
+      text: |
+        The classic answer, from the Kubernetes documentation's own example:
+
+        ```yaml
+        apiVersion: audit.k8s.io/v1
+        kind: Policy
+        omitStages:
+        - RequestReceived
+        rules:
+        - level: None
+          users: ["system:kube-proxy"]
+          verbs: ["watch"]
+          resources:
+          - group: ""
+            resources: ["endpoints", "services"]
+        - level: Metadata
+          resources:
+          - group: ""
+            resources: ["secrets", "configmaps"]
+        - level: RequestResponse
+          verbs: ["create", "update", "patch", "delete"]
+          namespaces: ["prod"]
+          resources:
+          - group: "apps"
+            resources: ["deployments"]
+        - level: Request
+        ```
+
+        Checklist: `apiVersion` and `kind` present, `rules` not empty, group names without versions,
+        specific rules before the catch-all, and the exact verbs and namespace the task names.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/
+        text: Auditing
+      - url: https://kubernetes.io/docs/reference/config-api/apiserver-audit.v1/
+        text: Audit API reference (Policy and Event)
+- title: Keeping Health Checks Out of the Log
+  category: Audit Policy
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Load balancers and kubelets call the API server's health endpoints constantly, and the log fills
+      up with them. Write a policy that **does not log** requests to the health, liveness and readiness
+      endpoints (`/healthz`, `/livez` and `/readyz`, including their sub-paths, written with a trailing
+      wildcard), and logs everything else at `Metadata`. The health rule must be the first rule.
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: audit-policy-v1
+      header: Write the policy.
+      hint: Paths that are not Kubernetes resources have their own selector, and a trailing * extends a path to everything
+        below it.
+      correctAnswerInfo: '''/healthz*'' also matches /healthz/etcd and similar sub-paths.'
+      cel: |-
+        manifest.rules.size() == 2 && manifest.rules[0].level == 'None' && has(manifest.rules[0].nonResourceURLs) && ['/healthz*', '/livez*', '/readyz*'].all(u, u in manifest.rules[0].nonResourceURLs) &&
+        !has(manifest.rules[0].resources) && manifest.rules[1].level == 'Metadata' && manifest.rules[1].size() == 1
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: the policy is invalid
+      header: What happens if one rule contains both resources (or namespaces) and nonResourceURLs? Answer in a few words.
+      hint: A request is either for a Kubernetes object or for a plain path.
+      correctAnswerInfo: 'The API server''s validation: ''rules cannot apply to both regular resources and non-resource URLs''.
+        Put them in separate rules.'
+      cel: answer.lowerAscii().matches(r'invalid|reject|illegal|error|refus|not allowed|fail|not start')
+  explanation:
+    elements:
+    - type: context
+      text: |
+        `nonResourceURLs` selects requests that are not about Kubernetes objects: `/healthz`, `/livez`,
+        `/readyz`, `/version`, `/metrics`, `/api*`. A trailing `*` is the only wildcard allowed and must be
+        the **last** character; every entry has to start with `/`. A rule uses **either** resource
+        selectors (`resources`, `namespaces`) **or** `nonResourceURLs`, never both.
+
+        Put the `None` rule first: those requests are very frequent and would otherwise fall through to the
+        catch-all and fill the log.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/
+        text: Auditing
+      - url: https://kubernetes.io/docs/reference/config-api/apiserver-audit.v1/
+        text: Audit API reference (Policy and Event)
+- title: Enabling Audit Logging in the kube-apiserver
+  category: Enabling Audit Logging
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The policy file `/etc/kubernetes/audit-policy.yaml` exists on the control-plane node. Make the
+      kube-apiserver use it and write its audit events to `/var/log/kubernetes/audit/audit.log`.
+
+      The API server is a **static Pod** defined in `/etc/kubernetes/manifests/kube-apiserver.yaml`,
+      so it only sees what is mounted into its container:
+
+      - the policy is a single file on the host that the API server must **only read**;
+      - the log goes into a directory on the host that must be **created if missing** and be **writable**
+        by the API server.
+
+      Keep every existing flag, mount and volume as they are. This is the current file:
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: pod-v1
+      header: 'Edit the manifest: add the two flags, and the volumes and volume mounts that make the policy and the log directory
+        available to the container. Submit the complete Pod manifest.'
+      hint: 'Two flags, and for each of the two paths a volume of type hostPath plus a mount into the container. The volume
+        types and read-only settings follow from the description: file vs directory, read vs write.'
+      correctAnswerInfo: hostPath type File fails when the file is missing; DirectoryOrCreate creates the directory. The mount's
+        name must be the name of the volume.
+      cel: |-
+        (['kube-apiserver', '--advertise-address=10.0.0.10', '--allow-privileged=true', '--authorization-mode=Node,RBAC', '--client-ca-file=/etc/kubernetes/pki/ca.crt', '--enable-admission-plugins=NodeRestriction', '--enable-bootstrap-token-auth=true', '--etcd-cafile=/etc/kubernetes/pki/etcd/ca.crt', '--etcd-certfile=/etc/kubernetes/pki/apiserver-etcd-client.crt', '--etcd-keyfile=/etc/kubernetes/pki/apiserver-etcd-client.key', '--etcd-servers=https://127.0.0.1:2379', '--kubelet-client-certificate=/etc/kubernetes/pki/apiserver-kubelet-client.crt', '--kubelet-client-key=/etc/kubernetes/pki/apiserver-kubelet-client.key', '--kubelet-preferred-address-types=InternalIP,ExternalIP,Hostname', '--proxy-client-cert-file=/etc/kubernetes/pki/front-proxy-client.crt', '--proxy-client-key-file=/etc/kubernetes/pki/front-proxy-client.key', '--requestheader-allowed-names=front-proxy-client', '--requestheader-client-ca-file=/etc/kubernetes/pki/front-proxy-ca.crt', '--requestheader-extra-headers-prefix=X-Remote-Extra-', '--requestheader-group-headers=X-Remote-Group', '--requestheader-username-headers=X-Remote-User', '--secure-port=6443', '--service-account-issuer=https://kubernetes.default.svc.cluster.local', '--service-account-key-file=/etc/kubernetes/pki/sa.pub', '--service-account-signing-key-file=/etc/kubernetes/pki/sa.key', '--service-cluster-ip-range=10.96.0.0/12', '--tls-cert-file=/etc/kubernetes/pki/apiserver.crt', '--tls-private-key-file=/etc/kubernetes/pki/apiserver.key'].all(f, manifest.spec.containers[0].command.exists(x, x == f))) &&
+        (['ca-certs', 'etc-ca-certificates', 'etc-pki', 'k8s-certs', 'usr-local-share-ca-certificates', 'usr-share-ca-certificates'].all(n, manifest.spec.volumes.exists(v, v.name == n) && manifest.spec.containers[0].volumeMounts.exists(m, m.name == n))) &&
+        (manifest.spec.containers[0].command.exists(x, x == '--audit-policy-file=/etc/kubernetes/audit-policy.yaml')) &&
+        (manifest.spec.containers[0].command.exists(x, x == '--audit-log-path=/var/log/kubernetes/audit/audit.log')) &&
+        (manifest.spec.volumes.exists(v, has(v.hostPath) && v.hostPath.path == '/etc/kubernetes/audit-policy.yaml' && v.hostPath.type == 'File' && manifest.spec.containers[0].volumeMounts.exists(m, m.name == v.name && m.mountPath == '/etc/kubernetes/audit-policy.yaml' && has(m.readOnly) && m.readOnly == true))) &&
+        (manifest.spec.volumes.exists(v, has(v.hostPath) && v.hostPath.path in ['/var/log/kubernetes/audit', '/var/log/kubernetes/audit/'] && v.hostPath.type == 'DirectoryOrCreate' && manifest.spec.containers[0].volumeMounts.exists(m, m.name == v.name && m.mountPath in ['/var/log/kubernetes/audit', '/var/log/kubernetes/audit/'] && (!has(m.readOnly) || m.readOnly == false))))
+      initialContent: |
+        apiVersion: v1
+        kind: Pod
+        metadata:
+          annotations:
+            kubeadm.kubernetes.io/kube-apiserver.advertise-address.endpoint: 10.0.0.10:6443
+          labels:
+            component: kube-apiserver
+            tier: control-plane
+          name: kube-apiserver
+          namespace: kube-system
+        spec:
+          containers:
+          - command:
+            - kube-apiserver
+            - --advertise-address=10.0.0.10
+            - --allow-privileged=true
+            - --authorization-mode=Node,RBAC
+            - --client-ca-file=/etc/kubernetes/pki/ca.crt
+            - --enable-admission-plugins=NodeRestriction
+            - --enable-bootstrap-token-auth=true
+            - --etcd-cafile=/etc/kubernetes/pki/etcd/ca.crt
+            - --etcd-certfile=/etc/kubernetes/pki/apiserver-etcd-client.crt
+            - --etcd-keyfile=/etc/kubernetes/pki/apiserver-etcd-client.key
+            - --etcd-servers=https://127.0.0.1:2379
+            - --kubelet-client-certificate=/etc/kubernetes/pki/apiserver-kubelet-client.crt
+            - --kubelet-client-key=/etc/kubernetes/pki/apiserver-kubelet-client.key
+            - --kubelet-preferred-address-types=InternalIP,ExternalIP,Hostname
+            - --proxy-client-cert-file=/etc/kubernetes/pki/front-proxy-client.crt
+            - --proxy-client-key-file=/etc/kubernetes/pki/front-proxy-client.key
+            - --requestheader-allowed-names=front-proxy-client
+            - --requestheader-client-ca-file=/etc/kubernetes/pki/front-proxy-ca.crt
+            - --requestheader-extra-headers-prefix=X-Remote-Extra-
+            - --requestheader-group-headers=X-Remote-Group
+            - --requestheader-username-headers=X-Remote-User
+            - --secure-port=6443
+            - --service-account-issuer=https://kubernetes.default.svc.cluster.local
+            - --service-account-key-file=/etc/kubernetes/pki/sa.pub
+            - --service-account-signing-key-file=/etc/kubernetes/pki/sa.key
+            - --service-cluster-ip-range=10.96.0.0/12
+            - --tls-cert-file=/etc/kubernetes/pki/apiserver.crt
+            - --tls-private-key-file=/etc/kubernetes/pki/apiserver.key
+            image: registry.k8s.io/kube-apiserver:v1.34.1
+            imagePullPolicy: IfNotPresent
+            livenessProbe:
+              failureThreshold: 8
+              httpGet:
+                host: 10.0.0.10
+                path: /livez
+                port: 6443
+                scheme: HTTPS
+              initialDelaySeconds: 10
+              periodSeconds: 10
+              timeoutSeconds: 15
+            name: kube-apiserver
+            readinessProbe:
+              failureThreshold: 3
+              httpGet:
+                host: 10.0.0.10
+                path: /readyz
+                port: 6443
+                scheme: HTTPS
+              periodSeconds: 1
+              timeoutSeconds: 15
+            resources:
+              requests:
+                cpu: 250m
+            startupProbe:
+              failureThreshold: 8
+              httpGet:
+                host: 10.0.0.10
+                path: /livez
+                port: 6443
+                scheme: HTTPS
+              initialDelaySeconds: 10
+              periodSeconds: 10
+              timeoutSeconds: 15
+            volumeMounts:
+            - mountPath: /etc/ssl/certs
+              name: ca-certs
+              readOnly: true
+            - mountPath: /etc/ca-certificates
+              name: etc-ca-certificates
+              readOnly: true
+            - mountPath: /etc/pki
+              name: etc-pki
+              readOnly: true
+            - mountPath: /etc/kubernetes/pki
+              name: k8s-certs
+              readOnly: true
+            - mountPath: /usr/local/share/ca-certificates
+              name: usr-local-share-ca-certificates
+              readOnly: true
+            - mountPath: /usr/share/ca-certificates
+              name: usr-share-ca-certificates
+              readOnly: true
+          hostNetwork: true
+          priority: 2000001000
+          priorityClassName: system-node-critical
+          securityContext:
+            seccompProfile:
+              type: RuntimeDefault
+          volumes:
+          - hostPath:
+              path: /etc/ssl/certs
+              type: DirectoryOrCreate
+            name: ca-certs
+          - hostPath:
+              path: /etc/ca-certificates
+              type: DirectoryOrCreate
+            name: etc-ca-certificates
+          - hostPath:
+              path: /etc/pki
+              type: DirectoryOrCreate
+            name: etc-pki
+          - hostPath:
+              path: /etc/kubernetes/pki
+              type: DirectoryOrCreate
+            name: k8s-certs
+          - hostPath:
+              path: /usr/local/share/ca-certificates
+              type: DirectoryOrCreate
+            name: usr-local-share-ca-certificates
+          - hostPath:
+              path: /usr/share/ca-certificates
+              type: DirectoryOrCreate
+            name: usr-share-ca-certificates
+  explanation:
+    elements:
+    - type: context
+      text: |
+        The three places that must agree:
+
+        ```yaml
+        # command:
+        - --audit-policy-file=/etc/kubernetes/audit-policy.yaml
+        - --audit-log-path=/var/log/kubernetes/audit/audit.log
+        # volumeMounts:
+        - mountPath: /etc/kubernetes/audit-policy.yaml
+          name: audit
+          readOnly: true
+        - mountPath: /var/log/kubernetes/audit/
+          name: audit-log
+          readOnly: false
+        # volumes:
+        - name: audit
+          hostPath:
+            path: /etc/kubernetes/audit-policy.yaml
+            type: File
+        - name: audit-log
+          hostPath:
+            path: /var/log/kubernetes/audit/
+            type: DirectoryOrCreate
+        ```
+
+        Without `--audit-policy-file` **nothing is logged at all**; without `--audit-log-path` the log
+        backend is off. Without the mounts the flags point to paths that do not exist inside the container
+        (the API server then crashes, or writes inside its own filesystem). The kubelet notices the
+        manifest change and recreates the API server by itself.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/
+        text: Auditing
+      - url: https://kubernetes.io/docs/reference/command-line-tools-reference/kube-apiserver/
+        text: kube-apiserver options
+- title: Log Rotation
+  category: Enabling Audit Logging
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The audit log of a busy cluster grows quickly. Three kube-apiserver flags control the log
+      backend's file rotation. Name them, with the leading dashes.
+  - type: question
+    question:
+      questionType: sequence
+      header: Name the flag.
+      hint: All four start with --audit-log-.
+      steps:
+      - questionType: single-line
+        expectedAnswer: --audit-log-maxage
+        header: 'Maximum number of days to keep old audit log files:'
+        cel: answer.trim() == '--audit-log-maxage'
+      - questionType: single-line
+        expectedAnswer: --audit-log-maxbackup
+        header: 'Maximum number of old audit log files to retain:'
+        cel: answer.trim() == '--audit-log-maxbackup'
+      - questionType: single-line
+        expectedAnswer: --audit-log-maxsize
+        header: 'Maximum size in megabytes of the log file before it is rotated:'
+        cel: answer.trim() == '--audit-log-maxsize'
+      - questionType: single-line
+        expectedAnswer: --audit-log-path
+        header: 'The flag that turns the log backend on, and whose value - (a dash) means standard output:'
+        cel: answer.trim() == '--audit-log-path'
+  - type: context
+    text: |
+      Audit logging is already enabled in this API server manifest. Add rotation: files older than
+      **30 days** are deleted, at most **10** old files are kept, and the log is rotated at **100 MB**.
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: pod-v1
+      header: Edit the manifest and submit it complete.
+      hint: Each value belongs in the same list as the other flags, in the form --flag=value, with the unit implied by the
+        flag.
+      correctAnswerInfo: maxage counts days, maxsize counts megabytes, maxbackup counts files. Rotation only happens for the
+        log backend; with --audit-log-path=- (stdout) nothing is rotated by the API server.
+      cel: |-
+        (['kube-apiserver', '--advertise-address=10.0.0.10', '--authorization-mode=Node,RBAC', '--client-ca-file=/etc/kubernetes/pki/ca.crt', '--etcd-servers=https://127.0.0.1:2379', '--secure-port=6443', '--service-cluster-ip-range=10.96.0.0/12', '--tls-cert-file=/etc/kubernetes/pki/apiserver.crt', '--tls-private-key-file=/etc/kubernetes/pki/apiserver.key', '--audit-policy-file=/etc/kubernetes/audit-policy.yaml', '--audit-log-path=/var/log/kubernetes/audit/audit.log'].all(f, manifest.spec.containers[0].command.exists(x, x == f))) &&
+        (['ca-certs', 'k8s-certs'].all(n, manifest.spec.volumes.exists(v, v.name == n) && manifest.spec.containers[0].volumeMounts.exists(m, m.name == n))) &&
+        (manifest.spec.containers[0].command.exists(x, x == '--audit-log-maxage=30')) &&
+        (manifest.spec.containers[0].command.exists(x, x == '--audit-log-maxbackup=10')) &&
+        (manifest.spec.containers[0].command.exists(x, x == '--audit-log-maxsize=100')) &&
+        (manifest.spec.volumes.exists(v, has(v.hostPath) && v.hostPath.path == '/etc/kubernetes/audit-policy.yaml' && v.hostPath.type == 'File' && manifest.spec.containers[0].volumeMounts.exists(m, m.name == v.name && m.mountPath == '/etc/kubernetes/audit-policy.yaml' && has(m.readOnly) && m.readOnly == true))) &&
+        (manifest.spec.volumes.exists(v, has(v.hostPath) && v.hostPath.path in ['/var/log/kubernetes/audit', '/var/log/kubernetes/audit/'] && v.hostPath.type == 'DirectoryOrCreate' && manifest.spec.containers[0].volumeMounts.exists(m, m.name == v.name && m.mountPath in ['/var/log/kubernetes/audit', '/var/log/kubernetes/audit/'] && (!has(m.readOnly) || m.readOnly == false))))
+      initialContent: |
+        apiVersion: v1
+        kind: Pod
+        metadata:
+          annotations:
+            kubeadm.kubernetes.io/kube-apiserver.advertise-address.endpoint: 10.0.0.10:6443
+          labels:
+            component: kube-apiserver
+            tier: control-plane
+          name: kube-apiserver
+          namespace: kube-system
+        spec:
+          containers:
+          - command:
+            - kube-apiserver
+            - --advertise-address=10.0.0.10
+            - --authorization-mode=Node,RBAC
+            - --client-ca-file=/etc/kubernetes/pki/ca.crt
+            - --etcd-servers=https://127.0.0.1:2379
+            - --secure-port=6443
+            - --service-cluster-ip-range=10.96.0.0/12
+            - --tls-cert-file=/etc/kubernetes/pki/apiserver.crt
+            - --tls-private-key-file=/etc/kubernetes/pki/apiserver.key
+            - --audit-policy-file=/etc/kubernetes/audit-policy.yaml
+            - --audit-log-path=/var/log/kubernetes/audit/audit.log
+            image: registry.k8s.io/kube-apiserver:v1.34.1
+            imagePullPolicy: IfNotPresent
+            livenessProbe:
+              failureThreshold: 8
+              httpGet:
+                host: 10.0.0.10
+                path: /livez
+                port: 6443
+                scheme: HTTPS
+              initialDelaySeconds: 10
+              periodSeconds: 10
+              timeoutSeconds: 15
+            name: kube-apiserver
+            readinessProbe:
+              failureThreshold: 3
+              httpGet:
+                host: 10.0.0.10
+                path: /readyz
+                port: 6443
+                scheme: HTTPS
+              periodSeconds: 1
+              timeoutSeconds: 15
+            resources:
+              requests:
+                cpu: 250m
+            startupProbe:
+              failureThreshold: 8
+              httpGet:
+                host: 10.0.0.10
+                path: /livez
+                port: 6443
+                scheme: HTTPS
+              initialDelaySeconds: 10
+              periodSeconds: 10
+              timeoutSeconds: 15
+            volumeMounts:
+            - mountPath: /etc/ssl/certs
+              name: ca-certs
+              readOnly: true
+            - mountPath: /etc/kubernetes/pki
+              name: k8s-certs
+              readOnly: true
+            - mountPath: /etc/kubernetes/audit-policy.yaml
+              name: audit
+              readOnly: true
+            - mountPath: /var/log/kubernetes/audit/
+              name: audit-log
+              readOnly: false
+          hostNetwork: true
+          priority: 2000001000
+          priorityClassName: system-node-critical
+          securityContext:
+            seccompProfile:
+              type: RuntimeDefault
+          volumes:
+          - hostPath:
+              path: /etc/ssl/certs
+              type: DirectoryOrCreate
+            name: ca-certs
+          - hostPath:
+              path: /etc/kubernetes/pki
+              type: DirectoryOrCreate
+            name: k8s-certs
+          - hostPath:
+              path: /etc/kubernetes/audit-policy.yaml
+              type: File
+            name: audit
+          - hostPath:
+              path: /var/log/kubernetes/audit/
+              type: DirectoryOrCreate
+            name: audit-log
+  explanation:
+    elements:
+    - type: context
+      text: |
+        | Flag | Meaning | Unit |
+        |---|---|---|
+        | `--audit-log-path` | file for the log backend (`-` = stdout); without it the backend is off | path |
+        | `--audit-log-maxage` | delete rotated files older than this | days |
+        | `--audit-log-maxbackup` | keep at most this many rotated files | files |
+        | `--audit-log-maxsize` | rotate when the file reaches this size | MB |
+
+        Without rotation flags, nothing is ever deleted and the file grows until the disk is full — a
+        classic way to take a control plane down. The policy is configured separately, with
+        `--audit-policy-file`.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/
+        text: Auditing
+      - url: https://kubernetes.io/docs/reference/command-line-tools-reference/kube-apiserver/
+        text: kube-apiserver options
+- title: Applying the Change and Checking the Log
+  category: Enabling Audit Logging
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      You saved the new `/etc/kubernetes/manifests/kube-apiserver.yaml` on the control-plane node.
+      Nobody ran any command to restart the API server.
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: kubelet
+      header: Which component notices the changed manifest and recreates the API server Pod?
+      hint: Static Pods are not managed through the API.
+      cel: answer.trim().lowerAscii() in ['kubelet', 'the kubelet']
+  - type: question
+    question:
+      questionType: command
+      header: List the kube-apiserver containers known to the container runtime on this node, to see whether a new one is
+        running.
+      hint: The runtime's CLI can filter containers by name.
+      command:
+        executable: crictl
+        subcommands:
+        - name: ps
+        flags:
+        - name: name
+          required: true
+          value: kube-apiserver
+        - name: all
+          short: a
+          boolean: true
+  - type: manifest
+    header: $ crictl ps --name kube-apiserver
+    content: |
+      CONTAINER           IMAGE               CREATED             STATE               NAME                ATTEMPT             POD ID              POD                          NAMESPACE
+      4d1a8c07f2b6e       8a2c91f5d3e47       38 seconds ago      Running             kube-apiserver      0                   b72e0c91a4d35       kube-apiserver-controlplane  kube-system
+  - type: question
+    question:
+      questionType: command
+      header: Watch the audit log fill up with new events.
+      hint: The classic command for watching a growing file.
+      command:
+        executable: tail
+        positionals:
+        - index: 0
+          value: /var/log/kubernetes/audit/audit.log
+        flags:
+        - name: follow
+          short: f
+          required: true
+          boolean: true
+        - name: lines
+          short: n
+          regex: ^\d+$
+        - name: retry
+          boolean: true
+  - type: manifest
+    header: $ tail -f /var/log/kubernetes/audit/audit.log  (first lines)
+    content: |
+      {"kind":"Event","apiVersion":"audit.k8s.io/v1","level":"Metadata","auditID":"7c1e5d2a-0b4f-4c3e-9a11-3d0b7f6a52e00","stage":"ResponseComplete","requestURI":"/apis/coordination.k8s.io/v1/namespaces/kube-node-lease/leases/controlplane","verb":"get","user":{"username":"system:node:controlplane","groups":["system:nodes","system:authenticated"]},"sourceIPs":["10.0.0.10"],"userAgent":"kubelet/v1.34.1 (linux/amd64) kubernetes/93248f9","objectRef":{"resource":"leases","namespace":"kube-node-lease","name":"controlplane","apiVersion":"v1"},"responseStatus":{"metadata":{},"code":200},"requestReceivedTimestamp":"2026-10-24T14:02:11.402118Z","stageTimestamp":"2026-10-24T14:02:11.402118Z","annotations":{"authorization.k8s.io/decision":"allow","authorization.k8s.io/reason":"RBAC: allowed by ClusterRoleBinding"}}
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Static Pod manifests are watched by the **kubelet**. When the file changes it stops the old
+        container and starts a new one from the new definition — for a minute or so `kubectl` will fail
+        while the API server restarts. To follow it:
+
+        1. `crictl ps --name kube-apiserver` — is there a **new, running** container (low `CREATED` age)?
+        2. `tail -f /var/log/kubernetes/audit/audit.log` — do events appear?
+        3. If neither: see the troubleshooting scenarios (`crictl ps -a`, `crictl logs`, `journalctl -u kubelet`).
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/
+        text: Auditing
+      - url: https://kubernetes.io/docs/tasks/debug/debug-cluster/crictl/
+        text: Debugging Kubernetes nodes with crictl
+- title: Editing the Policy Needs a Restart
+  category: Enabling Audit Logging
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Auditing works. You now change a rule in `/etc/kubernetes/audit-policy.yaml` and wait — but the
+      new level does not show up in the log.
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: after it restarts
+      header: When does the kube-apiserver use the changed policy file? Answer in a few words.
+      hint: The file is read once.
+      correctAnswerInfo: The API server loads the audit policy at start-up only. Editing the file does not change anything
+        in the running process — and the static Pod manifest did not change, so the kubelet does not restart it either.
+      cel: answer.lowerAscii().matches(r'restart|re-start|recreat|start')
+  - type: context
+    text: |
+      The kubelet restarts a static Pod when its manifest is removed and re-added. Force the restart in
+      two steps: first **move the manifest out** of the manifests directory into `/tmp`.
+  - type: question
+    question:
+      questionType: command
+      header: Move the API server manifest to /tmp.
+      hint: Moving the file removes the Pod definition from the directory the kubelet watches.
+      command:
+        executable: mv
+        positionals:
+        - index: 0
+          value: /etc/kubernetes/manifests/kube-apiserver.yaml
+        - index: 1
+          regex: ^/tmp(/kube-apiserver\.yaml|/)?$
+  - type: context
+    text: |
+      The API server container stops (`kubectl` refuses connections). After about twenty seconds you put the manifest back.
+  - type: question
+    question:
+      questionType: command
+      header: Move /tmp/kube-apiserver.yaml back into the manifests directory.
+      command:
+        executable: mv
+        positionals:
+        - index: 0
+          value: /tmp/kube-apiserver.yaml
+        - index: 1
+          regex: ^/etc/kubernetes/manifests(/kube-apiserver\.yaml|/)?$
+  explanation:
+    elements:
+    - type: context
+      text: |
+        A static Pod is (re)created by the kubelet whenever the **manifest file** changes or disappears and
+        reappears. The *policy file* is not part of the manifest, so editing only the policy does nothing
+        until the API server process restarts. The usual exam procedure:
+
+        ```
+        mv /etc/kubernetes/manifests/kube-apiserver.yaml /tmp/
+        # wait until crictl ps no longer shows the API server (about 20 seconds)
+        mv /tmp/kube-apiserver.yaml /etc/kubernetes/manifests/
+        ```
+
+        Do not leave the manifest out for long: the cluster has no API while it is gone. Also, never keep a
+        backup copy *inside* `/etc/kubernetes/manifests/` — the kubelet would try to run every file there.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/
+        text: Auditing
+- title: 'The API Server Does Not Come Back: Missing Policy Mount'
+  category: Troubleshooting the API Server
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      You added the two audit flags and the log directory mount to the API server manifest, but
+      since the edit `kubectl` answers:
+
+      `The connection to the server 10.0.0.10:6443 was refused - did you specify the right host or port?`
+
+      You are on the control-plane node. First look at the API server containers the runtime knows
+      about, **including exited ones**.
+  - type: question
+    question:
+      questionType: command
+      header: List all kube-apiserver containers, running or not.
+      hint: Exited containers are hidden unless you ask for all of them.
+      command:
+        executable: crictl
+        subcommands:
+        - name: ps
+        flags:
+        - name: all
+          short: a
+          required: true
+          boolean: true
+        - name: name
+          required: true
+          value: kube-apiserver
+  - type: manifest
+    header: $ crictl ps -a --name kube-apiserver
+    content: |
+      CONTAINER           IMAGE               CREATED             STATE               NAME                ATTEMPT             POD ID              POD                          NAMESPACE
+      a91f3c5e2d7b8       8a2c91f5d3e47       40 seconds ago      Exited              kube-apiserver      3                   b72e0c91a4d35       kube-apiserver-controlplane  kube-system
+      e5037bd91c4a2       8a2c91f5d3e47       2 minutes ago       Exited              kube-apiserver      2                   b72e0c91a4d35       kube-apiserver-controlplane  kube-system
+  - type: question
+    question:
+      questionType: command
+      header: Read the log of the most recent attempt (the one created 40 seconds ago).
+      hint: The log command takes a container ID, and the newest attempt has the highest attempt number.
+      command:
+        executable: crictl
+        subcommands:
+        - name: logs
+        positionals:
+        - index: 0
+          regex: ^a91f3c5e2d7b8?[0-9a-f]*$
+        flags:
+        - name: tail
+          regex: ^\d+$
+  - type: manifest
+    header: $ crictl logs a91f3c5e2d7b8
+    content: |
+      Error: loading audit policy file: failed to read file path "/etc/kubernetes/audit-policy.yaml": open /etc/kubernetes/audit-policy.yaml: no such file or directory
+  - type: context
+    text: |
+      The policy file does exist **on the host**. Here is the manifest as it stands:
+  - type: manifest
+    header: /etc/kubernetes/manifests/kube-apiserver.yaml
+    content: |
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        annotations:
+          kubeadm.kubernetes.io/kube-apiserver.advertise-address.endpoint: 10.0.0.10:6443
+        labels:
+          component: kube-apiserver
+          tier: control-plane
+        name: kube-apiserver
+        namespace: kube-system
+      spec:
+        containers:
+        - command:
+          - kube-apiserver
+          - --advertise-address=10.0.0.10
+          - --authorization-mode=Node,RBAC
+          - --client-ca-file=/etc/kubernetes/pki/ca.crt
+          - --etcd-servers=https://127.0.0.1:2379
+          - --secure-port=6443
+          - --service-cluster-ip-range=10.96.0.0/12
+          - --tls-cert-file=/etc/kubernetes/pki/apiserver.crt
+          - --tls-private-key-file=/etc/kubernetes/pki/apiserver.key
+          - --audit-policy-file=/etc/kubernetes/audit-policy.yaml
+          - --audit-log-path=/var/log/kubernetes/audit/audit.log
+          image: registry.k8s.io/kube-apiserver:v1.34.1
+          imagePullPolicy: IfNotPresent
+          livenessProbe:
+            failureThreshold: 8
+            httpGet:
+              host: 10.0.0.10
+              path: /livez
+              port: 6443
+              scheme: HTTPS
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 15
+          name: kube-apiserver
+          readinessProbe:
+            failureThreshold: 3
+            httpGet:
+              host: 10.0.0.10
+              path: /readyz
+              port: 6443
+              scheme: HTTPS
+            periodSeconds: 1
+            timeoutSeconds: 15
+          resources:
+            requests:
+              cpu: 250m
+          startupProbe:
+            failureThreshold: 8
+            httpGet:
+              host: 10.0.0.10
+              path: /livez
+              port: 6443
+              scheme: HTTPS
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 15
+          volumeMounts:
+          - mountPath: /etc/ssl/certs
+            name: ca-certs
+            readOnly: true
+          - mountPath: /etc/kubernetes/pki
+            name: k8s-certs
+            readOnly: true
+          - mountPath: /var/log/kubernetes/audit/
+            name: audit-log
+            readOnly: false
+        hostNetwork: true
+        priority: 2000001000
+        priorityClassName: system-node-critical
+        securityContext:
+          seccompProfile:
+            type: RuntimeDefault
+        volumes:
+        - hostPath:
+            path: /etc/ssl/certs
+            type: DirectoryOrCreate
+          name: ca-certs
+        - hostPath:
+            path: /etc/kubernetes/pki
+            type: DirectoryOrCreate
+          name: k8s-certs
+        - hostPath:
+            path: /var/log/kubernetes/audit/
+            type: DirectoryOrCreate
+          name: audit-log
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: pod-v1
+      header: Fix the manifest so that the policy file reaches the container, as a read-only mount. Submit the complete manifest.
+      hint: The flag points to a path inside the container. What makes a file from the host visible there?
+      correctAnswerInfo: 'The error says the file cannot be opened *by the process in the container*: without a volume and
+        mount the path simply does not exist there.'
+      cel: |-
+        (['kube-apiserver', '--advertise-address=10.0.0.10', '--authorization-mode=Node,RBAC', '--client-ca-file=/etc/kubernetes/pki/ca.crt', '--etcd-servers=https://127.0.0.1:2379', '--secure-port=6443', '--service-cluster-ip-range=10.96.0.0/12', '--tls-cert-file=/etc/kubernetes/pki/apiserver.crt', '--tls-private-key-file=/etc/kubernetes/pki/apiserver.key'].all(f, manifest.spec.containers[0].command.exists(x, x == f))) &&
+        (['ca-certs', 'k8s-certs'].all(n, manifest.spec.volumes.exists(v, v.name == n) && manifest.spec.containers[0].volumeMounts.exists(m, m.name == n))) &&
+        (manifest.spec.containers[0].command.exists(x, x == '--audit-policy-file=/etc/kubernetes/audit-policy.yaml')) &&
+        (manifest.spec.containers[0].command.exists(x, x == '--audit-log-path=/var/log/kubernetes/audit/audit.log')) &&
+        (manifest.spec.volumes.exists(v, has(v.hostPath) && v.hostPath.path == '/etc/kubernetes/audit-policy.yaml' && v.hostPath.type == 'File' && manifest.spec.containers[0].volumeMounts.exists(m, m.name == v.name && m.mountPath == '/etc/kubernetes/audit-policy.yaml' && has(m.readOnly) && m.readOnly == true))) &&
+        (manifest.spec.volumes.exists(v, has(v.hostPath) && v.hostPath.path in ['/var/log/kubernetes/audit', '/var/log/kubernetes/audit/'] && v.hostPath.type == 'DirectoryOrCreate' && manifest.spec.containers[0].volumeMounts.exists(m, m.name == v.name && m.mountPath in ['/var/log/kubernetes/audit', '/var/log/kubernetes/audit/'] && (!has(m.readOnly) || m.readOnly == false))))
+      initialContent: |
+        apiVersion: v1
+        kind: Pod
+        metadata:
+          annotations:
+            kubeadm.kubernetes.io/kube-apiserver.advertise-address.endpoint: 10.0.0.10:6443
+          labels:
+            component: kube-apiserver
+            tier: control-plane
+          name: kube-apiserver
+          namespace: kube-system
+        spec:
+          containers:
+          - command:
+            - kube-apiserver
+            - --advertise-address=10.0.0.10
+            - --authorization-mode=Node,RBAC
+            - --client-ca-file=/etc/kubernetes/pki/ca.crt
+            - --etcd-servers=https://127.0.0.1:2379
+            - --secure-port=6443
+            - --service-cluster-ip-range=10.96.0.0/12
+            - --tls-cert-file=/etc/kubernetes/pki/apiserver.crt
+            - --tls-private-key-file=/etc/kubernetes/pki/apiserver.key
+            - --audit-policy-file=/etc/kubernetes/audit-policy.yaml
+            - --audit-log-path=/var/log/kubernetes/audit/audit.log
+            image: registry.k8s.io/kube-apiserver:v1.34.1
+            imagePullPolicy: IfNotPresent
+            livenessProbe:
+              failureThreshold: 8
+              httpGet:
+                host: 10.0.0.10
+                path: /livez
+                port: 6443
+                scheme: HTTPS
+              initialDelaySeconds: 10
+              periodSeconds: 10
+              timeoutSeconds: 15
+            name: kube-apiserver
+            readinessProbe:
+              failureThreshold: 3
+              httpGet:
+                host: 10.0.0.10
+                path: /readyz
+                port: 6443
+                scheme: HTTPS
+              periodSeconds: 1
+              timeoutSeconds: 15
+            resources:
+              requests:
+                cpu: 250m
+            startupProbe:
+              failureThreshold: 8
+              httpGet:
+                host: 10.0.0.10
+                path: /livez
+                port: 6443
+                scheme: HTTPS
+              initialDelaySeconds: 10
+              periodSeconds: 10
+              timeoutSeconds: 15
+            volumeMounts:
+            - mountPath: /etc/ssl/certs
+              name: ca-certs
+              readOnly: true
+            - mountPath: /etc/kubernetes/pki
+              name: k8s-certs
+              readOnly: true
+            - mountPath: /var/log/kubernetes/audit/
+              name: audit-log
+              readOnly: false
+          hostNetwork: true
+          priority: 2000001000
+          priorityClassName: system-node-critical
+          securityContext:
+            seccompProfile:
+              type: RuntimeDefault
+          volumes:
+          - hostPath:
+              path: /etc/ssl/certs
+              type: DirectoryOrCreate
+            name: ca-certs
+          - hostPath:
+              path: /etc/kubernetes/pki
+              type: DirectoryOrCreate
+            name: k8s-certs
+          - hostPath:
+              path: /var/log/kubernetes/audit/
+              type: DirectoryOrCreate
+            name: audit-log
+  explanation:
+    elements:
+    - type: context
+      text: |
+        A systematic way to debug a control-plane component that does not start:
+
+        1. `crictl ps -a --name kube-apiserver` — is there a container, and is it `Exited` with a rising
+           `ATTEMPT` count (crash loop)?
+        2. `crictl logs <id of the newest attempt>` — the last lines name the reason.
+        3. Fix the **manifest** (or the file it refers to); the kubelet recreates the Pod automatically.
+
+        The message `loading audit policy file: failed to read file path ...: no such file or directory`
+        means the path in `--audit-policy-file` is not visible *inside the container*: the volume and the
+        volumeMount are missing, or their paths differ from the flag.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/tasks/debug/debug-cluster/crictl/
+        text: Debugging Kubernetes nodes with crictl
+      - url: https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/
+        text: Auditing
+- title: Container Logs on Disk
+  category: Troubleshooting the API Server
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      `crictl logs` prints nothing useful for the crashed API server (the container was already cleaned
+      up). The kubelet keeps the container logs of every Pod on disk, in a directory named
+      `<namespace>_<pod name>_<pod uid>` below one well-known parent directory, with one subdirectory per
+      container and one file per attempt (`0.log`, `1.log`, ...).
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: /var/log/pods/kube-system_kube-apiserver-*/kube-apiserver/
+      header: Give the parent directory, and the pattern of the directory that holds the kube-apiserver container's log files
+        (use * for the uid).
+      hint: The parent is /var/log/<something plural>, and the directory name starts with the namespace.
+      correctAnswerInfo: /var/log/containers/ holds symlinks named <pod>_<namespace>_<container>-<id>.log pointing into /var/log/pods/.
+      cel: answer.trim().matches(r'^/var/log/pods/kube-system_kube-apiserver-[\w.-]*_?\*?/kube-apiserver/?(\*\.log)?$') ||
+        answer.trim().matches(r'^/var/log/pods/kube-system_kube-apiserver-\*/kube-apiserver/?$')
+  - type: manifest
+    header: $ ls /var/log/pods/kube-system_kube-apiserver-controlplane_1d2f9a47b3c58e6a0f7b2c9d4e5a6b01/kube-apiserver/
+    content: |
+      0.log  1.log
+  - type: question
+    question:
+      questionType: command
+      header: Show the last 5 lines of the log of the most recent attempt (the highest number).
+      hint: Higher attempt numbers are newer.
+      command:
+        executable: tail
+        positionals:
+        - index: 0
+          value: /var/log/pods/kube-system_kube-apiserver-controlplane_1d2f9a47b3c58e6a0f7b2c9d4e5a6b01/kube-apiserver/1.log
+        flags:
+        - name: lines
+          short: n
+          required: true
+          regex: ^5$
+  - type: manifest
+    header: (last lines)
+    content: |
+      2026-10-24T14:30:52.118404112Z stderr F Error: loading audit policy file: failed to read file path "/etc/kubernetes/audit-policy.yaml": open /etc/kubernetes/audit-policy.yaml: no such file or directory
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Where container logs live **on the node**, even when the runtime no longer lists the container:
+
+        | Location | Contents |
+        |---|---|
+        | `/var/log/pods/<ns>_<pod>_<uid>/<container>/<attempt>.log` | the real files |
+        | `/var/log/containers/<pod>_<ns>_<container>-<id>.log` | symlinks to the above |
+
+        This is the fallback when `crictl logs` has nothing: both paths are readable with `tail`/`cat`, and
+        they survive container restarts (one file per attempt).
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/tasks/debug/debug-cluster/crictl/
+        text: Debugging Kubernetes nodes with crictl
+- title: The Policy File Does Not Exist on the Host
+  category: Troubleshooting the API Server
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The manifest now has the policy volume and mount, but the API server is still down. `crictl ps -a
+      --name kube-apiserver` lists **no container at all** — not even an exited one. The Pod is
+      scheduled by the kubelet, so the kubelet's own log is the place to look.
+  - type: question
+    question:
+      questionType: command
+      header: Show the log of the kubelet service.
+      hint: The kubelet runs as a systemd service.
+      command:
+        executable: journalctl
+        strictness: permissive
+        flags:
+        - name: unit
+          short: u
+          required: true
+          value: kubelet
+        - name: lines
+          short: n
+          regex: ^\d+$
+        - name: no-pager
+          boolean: true
+        - name: since
+          regex: ^.*$
+  - type: manifest
+    header: $ journalctl -u kubelet -n 3
+    content: |
+      Oct 24 14:41:09 controlplane kubelet[912]: E1024 14:41:09.331812     912 pod_workers.go:1301] "Error syncing pod, skipping" err="unmounted volumes=[audit], unattached volumes=[audit], failed to process volumes=[]: context deadline exceeded" pod="kube-system/kube-apiserver-controlplane"
+      Oct 24 14:41:09 controlplane kubelet[912]: E1024 14:41:09.402277     912 kubelet.go:2951] "Unable to attach or mount volumes for pod; skipping pod" err="unmounted volumes=[audit]" pod="kube-system/kube-apiserver-controlplane"
+      Oct 24 14:41:10 controlplane kubelet[912]: E1024 14:41:10.118890     912 kubelet.go:2951] "MountVolume.SetUp failed for volume \"audit\" : hostPath type check failed: /etc/kubernetes/audit-policy.yaml is not a file" pod="kube-system/kube-apiserver-controlplane"
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: /etc/kubernetes/audit-policy.yaml
+      header: Which path must exist on the host as a regular file for the Pod to start?
+      hint: Read the end of the MountVolume.SetUp message.
+      cel: answer.trim() == '/etc/kubernetes/audit-policy.yaml'
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: audit-policy-v1
+      header: Create the missing file with a valid policy that logs every request at the Request level and omits the RequestReceived
+        stage.
+      hint: The smallest valid policy has one rule without selectors.
+      cel: manifest.omitStages == ['RequestReceived'] && manifest.rules.size() == 1 && manifest.rules[0].level == 'Request'
+        && manifest.rules[0].size() == 1
+  explanation:
+    elements:
+    - type: context
+      text: |
+        A `hostPath` volume with `type: File` is **checked by the kubelet before the container is created**.
+        If the file does not exist, the container is never created, which is why `crictl` shows nothing:
+        the failure is visible only in the kubelet's log and in the Pod's events
+        (`hostPath type check failed: ... is not a file`).
+
+        Remedies: create the file, or change the type (`FileOrCreate` would create an *empty* file — an empty
+        policy file then makes the API server fail with the zero-rules error instead). For the log directory
+        the type `DirectoryOrCreate` avoids this problem.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/
+        text: Auditing
+      - url: https://kubernetes.io/docs/concepts/storage/volumes/#hostpath
+        text: hostPath volumes
+- title: A Misspelt Level
+  category: Troubleshooting the API Server
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      After the latest change to the policy and a restart, the API server stays down.
+      `crictl logs <newest container>` ends with:
+  - type: manifest
+    header: $ crictl logs <newest container>
+    content: |
+      Error: loading audit policy file: rules[1].level: Unsupported value: "Metdata": supported values: "None", "Metadata", "Request", "RequestResponse": from file /etc/kubernetes/audit-policy.yaml
+  - type: manifest
+    header: /etc/kubernetes/audit-policy.yaml
+    content: |
+      apiVersion: audit.k8s.io/v1
+      kind: Policy
+      omitStages:
+      - RequestReceived
+      rules:
+      - level: None
+        nonResourceURLs:
+        - /healthz*
+        - /livez*
+        - /readyz*
+      - level: Metdata
+        resources:
+        - group: ''
+          resources:
+          - secrets
+      - level: Request
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: '1'
+      header: Counting from 0, which rule of the policy does the error point to? Answer with the number.
+      hint: The index is part of the path at the start of the message.
+      cel: answer.trim() == '1'
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: audit-policy-v1
+      header: Correct the policy, changing only what the error complains about.
+      hint: The allowed values are listed in the message itself. Levels are case-sensitive.
+      correctAnswerInfo: 'Invalid values — as opposed to unknown field names — stop the API server: the policy is validated
+        and the first error is fatal.'
+      cel: manifest.rules.size() == 3 && manifest.rules[0].level == 'None' && manifest.rules[1].level == 'Metadata' && manifest.rules[1].resources.exists(g,
+        g.group == '' && 'secrets' in g.resources) && manifest.rules[2].level == 'Request' && manifest.omitStages == ['RequestReceived']
+      initialContent: |
+        apiVersion: audit.k8s.io/v1
+        kind: Policy
+        omitStages:
+        - RequestReceived
+        rules:
+        - level: None
+          nonResourceURLs:
+          - /healthz*
+          - /livez*
+          - /readyz*
+        - level: Metdata
+          resources:
+          - group: ''
+            resources:
+            - secrets
+        - level: Request
+  explanation:
+    elements:
+    - type: context
+      text: |
+        The API server validates the policy at start-up and **refuses to start** on invalid values. The
+        message names the path (`rules[1].level`), the bad value, and the **allowed values** — usually all
+        you need. Other fatal errors you may see:
+
+        | Message | Cause |
+        |---|---|
+        | `loaded illegal policy with 0 rules` | `rules` empty or missing |
+        | `level: Required value` | a rule without `level` |
+        | `rules cannot apply to both regular resources and non-resource URLs` | `resources`/`namespaces` together with `nonResourceURLs` |
+        | `allowed stages are RequestReceived,ResponseStarted,ResponseComplete,Panic` | invalid `omitStages` entry |
+        | `unknown group version field` | wrong `apiVersion`/`kind` |
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/
+        text: Auditing
+      - url: https://kubernetes.io/docs/reference/config-api/apiserver-audit.v1/
+        text: Audit API reference (Policy and Event)
+- title: A Policy Without Rules
+  category: Troubleshooting the API Server
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      A colleague commented out the only rule "temporarily". The API server does not come back and logs:
+
+      `Error: loading audit policy file: loaded illegal policy with 0 rules: from file /etc/kubernetes/audit-policy.yaml`
+  - type: manifest
+    header: /etc/kubernetes/audit-policy.yaml
+    content: |
+      apiVersion: audit.k8s.io/v1
+      kind: Policy
+      rules:
+      # - level: Metadata
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: audit-policy-v1
+      header: Fix the policy so that it is valid and logs every request at the Metadata level.
+      hint: A policy needs at least one rule. A rule without selectors applies to all requests.
+      cel: manifest.rules.size() == 1 && manifest.rules[0].level == 'Metadata' && manifest.rules[0].size() == 1
+      initialContent: |
+        apiVersion: audit.k8s.io/v1
+        kind: Policy
+        rules:
+        # - level: Metadata
+  explanation:
+    elements:
+    - type: context
+      text: |
+        `rules` is the one mandatory part of a policy, and **zero rules is illegal**: the API server
+        refuses to start rather than silently logging nothing. To switch logging *off* deliberately, do not
+        empty the policy — remove the `--audit-policy-file` flag (nothing is logged without it) or use one
+        rule with `level: None`.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/
+        text: Auditing
+- title: The Log Stays Empty on the Host
+  category: Troubleshooting the API Server
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The API server is running and `kubectl` works, the audit flags are set — but on the node there is
+      no audit log. The policy volume and mount are in place; here is the manifest:
+  - type: manifest
+    header: /etc/kubernetes/manifests/kube-apiserver.yaml
+    content: |
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        annotations:
+          kubeadm.kubernetes.io/kube-apiserver.advertise-address.endpoint: 10.0.0.10:6443
+        labels:
+          component: kube-apiserver
+          tier: control-plane
+        name: kube-apiserver
+        namespace: kube-system
+      spec:
+        containers:
+        - command:
+          - kube-apiserver
+          - --advertise-address=10.0.0.10
+          - --authorization-mode=Node,RBAC
+          - --client-ca-file=/etc/kubernetes/pki/ca.crt
+          - --etcd-servers=https://127.0.0.1:2379
+          - --secure-port=6443
+          - --service-cluster-ip-range=10.96.0.0/12
+          - --tls-cert-file=/etc/kubernetes/pki/apiserver.crt
+          - --tls-private-key-file=/etc/kubernetes/pki/apiserver.key
+          - --audit-policy-file=/etc/kubernetes/audit-policy.yaml
+          - --audit-log-path=/var/log/kubernetes/audit/audit.log
+          image: registry.k8s.io/kube-apiserver:v1.34.1
+          imagePullPolicy: IfNotPresent
+          livenessProbe:
+            failureThreshold: 8
+            httpGet:
+              host: 10.0.0.10
+              path: /livez
+              port: 6443
+              scheme: HTTPS
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 15
+          name: kube-apiserver
+          readinessProbe:
+            failureThreshold: 3
+            httpGet:
+              host: 10.0.0.10
+              path: /readyz
+              port: 6443
+              scheme: HTTPS
+            periodSeconds: 1
+            timeoutSeconds: 15
+          resources:
+            requests:
+              cpu: 250m
+          startupProbe:
+            failureThreshold: 8
+            httpGet:
+              host: 10.0.0.10
+              path: /livez
+              port: 6443
+              scheme: HTTPS
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 15
+          volumeMounts:
+          - mountPath: /etc/ssl/certs
+            name: ca-certs
+            readOnly: true
+          - mountPath: /etc/kubernetes/pki
+            name: k8s-certs
+            readOnly: true
+          - mountPath: /etc/kubernetes/audit-policy.yaml
+            name: audit
+            readOnly: true
+        hostNetwork: true
+        priority: 2000001000
+        priorityClassName: system-node-critical
+        securityContext:
+          seccompProfile:
+            type: RuntimeDefault
+        volumes:
+        - hostPath:
+            path: /etc/ssl/certs
+            type: DirectoryOrCreate
+          name: ca-certs
+        - hostPath:
+            path: /etc/kubernetes/pki
+            type: DirectoryOrCreate
+          name: k8s-certs
+        - hostPath:
+            path: /etc/kubernetes/audit-policy.yaml
+            type: File
+          name: audit
+  - type: question
+    question:
+      questionType: command
+      header: Look at the audit log directory on the node.
+      hint: Just list the directory the flag points to.
+      command:
+        executable: ls
+        positionals:
+        - index: 0
+          regex: ^/var/log/kubernetes/audit/?$
+        flags:
+        - name: long
+          short: l
+          boolean: true
+        - name: all
+          short: a
+          boolean: true
+  - type: manifest
+    header: $ ls -l /var/log/kubernetes/audit/
+    content: |
+      total 0
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: inside the container
+      header: The API server is writing audit.log somewhere, since it is running. Where, in one phrase?
+      hint: The path is valid inside the container even without a mount.
+      correctAnswerInfo: Without a mount, the path exists in the container's writable layer and the file vanishes with the
+        container.
+      cel: answer.lowerAscii().matches(r'(inside|in) (the )?(api ?server )?container|container.s (own )?(file ?system|layer)|container
+        file ?system|ephemeral')
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: pod-v1
+      header: Fix the manifest so that the log is written to the host directory (created if missing, writable). Submit the
+        complete manifest.
+      hint: The same pair as for the policy file, but for a directory that the process writes into.
+      cel: |-
+        (['kube-apiserver', '--advertise-address=10.0.0.10', '--authorization-mode=Node,RBAC', '--client-ca-file=/etc/kubernetes/pki/ca.crt', '--etcd-servers=https://127.0.0.1:2379', '--secure-port=6443', '--service-cluster-ip-range=10.96.0.0/12', '--tls-cert-file=/etc/kubernetes/pki/apiserver.crt', '--tls-private-key-file=/etc/kubernetes/pki/apiserver.key'].all(f, manifest.spec.containers[0].command.exists(x, x == f))) &&
+        (['ca-certs', 'k8s-certs'].all(n, manifest.spec.volumes.exists(v, v.name == n) && manifest.spec.containers[0].volumeMounts.exists(m, m.name == n))) &&
+        (manifest.spec.containers[0].command.exists(x, x == '--audit-policy-file=/etc/kubernetes/audit-policy.yaml')) &&
+        (manifest.spec.containers[0].command.exists(x, x == '--audit-log-path=/var/log/kubernetes/audit/audit.log')) &&
+        (manifest.spec.volumes.exists(v, has(v.hostPath) && v.hostPath.path == '/etc/kubernetes/audit-policy.yaml' && v.hostPath.type == 'File' && manifest.spec.containers[0].volumeMounts.exists(m, m.name == v.name && m.mountPath == '/etc/kubernetes/audit-policy.yaml' && has(m.readOnly) && m.readOnly == true))) &&
+        (manifest.spec.volumes.exists(v, has(v.hostPath) && v.hostPath.path in ['/var/log/kubernetes/audit', '/var/log/kubernetes/audit/'] && v.hostPath.type == 'DirectoryOrCreate' && manifest.spec.containers[0].volumeMounts.exists(m, m.name == v.name && m.mountPath in ['/var/log/kubernetes/audit', '/var/log/kubernetes/audit/'] && (!has(m.readOnly) || m.readOnly == false))))
+      initialContent: |
+        apiVersion: v1
+        kind: Pod
+        metadata:
+          annotations:
+            kubeadm.kubernetes.io/kube-apiserver.advertise-address.endpoint: 10.0.0.10:6443
+          labels:
+            component: kube-apiserver
+            tier: control-plane
+          name: kube-apiserver
+          namespace: kube-system
+        spec:
+          containers:
+          - command:
+            - kube-apiserver
+            - --advertise-address=10.0.0.10
+            - --authorization-mode=Node,RBAC
+            - --client-ca-file=/etc/kubernetes/pki/ca.crt
+            - --etcd-servers=https://127.0.0.1:2379
+            - --secure-port=6443
+            - --service-cluster-ip-range=10.96.0.0/12
+            - --tls-cert-file=/etc/kubernetes/pki/apiserver.crt
+            - --tls-private-key-file=/etc/kubernetes/pki/apiserver.key
+            - --audit-policy-file=/etc/kubernetes/audit-policy.yaml
+            - --audit-log-path=/var/log/kubernetes/audit/audit.log
+            image: registry.k8s.io/kube-apiserver:v1.34.1
+            imagePullPolicy: IfNotPresent
+            livenessProbe:
+              failureThreshold: 8
+              httpGet:
+                host: 10.0.0.10
+                path: /livez
+                port: 6443
+                scheme: HTTPS
+              initialDelaySeconds: 10
+              periodSeconds: 10
+              timeoutSeconds: 15
+            name: kube-apiserver
+            readinessProbe:
+              failureThreshold: 3
+              httpGet:
+                host: 10.0.0.10
+                path: /readyz
+                port: 6443
+                scheme: HTTPS
+              periodSeconds: 1
+              timeoutSeconds: 15
+            resources:
+              requests:
+                cpu: 250m
+            startupProbe:
+              failureThreshold: 8
+              httpGet:
+                host: 10.0.0.10
+                path: /livez
+                port: 6443
+                scheme: HTTPS
+              initialDelaySeconds: 10
+              periodSeconds: 10
+              timeoutSeconds: 15
+            volumeMounts:
+            - mountPath: /etc/ssl/certs
+              name: ca-certs
+              readOnly: true
+            - mountPath: /etc/kubernetes/pki
+              name: k8s-certs
+              readOnly: true
+            - mountPath: /etc/kubernetes/audit-policy.yaml
+              name: audit
+              readOnly: true
+          hostNetwork: true
+          priority: 2000001000
+          priorityClassName: system-node-critical
+          securityContext:
+            seccompProfile:
+              type: RuntimeDefault
+          volumes:
+          - hostPath:
+              path: /etc/ssl/certs
+              type: DirectoryOrCreate
+            name: ca-certs
+          - hostPath:
+              path: /etc/kubernetes/pki
+              type: DirectoryOrCreate
+            name: k8s-certs
+          - hostPath:
+              path: /etc/kubernetes/audit-policy.yaml
+              type: File
+            name: audit
+  explanation:
+    elements:
+    - type: context
+      text: |
+        The silent variant of the mount mistakes: nothing crashes, because the flag's path is valid
+        *inside* the container — the file is simply created in the container's own filesystem and lost when
+        the container restarts. The symptom is an **empty (or missing) log directory on the host** while the
+        API server runs.
+
+        The log directory needs a `hostPath` volume with `type: DirectoryOrCreate` and a **writable** mount
+        (`readOnly: false` or omitted). Compare the two required mounts:
+
+        | | policy file | log directory |
+        |---|---|---|
+        | volume type | `File` | `DirectoryOrCreate` |
+        | mount | `readOnly: true` | writable |
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/
+        text: Auditing
+- title: Anatomy of an Audit Event
+  category: Reading the Audit Log
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The log backend writes **one JSON object per line** to `/var/log/kubernetes/audit/audit.log`. This
+      is one event, pretty-printed for reading (in the file it is a single line):
+  - type: manifest
+    header: an audit event
+    content: |
+      {
+        "kind": "Event",
+        "apiVersion": "audit.k8s.io/v1",
+        "level": "Metadata",
+        "auditID": "7c1e5d2a-0b4f-4c3e-9a11-3d0b7f6a52e07",
+        "stage": "ResponseComplete",
+        "requestURI": "/api/v1/namespaces/prod/secrets/db-credentials",
+        "verb": "get",
+        "user": {
+          "username": "alice",
+          "groups": [
+            "developers",
+            "system:authenticated"
+          ]
+        },
+        "sourceIPs": [
+          "10.0.0.52"
+        ],
+        "userAgent": "kubectl/v1.34.1 (linux/amd64) kubernetes/93248f9",
+        "objectRef": {
+          "resource": "secrets",
+          "namespace": "prod",
+          "name": "db-credentials",
+          "apiVersion": "v1"
+        },
+        "responseStatus": {
+          "metadata": {},
+          "code": 200
+        },
+        "requestReceivedTimestamp": "2026-10-24T14:18:44.205113Z",
+        "stageTimestamp": "2026-10-24T14:18:44.205113Z",
+        "annotations": {
+          "authorization.k8s.io/decision": "allow",
+          "authorization.k8s.io/reason": "RBAC: allowed by ClusterRoleBinding"
+        }
+      }
+  - type: question
+    question:
+      questionType: sequence
+      header: Name the field, written as a path from the top of the object (for example metadata.name).
+      hint: Everything about the actor is under user, about the target under objectRef, about the outcome under responseStatus.
+      steps:
+      - questionType: single-line
+        expectedAnswer: user.username
+        header: 'The name of the user who made the request:'
+        cel: answer.trim() in ['user.username', '.user.username']
+      - questionType: single-line
+        expectedAnswer: objectRef.namespace
+        header: 'The namespace of the object the request was about:'
+        cel: answer.trim() in ['objectRef.namespace', '.objectRef.namespace']
+      - questionType: single-line
+        expectedAnswer: responseStatus.code
+        header: 'The HTTP status code of the response:'
+        cel: answer.trim() in ['responseStatus.code', '.responseStatus.code']
+      - questionType: single-line
+        expectedAnswer: sourceIPs
+        header: 'The IP addresses the request came from:'
+        cel: answer.trim() in ['sourceIPs', '.sourceIPs']
+      - questionType: single-line
+        expectedAnswer: authorization.k8s.io/decision
+        header: 'The annotation that records whether authorization allowed or forbade the request (the annotation key):'
+        cel: answer.contains('authorization.k8s.io/decision')
+  explanation:
+    elements:
+    - type: context
+      text: |
+        The fields you will use most:
+
+        | Field | Meaning |
+        |---|---|
+        | `user.username`, `user.groups` | the authenticated identity (ServiceAccounts: `system:serviceaccount:<ns>:<name>`) |
+        | `verb` | `get`, `list`, `watch`, `create`, `update`, `patch`, `delete`, ... |
+        | `objectRef.resource`, `.namespace`, `.name`, `.subresource` | what the request was about |
+        | `requestURI` | the full URL (for exec: command, container and `tty`) |
+        | `responseStatus.code` | HTTP result: 200/201 success, 403 forbidden, 404 not found |
+        | `sourceIPs`, `userAgent` | where it came from and which client |
+        | `stage`, `requestReceivedTimestamp` | the stage and when the request arrived |
+        | `annotations["authorization.k8s.io/decision"]` | `allow` or `forbid` |
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/reference/config-api/apiserver-audit.v1/
+        text: Audit API reference (Policy and Event)
+      - url: https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/
+        text: Auditing
+- title: Who Deleted the Secret?
+  category: Reading the Audit Log
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The Secret `db-credentials` in the namespace `prod` has disappeared and an application is failing.
+      The audit log records the namespace and name of every object. `jq` may not be installed on the
+      node, so use the classic text tools. Find the event that **deleted** that Secret.
+  - type: question
+    question:
+      questionType: command
+      header: Print only the lines of /var/log/kubernetes/audit/audit.log that are about db-credentials and have the verb
+        delete.
+      hint: 'Two things have to match on the same line: the object''s name and the verb. Either chain two greps or use one
+        extended expression.'
+      correctAnswerInfo: Grep is the dependable tool on exam nodes; jq (shown in the next scenarios) is nicer when it exists.
+      command:
+        executable: grep
+        strictness: permissive
+        flags: &id003
+        - name: a
+          short: a
+          boolean: true
+        - name: i
+          short: i
+          boolean: true
+        - name: n
+          short: n
+          boolean: true
+        - name: E
+          short: E
+          boolean: true
+        - name: F
+          short: F
+          boolean: true
+        - name: H
+          short: H
+          boolean: true
+        - name: h
+          short: h
+          boolean: true
+        - name: r
+          short: r
+          boolean: true
+      cel: answer.matches(r'^grep\s') && answer.contains('db-credentials') && answer.contains('delete') && answer.contains('/var/log/kubernetes/audit/audit.log')
+        && !answer.matches(r'grep\s+(-\w*[cvlL]\w*\s+)')
+  - type: manifest
+    header: (output)
+    content: |
+      {"kind":"Event","apiVersion":"audit.k8s.io/v1","level":"Metadata","auditID":"7c1e5d2a-0b4f-4c3e-9a11-3d0b7f6a52e11","stage":"ResponseComplete","requestURI":"/api/v1/namespaces/prod/secrets/db-credentials","verb":"delete","user":{"username":"system:serviceaccount:ci:deployer","groups":["system:serviceaccounts","system:serviceaccounts:ci","system:authenticated"]},"sourceIPs":["10.244.1.17"],"userAgent":"kubectl/v1.34.1 (linux/amd64) kubernetes/93248f9","objectRef":{"resource":"secrets","namespace":"prod","name":"db-credentials","apiVersion":"v1"},"responseStatus":{"metadata":{},"code":200},"requestReceivedTimestamp":"2026-10-24T14:21:07.318204Z","stageTimestamp":"2026-10-24T14:21:07.318204Z","annotations":{"authorization.k8s.io/decision":"allow","authorization.k8s.io/reason":"RBAC: allowed by ClusterRoleBinding"}}
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: system:serviceaccount:ci:deployer
+      header: Which user deleted the Secret?
+      hint: Read the username, not just the ServiceAccount's name.
+      correctAnswerInfo: ServiceAccount identities have the form system:serviceaccount:<namespace>:<name>; here the account
+        lives in the namespace ci, not in prod.
+      cel: answer.trim() == 'system:serviceaccount:ci:deployer'
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: 10.244.1.17
+      header: From which IP address did the request come?
+      cel: answer.trim() == '10.244.1.17'
+  - type: question
+    question:
+      questionType: command
+      header: Record the finding in /root/finding.txt as one line <username>,<source IP>, with nothing else.
+      command:
+        executable: echo
+        strictness: permissive
+      cel: answer.matches(r'^echo\s+[\x27"]?system:serviceaccount:ci:deployer,10\.244\.1\.17[\x27"]?\s*>\s*/root/finding\.txt$')
+  explanation:
+    elements:
+    - type: context
+      text: |
+        The routine for "who did X to Y":
+
+        1. **Narrow by object and verb** — `grep <name> audit.log | grep '"verb":"delete"'` (JSON has no
+           spaces after colons, so the pattern `"verb":"delete"` works).
+        2. **Read the actor** — `user.username` (ServiceAccounts: `system:serviceaccount:<ns>:<name>`),
+           plus `sourceIPs` and `userAgent`.
+        3. **Write the finding exactly as asked.**
+
+        This only works if the policy logs the event: deletes of Secrets need at least `Metadata`.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/
+        text: Auditing
+- title: Who Opened a Shell in a Pod?
+  category: Reading the Audit Log
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      A Pod in the namespace `prod` behaved strangely and you suspect that someone opened a shell in it.
+      `kubectl exec` is recorded as a request to the Pod's **`exec` subresource**; the request URI shows
+      the command and whether a terminal was attached (`tty=true`).
+
+      (Do not rely on the `verb` of exec events: it differs between kubectl versions and transports.)
+  - type: question
+    question:
+      questionType: command
+      header: Print every event about the exec subresource from the audit log.
+      hint: Search for the subresource name, and search the audit log, not the system log.
+      command:
+        executable: grep
+        strictness: permissive
+        flags: *id003
+      cel: answer.matches(r'^grep\s') && ((answer.contains('subresource') && answer.contains('exec')) || answer.contains('/exec?'))
+        && answer.contains('/var/log/kubernetes/audit/audit.log') && !answer.matches(r'grep\s+(-\w*[cvlL]\w*\s+)')
+  - type: manifest
+    header: (output)
+    content: |
+      {"kind":"Event","apiVersion":"audit.k8s.io/v1","level":"Metadata","auditID":"7c1e5d2a-0b4f-4c3e-9a11-3d0b7f6a52e21","stage":"ResponseComplete","requestURI":"/api/v1/namespaces/prod/pods/web-7d9f6b5c4-x2kq9/exec?command=sh&container=web&stdin=true&stdout=true&tty=true","verb":"create","user":{"username":"alice","groups":["developers","system:authenticated"]},"sourceIPs":["10.0.0.52"],"userAgent":"kubectl/v1.34.1 (linux/amd64) kubernetes/93248f9","objectRef":{"resource":"pods","namespace":"prod","name":"web-7d9f6b5c4-x2kq9","apiVersion":"v1","subresource":"exec"},"responseStatus":{"metadata":{},"code":101},"requestReceivedTimestamp":"2026-10-24T15:02:31.118720Z","stageTimestamp":"2026-10-24T15:02:31.118720Z","annotations":{"authorization.k8s.io/decision":"allow","authorization.k8s.io/reason":"RBAC: allowed by ClusterRoleBinding"}}
+      {"kind":"Event","apiVersion":"audit.k8s.io/v1","level":"Metadata","auditID":"7c1e5d2a-0b4f-4c3e-9a11-3d0b7f6a52e22","stage":"ResponseComplete","requestURI":"/api/v1/namespaces/prod/pods/api-5c8d7f6b9-m4n2p/exec?command=cat&command=%2Fhealthz&container=api&stdout=true","verb":"create","user":{"username":"system:serviceaccount:monitoring:prober","groups":["system:serviceaccounts","system:serviceaccounts:monitoring","system:authenticated"]},"sourceIPs":["10.244.2.9"],"userAgent":"probe-agent/2.3","objectRef":{"resource":"pods","namespace":"prod","name":"api-5c8d7f6b9-m4n2p","apiVersion":"v1","subresource":"exec"},"responseStatus":{"metadata":{},"code":101},"requestReceivedTimestamp":"2026-10-24T15:03:00.410022Z","stageTimestamp":"2026-10-24T15:03:00.410022Z","annotations":{"authorization.k8s.io/decision":"allow","authorization.k8s.io/reason":"RBAC: allowed by ClusterRoleBinding"}}
+      {"kind":"Event","apiVersion":"audit.k8s.io/v1","level":"Metadata","auditID":"7c1e5d2a-0b4f-4c3e-9a11-3d0b7f6a52e23","stage":"ResponseComplete","requestURI":"/api/v1/namespaces/prod/pods/web-7d9f6b5c4-x2kq9/exec?command=ls&command=-l&container=web&stdout=true","verb":"create","user":{"username":"bob","groups":["developers","system:authenticated"]},"sourceIPs":["10.0.0.77"],"userAgent":"kubectl/v1.34.1 (linux/amd64) kubernetes/93248f9","objectRef":{"resource":"pods","namespace":"prod","name":"web-7d9f6b5c4-x2kq9","apiVersion":"v1","subresource":"exec"},"responseStatus":{"metadata":{},"code":101},"requestReceivedTimestamp":"2026-10-24T15:04:12.903318Z","stageTimestamp":"2026-10-24T15:04:12.903318Z","annotations":{"authorization.k8s.io/decision":"allow","authorization.k8s.io/reason":"RBAC: allowed by ClusterRoleBinding"}}
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: alice
+      header: Which user opened an interactive shell? (A terminal is attached and the command is a shell.)
+      hint: 'Compare the three requestURI values: look for tty=true and the command.'
+      correctAnswerInfo: 'The prober ran ''cat /healthz'' without a terminal and bob ran ''ls -l'' without one: neither is
+        an interactive shell.'
+      cel: answer.trim() == 'alice'
+  - type: question
+    question:
+      questionType: command
+      header: With jq available, print the username of every event whose objectRef.subresource is exec, from /var/log/kubernetes/audit/audit.log.
+      hint: Select the events with a filter on the field, then pipe to the field you want.
+      correctAnswerInfo: jq reads one JSON document per line, so no special options are needed for the log format.
+      command:
+        executable: jq
+        positionals:
+        - index: 0
+          regex: ^select\(\s*\.objectRef\.subresource\s*==\s*"exec"\s*\)\s*\|\s*\.user\.username$
+        - index: 1
+          value: /var/log/kubernetes/audit/audit.log
+        flags:
+        - name: raw-output
+          short: r
+          boolean: true
+        - name: compact-output
+          short: c
+          boolean: true
+  - type: question
+    question:
+      questionType: command
+      header: Record the finding in /root/finding.txt as one line <username>,<pod name> for the interactive shell, with nothing
+        else.
+      command:
+        executable: echo
+        strictness: permissive
+      cel: answer.matches(r'^echo\s+[\x27"]?alice,web-7d9f6b5c4-x2kq9[\x27"]?\s*>\s*/root/finding\.txt$')
+  explanation:
+    elements:
+    - type: context
+      text: |
+        How to tell a person from a probe in exec events:
+
+        | In `requestURI` | Meaning |
+        |---|---|
+        | `command=sh` ... `tty=true` ... `stdin=true` | an interactive shell |
+        | `command=cat&command=/healthz` without tty | a non-interactive command (often a health probe) |
+
+        Exec is logged at `Metadata` level or above *only if the policy covers `pods/exec`* — a rule for
+        `pods` alone does not match it (see the subresource scenario).
+
+        Grep is the portable tool; `jq` composes better:
+        `jq 'select(.objectRef.subresource=="exec") | {user: .user.username, uri: .requestURI}' audit.log`.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/
+        text: Auditing
+- title: Forbidden Attempts
+  category: Reading the Audit Log
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      A rising number of `403 Forbidden` responses made the security team suspicious: a **stolen Pod
+      token** typically shows up as an identity probing for Secrets it is not allowed to read.
+  - type: question
+    question:
+      questionType: command
+      header: Print the events with the HTTP status code 403 from the audit log.
+      hint: The status code is in the responseStatus object, written without spaces in the JSON line.
+      correctAnswerInfo: Searching for forbid in the authorization.k8s.io/decision annotation finds the same events.
+      command:
+        executable: grep
+        strictness: permissive
+        flags: *id003
+      cel: answer.matches(r'^grep\s') && answer.contains('403') && answer.contains('/var/log/kubernetes/audit/audit.log')
+        && !answer.matches(r'grep\s+(-\w*[cvlL]\w*\s+)')
+  - type: manifest
+    header: (output, abbreviated to the interesting fields)
+    content: |
+      {"kind":"Event","apiVersion":"audit.k8s.io/v1","level":"Metadata","auditID":"7c1e5d2a-0b4f-4c3e-9a11-3d0b7f6a52e31","stage":"ResponseComplete","requestURI":"/api/v1/namespaces/prod/secrets","verb":"list","user":{"username":"system:serviceaccount:web:frontend","groups":["system:serviceaccounts","system:serviceaccounts:web","system:authenticated"]},"sourceIPs":["10.244.3.21"],"userAgent":"python-requests/2.31.0","objectRef":{"resource":"secrets","namespace":"prod","name":"","apiVersion":"v1"},"responseStatus":{"metadata":{},"status":"Failure","reason":"Forbidden","code":403},"requestReceivedTimestamp":"2026-10-24T16:10:02.771004Z","stageTimestamp":"2026-10-24T16:10:02.771004Z","annotations":{"authorization.k8s.io/decision":"forbid","authorization.k8s.io/reason":""}}
+      {"kind":"Event","apiVersion":"audit.k8s.io/v1","level":"Metadata","auditID":"7c1e5d2a-0b4f-4c3e-9a11-3d0b7f6a52e32","stage":"ResponseComplete","requestURI":"/api/v1/namespaces/prod/secrets/db-credentials","verb":"get","user":{"username":"system:serviceaccount:web:frontend","groups":["system:serviceaccounts","system:serviceaccounts:web","system:authenticated"]},"sourceIPs":["10.244.3.21"],"userAgent":"python-requests/2.31.0","objectRef":{"resource":"secrets","namespace":"prod","name":"db-credentials","apiVersion":"v1"},"responseStatus":{"metadata":{},"status":"Failure","reason":"Forbidden","code":403},"requestReceivedTimestamp":"2026-10-24T16:10:04.120331Z","stageTimestamp":"2026-10-24T16:10:04.120331Z","annotations":{"authorization.k8s.io/decision":"forbid","authorization.k8s.io/reason":""}}
+      {"kind":"Event","apiVersion":"audit.k8s.io/v1","level":"Metadata","auditID":"7c1e5d2a-0b4f-4c3e-9a11-3d0b7f6a52e33","stage":"ResponseComplete","requestURI":"/api/v1/namespaces/kube-system/secrets","verb":"list","user":{"username":"system:serviceaccount:web:frontend","groups":["system:serviceaccounts","system:serviceaccounts:web","system:authenticated"]},"sourceIPs":["10.244.3.21"],"userAgent":"python-requests/2.31.0","objectRef":{"resource":"secrets","namespace":"kube-system","name":"","apiVersion":"v1"},"responseStatus":{"metadata":{},"status":"Failure","reason":"Forbidden","code":403},"requestReceivedTimestamp":"2026-10-24T16:10:07.598872Z","stageTimestamp":"2026-10-24T16:10:07.598872Z","annotations":{"authorization.k8s.io/decision":"forbid","authorization.k8s.io/reason":""}}
+      {"kind":"Event","apiVersion":"audit.k8s.io/v1","level":"Metadata","auditID":"7c1e5d2a-0b4f-4c3e-9a11-3d0b7f6a52e34","stage":"ResponseComplete","requestURI":"/apis/apps/v1/namespaces/dev/deployments","verb":"create","user":{"username":"alice","groups":["developers","system:authenticated"]},"sourceIPs":["10.0.0.52"],"userAgent":"kubectl/v1.34.1 (linux/amd64) kubernetes/93248f9","objectRef":{"resource":"deployments","namespace":"dev","name":"","apiVersion":"v1"},"responseStatus":{"metadata":{},"status":"Failure","reason":"Forbidden","code":403},"requestReceivedTimestamp":"2026-10-24T16:12:40.004519Z","stageTimestamp":"2026-10-24T16:12:40.004519Z","annotations":{"authorization.k8s.io/decision":"forbid","authorization.k8s.io/reason":""}}
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: system:serviceaccount:web:frontend
+      header: Which identity made the repeated forbidden requests for Secrets?
+      hint: Alice's forbidden request was about a different resource.
+      cel: answer.trim() == 'system:serviceaccount:web:frontend'
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: secrets
+      header: Which resource was it probing? (plural resource name)
+      cel: answer.trim().lowerAscii() == 'secrets'
+  - type: question
+    question:
+      questionType: command
+      header: Record the finding in /root/probe.txt as one line <username>,<number of forbidden requests by that identity>,
+        with nothing else.
+      command:
+        executable: echo
+        strictness: permissive
+      cel: answer.matches(r'^echo\s+[\x27"]?system:serviceaccount:web:frontend,3[\x27"]?\s*>\s*/root/probe\.txt$')
+  explanation:
+    elements:
+    - type: context
+      text: |
+        A **403** with `"authorization.k8s.io/decision":"forbid"` means the identity was authenticated
+        but not allowed. One or two are normal; a burst against Secrets across namespaces, from a
+        ServiceAccount whose application has no reason to read them, is a classic sign of a stolen token
+        (and `userAgent` often gives the tooling away: `python-requests`, `curl`).
+
+        Next steps in a real incident: find what the identity *did succeed at* (`grep` its username
+        without the 403 filter), check its RBAC bindings (`kubectl auth can-i --list --as system:serviceaccount:web:frontend`),
+        and rotate the token (delete the Pod / ServiceAccount token Secret).
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/
+        text: Auditing
+- title: 'Capstone: Audit Logging from Ticket to Evidence'
+  category: Capstone
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      **Ticket SEC-640.** The compliance team wants audit logging on this cluster:
+
+      1. a policy with **exactly three rules**: Secrets at `Metadata`; everything in the namespace
+         `payments` at `RequestResponse`; and a catch-all at `Metadata`. The policy file is
+         `/etc/kubernetes/audit-policy.yaml`;
+      2. the API server must write to `/var/log/kubernetes/audit/audit.log` and rotate: at most 30 days,
+         10 old files, 100 MB per file;
+      3. afterwards, find out **who deleted the ConfigMap `app-settings` in the namespace `payments`**
+         and record the user name in `/root/deleter.txt`.
+
+      Mind the order: Secrets in `payments` must not be logged with their contents.
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: audit-policy-v1
+      header: 1. Write the policy.
+      hint: Only the first rule that matches counts, and Secrets in payments match two of the rules.
+      cel: |-
+        manifest.rules.size() == 3 && manifest.rules[0].level == 'Metadata' && has(manifest.rules[0].resources) && manifest.rules[0].resources.exists(g, g.group == '' && 'secrets' in g.resources) && !has(manifest.rules[0].namespaces) &&
+        manifest.rules[1].level == 'RequestResponse' && has(manifest.rules[1].namespaces) && manifest.rules[1].namespaces == ['payments'] && !has(manifest.rules[1].resources) &&
+        manifest.rules[2].level == 'Metadata' && manifest.rules[2].size() == 1
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: pod-v1
+      header: 2. Edit the API server manifest (policy and log flags, rotation flags, and both volumes with their mounts).
+        Submit the complete Pod manifest.
+      cel: |-
+        (['kube-apiserver', '--advertise-address=10.0.0.10', '--authorization-mode=Node,RBAC', '--client-ca-file=/etc/kubernetes/pki/ca.crt', '--etcd-servers=https://127.0.0.1:2379', '--secure-port=6443', '--service-cluster-ip-range=10.96.0.0/12', '--tls-cert-file=/etc/kubernetes/pki/apiserver.crt', '--tls-private-key-file=/etc/kubernetes/pki/apiserver.key'].all(f, manifest.spec.containers[0].command.exists(x, x == f))) &&
+        (['ca-certs', 'k8s-certs'].all(n, manifest.spec.volumes.exists(v, v.name == n) && manifest.spec.containers[0].volumeMounts.exists(m, m.name == n))) &&
+        (manifest.spec.containers[0].command.exists(x, x == '--audit-policy-file=/etc/kubernetes/audit-policy.yaml')) &&
+        (manifest.spec.containers[0].command.exists(x, x == '--audit-log-path=/var/log/kubernetes/audit/audit.log')) &&
+        (manifest.spec.containers[0].command.exists(x, x == '--audit-log-maxage=30')) &&
+        (manifest.spec.containers[0].command.exists(x, x == '--audit-log-maxbackup=10')) &&
+        (manifest.spec.containers[0].command.exists(x, x == '--audit-log-maxsize=100')) &&
+        (manifest.spec.volumes.exists(v, has(v.hostPath) && v.hostPath.path == '/etc/kubernetes/audit-policy.yaml' && v.hostPath.type == 'File' && manifest.spec.containers[0].volumeMounts.exists(m, m.name == v.name && m.mountPath == '/etc/kubernetes/audit-policy.yaml' && has(m.readOnly) && m.readOnly == true))) &&
+        (manifest.spec.volumes.exists(v, has(v.hostPath) && v.hostPath.path in ['/var/log/kubernetes/audit', '/var/log/kubernetes/audit/'] && v.hostPath.type == 'DirectoryOrCreate' && manifest.spec.containers[0].volumeMounts.exists(m, m.name == v.name && m.mountPath in ['/var/log/kubernetes/audit', '/var/log/kubernetes/audit/'] && (!has(m.readOnly) || m.readOnly == false))))
+      initialContent: |
+        apiVersion: v1
+        kind: Pod
+        metadata:
+          annotations:
+            kubeadm.kubernetes.io/kube-apiserver.advertise-address.endpoint: 10.0.0.10:6443
+          labels:
+            component: kube-apiserver
+            tier: control-plane
+          name: kube-apiserver
+          namespace: kube-system
+        spec:
+          containers:
+          - command:
+            - kube-apiserver
+            - --advertise-address=10.0.0.10
+            - --authorization-mode=Node,RBAC
+            - --client-ca-file=/etc/kubernetes/pki/ca.crt
+            - --etcd-servers=https://127.0.0.1:2379
+            - --secure-port=6443
+            - --service-cluster-ip-range=10.96.0.0/12
+            - --tls-cert-file=/etc/kubernetes/pki/apiserver.crt
+            - --tls-private-key-file=/etc/kubernetes/pki/apiserver.key
+            image: registry.k8s.io/kube-apiserver:v1.34.1
+            imagePullPolicy: IfNotPresent
+            livenessProbe:
+              failureThreshold: 8
+              httpGet:
+                host: 10.0.0.10
+                path: /livez
+                port: 6443
+                scheme: HTTPS
+              initialDelaySeconds: 10
+              periodSeconds: 10
+              timeoutSeconds: 15
+            name: kube-apiserver
+            readinessProbe:
+              failureThreshold: 3
+              httpGet:
+                host: 10.0.0.10
+                path: /readyz
+                port: 6443
+                scheme: HTTPS
+              periodSeconds: 1
+              timeoutSeconds: 15
+            resources:
+              requests:
+                cpu: 250m
+            startupProbe:
+              failureThreshold: 8
+              httpGet:
+                host: 10.0.0.10
+                path: /livez
+                port: 6443
+                scheme: HTTPS
+              initialDelaySeconds: 10
+              periodSeconds: 10
+              timeoutSeconds: 15
+            volumeMounts:
+            - mountPath: /etc/ssl/certs
+              name: ca-certs
+              readOnly: true
+            - mountPath: /etc/kubernetes/pki
+              name: k8s-certs
+              readOnly: true
+          hostNetwork: true
+          priority: 2000001000
+          priorityClassName: system-node-critical
+          securityContext:
+            seccompProfile:
+              type: RuntimeDefault
+          volumes:
+          - hostPath:
+              path: /etc/ssl/certs
+              type: DirectoryOrCreate
+            name: ca-certs
+          - hostPath:
+              path: /etc/kubernetes/pki
+              type: DirectoryOrCreate
+            name: k8s-certs
+  - type: context
+    text: |
+      The kubelet recreates the API server. Check that a new container is running.
+  - type: question
+    question:
+      questionType: command
+      header: 3. List the API server container on this node.
+      command:
+        executable: crictl
+        subcommands:
+        - name: ps
+        flags:
+        - name: name
+          required: true
+          value: kube-apiserver
+        - name: all
+          short: a
+          boolean: true
+  - type: manifest
+    header: $ crictl ps --name kube-apiserver
+    content: |
+      CONTAINER           IMAGE               CREATED             STATE               NAME                ATTEMPT             POD ID              POD                          NAMESPACE
+      9c42e7a1d0b35       8a2c91f5d3e47       52 seconds ago      Running             kube-apiserver      0                   b72e0c91a4d35       kube-apiserver-controlplane  kube-system
+  - type: question
+    question:
+      questionType: command
+      header: 4. The ConfigMap was deleted earlier today. Print the log lines about it that record a deletion.
+      command:
+        executable: grep
+        strictness: permissive
+        flags: *id003
+      cel: answer.matches(r'^grep\s') && answer.contains('app-settings') && answer.contains('delete') && answer.contains('/var/log/kubernetes/audit/audit.log')
+        && !answer.matches(r'grep\s+(-\w*[cvlL]\w*\s+)')
+  - type: manifest
+    header: (output)
+    content: |
+      {"kind":"Event","apiVersion":"audit.k8s.io/v1","level":"RequestResponse","auditID":"7c1e5d2a-0b4f-4c3e-9a11-3d0b7f6a52e41","stage":"ResponseComplete","requestURI":"/api/v1/namespaces/payments/configmaps/app-settings","verb":"delete","user":{"username":"system:serviceaccount:payments:batch-runner","groups":["system:serviceaccounts","system:serviceaccounts:payments","system:authenticated"]},"sourceIPs":["10.244.2.31"],"userAgent":"kubectl/v1.34.1 (linux/amd64) kubernetes/93248f9","objectRef":{"resource":"configmaps","namespace":"payments","name":"app-settings","apiVersion":"v1"},"responseStatus":{"metadata":{},"code":200},"requestReceivedTimestamp":"2026-10-24T17:44:19.620118Z","stageTimestamp":"2026-10-24T17:44:19.620118Z","annotations":{"authorization.k8s.io/decision":"allow","authorization.k8s.io/reason":"RBAC: allowed by ClusterRoleBinding"}}
+  - type: question
+    question:
+      questionType: command
+      header: 5. Record the user name of the deleter in /root/deleter.txt, as the only content.
+      command:
+        executable: echo
+        strictness: permissive
+      cel: answer.matches(r'^echo\s+[\x27"]?system:serviceaccount:payments:batch-runner[\x27"]?\s*>\s*/root/deleter\.txt$')
+  explanation:
+    elements:
+    - type: context
+      text: |
+        The whole chain in one place:
+
+        1. **Policy** — most specific first (Secrets), then the namespace, then the catch-all. A Secret in
+           `payments` is logged at `Metadata` only because rule 1 matches before rule 2.
+        2. **Static Pod** — flags (`--audit-policy-file`, `--audit-log-path`, rotation), plus a read-only
+           `File` mount for the policy and a writable `DirectoryOrCreate` mount for the logs; every name
+           agreeing.
+        3. **Verify** — `crictl ps --name kube-apiserver` for a fresh Running container, `tail -f` on the log;
+           on failure `crictl ps -a`, `crictl logs`, `journalctl -u kubelet`.
+        4. **Investigate** — grep the object and the verb, read `user.username`, write the answer in the
+           exact format requested.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/
+        text: Auditing
+      - url: https://kubernetes.io/docs/reference/command-line-tools-reference/kube-apiserver/
+        text: kube-apiserver options

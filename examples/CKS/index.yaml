@@ -117,3 +117,13 @@ sets:
       - Rules
       - Incident Response
       - Hard
+  - name: "CKS (Hands-On): Kubernetes Audit Logging"
+    filename: cks-hands-on-audit-logging.yaml
+    description: "No multiple choice. Write audit policies (levels, rule order, selectors, subresources, non-resource URLs), enable them in the kube-apiserver static Pod with the right flags, volumes and rotation, recover an API server that no longer starts, and find who did what in the audit log with grep and jq. Includes an end-to-end capstone."
+    tags:
+      - Audit Logging
+      - Runtime Security
+      - Hands-On
+      - kube-apiserver
+      - Troubleshooting
+      - Hard
