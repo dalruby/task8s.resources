@@ -1604,9 +1604,10 @@ scenarios:
         && manifest.rules[0].size() == 1
   - type: context
     text: |
-      A week later the API server is down again. Someone had applied a manifest in which the policy volume
-      had the type `DirectoryOrCreate`; the kubelet obligingly **created what that type asks for** at the
-      path, and the old file was no longer there. The kubelet's journal now says:
+      A week later the API server is down again. The policy file had been deleted by mistake, and a
+      manifest was applied in which the policy volume had the type `DirectoryOrCreate`: with nothing at
+      the path, the kubelet obligingly **created what that type asks for** — an empty directory. The
+      kubelet's journal now says:
 
       `hostPath type check failed: /etc/kubernetes/audit-policy.yaml is not a file, it's a directory`
   - type: question
@@ -1640,9 +1641,9 @@ scenarios:
         | `hostPath type check failed: ... is not a file, it's a directory` | something is there, but of the wrong type |
 
         In both cases the container is never created, which is why `crictl` shows nothing and the evidence is
-        in the kubelet's journal and the Pod's events. The second case is a classic trap: a **directory
-        that was created earlier** by a `DirectoryOrCreate` volume (or by a mistaken `mkdir`) sits where
-        the file should be. Remove the empty directory (`rmdir`) and put the file back. For a policy file use
+        in the kubelet's journal and the Pod's events. The second case is a classic trap: with the file
+        missing, a `DirectoryOrCreate` volume (or a mistaken `mkdir`) puts an **empty directory** where the
+        file should be — `DirectoryOrCreate` only creates something when nothing exists at the path. Remove the empty directory (`rmdir`) and put the file back. For a policy file use
         `type: File`; `FileOrCreate` would create an *empty* file, with which the API server fails to start
         with a decoding error (no `apiVersion` or `kind`). For the log directory `DirectoryOrCreate` is right.
     - type: references
