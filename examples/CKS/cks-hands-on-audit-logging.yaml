@@ -912,8 +912,8 @@ scenarios:
   elements:
   - type: context
     text: |
-      The audit log of a busy cluster grows quickly. Three kube-apiserver flags control the log
-      backend's file rotation. Name them, with the leading dashes.
+      The audit log of a busy cluster grows quickly. Four kube-apiserver flags control the log
+      backend: its file, and the rotation of that file. Name them, with the leading dashes.
   - type: question
     question:
       questionType: sequence
@@ -1272,7 +1272,7 @@ scenarios:
   - type: manifest
     header: $ crictl logs a91f3c5e2d7b8
     content: |
-      Error: loading audit policy file: failed to read file path "/etc/kubernetes/audit-policy.yaml": open /etc/kubernetes/audit-policy.yaml: no such file or directory
+      E1024 14:30:52.118404       1 run.go:72] "command failed" err="loading audit policy file: failed to read file path \"/etc/kubernetes/audit-policy.yaml\": open /etc/kubernetes/audit-policy.yaml: no such file or directory"
   - type: context
     text: |
       The policy file does exist **on the host**. Here is the manifest as it stands:
@@ -1533,7 +1533,7 @@ scenarios:
   - type: manifest
     header: (last lines)
     content: |
-      2026-10-24T14:30:52.118404112Z stderr F Error: loading audit policy file: failed to read file path "/etc/kubernetes/audit-policy.yaml": open /etc/kubernetes/audit-policy.yaml: no such file or directory
+      2026-10-24T14:30:52.118404112Z stderr F E1024 14:30:52.118404       1 run.go:72] "command failed" err="loading audit policy file: failed to read file path \"/etc/kubernetes/audit-policy.yaml\": open /etc/kubernetes/audit-policy.yaml: no such file or directory"
   explanation:
     elements:
     - type: context
@@ -1585,13 +1585,13 @@ scenarios:
     content: |
       Oct 24 14:41:09 controlplane kubelet[912]: E1024 14:41:09.331812     912 pod_workers.go:1301] "Error syncing pod, skipping" err="unmounted volumes=[audit], unattached volumes=[audit], failed to process volumes=[]: context deadline exceeded" pod="kube-system/kube-apiserver-controlplane"
       Oct 24 14:41:09 controlplane kubelet[912]: E1024 14:41:09.402277     912 kubelet.go:2951] "Unable to attach or mount volumes for pod; skipping pod" err="unmounted volumes=[audit]" pod="kube-system/kube-apiserver-controlplane"
-      Oct 24 14:41:10 controlplane kubelet[912]: E1024 14:41:10.118890     912 kubelet.go:2951] "MountVolume.SetUp failed for volume \"audit\" : hostPath type check failed: /etc/kubernetes/audit-policy.yaml is not a file" pod="kube-system/kube-apiserver-controlplane"
+      Oct 24 14:41:10 controlplane kubelet[912]: E1024 14:41:10.118890     912 kubelet.go:2951] "MountVolume.SetUp failed for volume \"audit\" : hostPath /etc/kubernetes/audit-policy.yaml doesn't exist" pod="kube-system/kube-apiserver-controlplane"
   - type: question
     question:
       questionType: single-line
       expectedAnswer: /etc/kubernetes/audit-policy.yaml
       header: Which path must exist on the host as a regular file for the Pod to start?
-      hint: Read the end of the MountVolume.SetUp message.
+      hint: 'Read the end of the MountVolume.SetUp message: what does it say about this path?'
       cel: answer.trim() == '/etc/kubernetes/audit-policy.yaml'
   - type: question
     question:
@@ -1602,18 +1602,49 @@ scenarios:
       hint: The smallest valid policy has one rule without selectors.
       cel: manifest.omitStages == ['RequestReceived'] && manifest.rules.size() == 1 && manifest.rules[0].level == 'Request'
         && manifest.rules[0].size() == 1
+  - type: context
+    text: |
+      A week later the API server is down again. Someone had applied a manifest in which the policy volume
+      had the type `DirectoryOrCreate`; the kubelet obligingly **created what that type asks for** at the
+      path, and the old file was no longer there. The kubelet's journal now says:
+
+      `hostPath type check failed: /etc/kubernetes/audit-policy.yaml is not a file, it's a directory`
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: directory
+      header: What exists at /etc/kubernetes/audit-policy.yaml on the host right now? Answer in one word.
+      hint: Read the end of the message.
+      cel: answer.trim().lowerAscii() in ['directory', 'a directory', 'dir', 'folder']
+  - type: question
+    question:
+      questionType: command
+      header: The directory is empty. Remove it with the command that only deletes empty directories, so that the policy file
+        can be put back.
+      hint: The command's name says what it removes.
+      command:
+        executable: rmdir
+        positionals:
+        - index: 0
+          value: /etc/kubernetes/audit-policy.yaml
   explanation:
     elements:
     - type: context
       text: |
-        A `hostPath` volume with `type: File` is **checked by the kubelet before the container is created**.
-        If the file does not exist, the container is never created, which is why `crictl` shows nothing:
-        the failure is visible only in the kubelet's log and in the Pod's events
-        (`hostPath type check failed: ... is not a file`).
+        A `hostPath` volume with a type is **checked by the kubelet before the container is created**. There
+        are two different failures, and the message tells them apart:
 
-        Remedies: create the file, or change the type (`FileOrCreate` would create an *empty* file — an empty
-        policy file then makes the API server fail with the zero-rules error instead). For the log directory
-        the type `DirectoryOrCreate` avoids this problem.
+        | Kubelet message | Meaning |
+        |---|---|
+        | `hostPath /etc/kubernetes/audit-policy.yaml doesn't exist` | nothing at that path — create the file |
+        | `hostPath type check failed: ... is not a file, it's a directory` | something is there, but of the wrong type |
+
+        In both cases the container is never created, which is why `crictl` shows nothing and the evidence is
+        in the kubelet's journal and the Pod's events. The second case is a classic trap: a **directory
+        that was created earlier** by a `DirectoryOrCreate` volume (or by a mistaken `mkdir`) sits where
+        the file should be. Remove the empty directory (`rmdir`) and put the file back. For a policy file use
+        `type: File`; `FileOrCreate` would create an *empty* file, with which the API server fails to start
+        with a decoding error (no `apiVersion` or `kind`). For the log directory `DirectoryOrCreate` is right.
     - type: references
       links:
       - url: https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/
@@ -1631,7 +1662,7 @@ scenarios:
   - type: manifest
     header: $ crictl logs <newest container>
     content: |
-      Error: loading audit policy file: rules[1].level: Unsupported value: "Metdata": supported values: "None", "Metadata", "Request", "RequestResponse": from file /etc/kubernetes/audit-policy.yaml
+      E1024 14:52:11.440917       1 run.go:72] "command failed" err="loading audit policy file: rules[1].level: Unsupported value: \"Metdata\": supported values: \"None\", \"Metadata\", \"Request\", \"RequestResponse\": from file /etc/kubernetes/audit-policy.yaml"
   - type: manifest
     header: /etc/kubernetes/audit-policy.yaml
     content: |
@@ -1714,7 +1745,7 @@ scenarios:
     text: |
       A colleague commented out the only rule "temporarily". The API server does not come back and logs:
 
-      `Error: loading audit policy file: loaded illegal policy with 0 rules: from file /etc/kubernetes/audit-policy.yaml`
+      `E1024 14:58:03.771208       1 run.go:72] "command failed" err="loading audit policy file: loaded illegal policy with 0 rules: from file /etc/kubernetes/audit-policy.yaml"`
   - type: manifest
     header: /etc/kubernetes/audit-policy.yaml
     content: |
@@ -2210,9 +2241,9 @@ scenarios:
   - type: manifest
     header: (output)
     content: |
-      {"kind":"Event","apiVersion":"audit.k8s.io/v1","level":"Metadata","auditID":"7c1e5d2a-0b4f-4c3e-9a11-3d0b7f6a52e21","stage":"ResponseComplete","requestURI":"/api/v1/namespaces/prod/pods/web-7d9f6b5c4-x2kq9/exec?command=sh&container=web&stdin=true&stdout=true&tty=true","verb":"create","user":{"username":"alice","groups":["developers","system:authenticated"]},"sourceIPs":["10.0.0.52"],"userAgent":"kubectl/v1.34.1 (linux/amd64) kubernetes/93248f9","objectRef":{"resource":"pods","namespace":"prod","name":"web-7d9f6b5c4-x2kq9","apiVersion":"v1","subresource":"exec"},"responseStatus":{"metadata":{},"code":101},"requestReceivedTimestamp":"2026-10-24T15:02:31.118720Z","stageTimestamp":"2026-10-24T15:02:31.118720Z","annotations":{"authorization.k8s.io/decision":"allow","authorization.k8s.io/reason":"RBAC: allowed by ClusterRoleBinding"}}
-      {"kind":"Event","apiVersion":"audit.k8s.io/v1","level":"Metadata","auditID":"7c1e5d2a-0b4f-4c3e-9a11-3d0b7f6a52e22","stage":"ResponseComplete","requestURI":"/api/v1/namespaces/prod/pods/api-5c8d7f6b9-m4n2p/exec?command=cat&command=%2Fhealthz&container=api&stdout=true","verb":"create","user":{"username":"system:serviceaccount:monitoring:prober","groups":["system:serviceaccounts","system:serviceaccounts:monitoring","system:authenticated"]},"sourceIPs":["10.244.2.9"],"userAgent":"probe-agent/2.3","objectRef":{"resource":"pods","namespace":"prod","name":"api-5c8d7f6b9-m4n2p","apiVersion":"v1","subresource":"exec"},"responseStatus":{"metadata":{},"code":101},"requestReceivedTimestamp":"2026-10-24T15:03:00.410022Z","stageTimestamp":"2026-10-24T15:03:00.410022Z","annotations":{"authorization.k8s.io/decision":"allow","authorization.k8s.io/reason":"RBAC: allowed by ClusterRoleBinding"}}
-      {"kind":"Event","apiVersion":"audit.k8s.io/v1","level":"Metadata","auditID":"7c1e5d2a-0b4f-4c3e-9a11-3d0b7f6a52e23","stage":"ResponseComplete","requestURI":"/api/v1/namespaces/prod/pods/web-7d9f6b5c4-x2kq9/exec?command=ls&command=-l&container=web&stdout=true","verb":"create","user":{"username":"bob","groups":["developers","system:authenticated"]},"sourceIPs":["10.0.0.77"],"userAgent":"kubectl/v1.34.1 (linux/amd64) kubernetes/93248f9","objectRef":{"resource":"pods","namespace":"prod","name":"web-7d9f6b5c4-x2kq9","apiVersion":"v1","subresource":"exec"},"responseStatus":{"metadata":{},"code":101},"requestReceivedTimestamp":"2026-10-24T15:04:12.903318Z","stageTimestamp":"2026-10-24T15:04:12.903318Z","annotations":{"authorization.k8s.io/decision":"allow","authorization.k8s.io/reason":"RBAC: allowed by ClusterRoleBinding"}}
+      {"kind":"Event","apiVersion":"audit.k8s.io/v1","level":"Metadata","auditID":"7c1e5d2a-0b4f-4c3e-9a11-3d0b7f6a52e21","stage":"ResponseComplete","requestURI":"/api/v1/namespaces/prod/pods/web-7d9f6b5c4-x2kq9/exec?command=sh&container=web&stdin=true&stdout=true&tty=true","verb":"get","user":{"username":"alice","groups":["developers","system:authenticated"]},"sourceIPs":["10.0.0.52"],"userAgent":"kubectl/v1.34.1 (linux/amd64) kubernetes/93248f9","objectRef":{"resource":"pods","namespace":"prod","name":"web-7d9f6b5c4-x2kq9","apiVersion":"v1","subresource":"exec"},"responseStatus":{"metadata":{},"code":101},"requestReceivedTimestamp":"2026-10-24T15:02:31.118720Z","stageTimestamp":"2026-10-24T15:02:31.118720Z","annotations":{"authorization.k8s.io/decision":"allow","authorization.k8s.io/reason":"RBAC: allowed by ClusterRoleBinding"}}
+      {"kind":"Event","apiVersion":"audit.k8s.io/v1","level":"Metadata","auditID":"7c1e5d2a-0b4f-4c3e-9a11-3d0b7f6a52e22","stage":"ResponseComplete","requestURI":"/api/v1/namespaces/prod/pods/api-5c8d7f6b9-m4n2p/exec?command=cat&command=%2Fhealthz&container=api&stdout=true","verb":"get","user":{"username":"system:serviceaccount:monitoring:prober","groups":["system:serviceaccounts","system:serviceaccounts:monitoring","system:authenticated"]},"sourceIPs":["10.244.2.9"],"userAgent":"probe-agent/2.3","objectRef":{"resource":"pods","namespace":"prod","name":"api-5c8d7f6b9-m4n2p","apiVersion":"v1","subresource":"exec"},"responseStatus":{"metadata":{},"code":101},"requestReceivedTimestamp":"2026-10-24T15:03:00.410022Z","stageTimestamp":"2026-10-24T15:03:00.410022Z","annotations":{"authorization.k8s.io/decision":"allow","authorization.k8s.io/reason":"RBAC: allowed by ClusterRoleBinding"}}
+      {"kind":"Event","apiVersion":"audit.k8s.io/v1","level":"Metadata","auditID":"7c1e5d2a-0b4f-4c3e-9a11-3d0b7f6a52e23","stage":"ResponseComplete","requestURI":"/api/v1/namespaces/prod/pods/web-7d9f6b5c4-x2kq9/exec?command=ls&command=-l&container=web&stdout=true","verb":"get","user":{"username":"bob","groups":["developers","system:authenticated"]},"sourceIPs":["10.0.0.77"],"userAgent":"kubectl/v1.34.1 (linux/amd64) kubernetes/93248f9","objectRef":{"resource":"pods","namespace":"prod","name":"web-7d9f6b5c4-x2kq9","apiVersion":"v1","subresource":"exec"},"responseStatus":{"metadata":{},"code":101},"requestReceivedTimestamp":"2026-10-24T15:04:12.903318Z","stageTimestamp":"2026-10-24T15:04:12.903318Z","annotations":{"authorization.k8s.io/decision":"allow","authorization.k8s.io/reason":"RBAC: allowed by ClusterRoleBinding"}}
   - type: question
     question:
       questionType: single-line
@@ -2262,6 +2293,10 @@ scenarios:
         | `command=sh` ... `tty=true` ... `stdin=true` | an interactive shell |
         | `command=cat&command=/healthz` without tty | a non-interactive command (often a health probe) |
 
+        The `verb` of exec events varies: recent kubectl versions connect over WebSockets, which the API
+        server records as `get`, while older clients and SPDY connections show `create`. Filter on
+        `objectRef.subresource`, never on the verb.
+
         Exec is logged at `Metadata` level or above *only if the policy covers `pods/exec`* — a rule for
         `pods` alone does not match it (see the subresource scenario).
 
@@ -2297,7 +2332,7 @@ scenarios:
       {"kind":"Event","apiVersion":"audit.k8s.io/v1","level":"Metadata","auditID":"7c1e5d2a-0b4f-4c3e-9a11-3d0b7f6a52e31","stage":"ResponseComplete","requestURI":"/api/v1/namespaces/prod/secrets","verb":"list","user":{"username":"system:serviceaccount:web:frontend","groups":["system:serviceaccounts","system:serviceaccounts:web","system:authenticated"]},"sourceIPs":["10.244.3.21"],"userAgent":"python-requests/2.31.0","objectRef":{"resource":"secrets","namespace":"prod","name":"","apiVersion":"v1"},"responseStatus":{"metadata":{},"status":"Failure","reason":"Forbidden","code":403},"requestReceivedTimestamp":"2026-10-24T16:10:02.771004Z","stageTimestamp":"2026-10-24T16:10:02.771004Z","annotations":{"authorization.k8s.io/decision":"forbid","authorization.k8s.io/reason":""}}
       {"kind":"Event","apiVersion":"audit.k8s.io/v1","level":"Metadata","auditID":"7c1e5d2a-0b4f-4c3e-9a11-3d0b7f6a52e32","stage":"ResponseComplete","requestURI":"/api/v1/namespaces/prod/secrets/db-credentials","verb":"get","user":{"username":"system:serviceaccount:web:frontend","groups":["system:serviceaccounts","system:serviceaccounts:web","system:authenticated"]},"sourceIPs":["10.244.3.21"],"userAgent":"python-requests/2.31.0","objectRef":{"resource":"secrets","namespace":"prod","name":"db-credentials","apiVersion":"v1"},"responseStatus":{"metadata":{},"status":"Failure","reason":"Forbidden","code":403},"requestReceivedTimestamp":"2026-10-24T16:10:04.120331Z","stageTimestamp":"2026-10-24T16:10:04.120331Z","annotations":{"authorization.k8s.io/decision":"forbid","authorization.k8s.io/reason":""}}
       {"kind":"Event","apiVersion":"audit.k8s.io/v1","level":"Metadata","auditID":"7c1e5d2a-0b4f-4c3e-9a11-3d0b7f6a52e33","stage":"ResponseComplete","requestURI":"/api/v1/namespaces/kube-system/secrets","verb":"list","user":{"username":"system:serviceaccount:web:frontend","groups":["system:serviceaccounts","system:serviceaccounts:web","system:authenticated"]},"sourceIPs":["10.244.3.21"],"userAgent":"python-requests/2.31.0","objectRef":{"resource":"secrets","namespace":"kube-system","name":"","apiVersion":"v1"},"responseStatus":{"metadata":{},"status":"Failure","reason":"Forbidden","code":403},"requestReceivedTimestamp":"2026-10-24T16:10:07.598872Z","stageTimestamp":"2026-10-24T16:10:07.598872Z","annotations":{"authorization.k8s.io/decision":"forbid","authorization.k8s.io/reason":""}}
-      {"kind":"Event","apiVersion":"audit.k8s.io/v1","level":"Metadata","auditID":"7c1e5d2a-0b4f-4c3e-9a11-3d0b7f6a52e34","stage":"ResponseComplete","requestURI":"/apis/apps/v1/namespaces/dev/deployments","verb":"create","user":{"username":"alice","groups":["developers","system:authenticated"]},"sourceIPs":["10.0.0.52"],"userAgent":"kubectl/v1.34.1 (linux/amd64) kubernetes/93248f9","objectRef":{"resource":"deployments","namespace":"dev","name":"","apiVersion":"v1"},"responseStatus":{"metadata":{},"status":"Failure","reason":"Forbidden","code":403},"requestReceivedTimestamp":"2026-10-24T16:12:40.004519Z","stageTimestamp":"2026-10-24T16:12:40.004519Z","annotations":{"authorization.k8s.io/decision":"forbid","authorization.k8s.io/reason":""}}
+      {"kind":"Event","apiVersion":"audit.k8s.io/v1","level":"Metadata","auditID":"7c1e5d2a-0b4f-4c3e-9a11-3d0b7f6a52e34","stage":"ResponseComplete","requestURI":"/apis/apps/v1/namespaces/dev/deployments","verb":"create","user":{"username":"alice","groups":["developers","system:authenticated"]},"sourceIPs":["10.0.0.52"],"userAgent":"kubectl/v1.34.1 (linux/amd64) kubernetes/93248f9","objectRef":{"resource":"deployments","namespace":"dev","name":"","apiGroup":"apps","apiVersion":"v1"},"responseStatus":{"metadata":{},"status":"Failure","reason":"Forbidden","code":403},"requestReceivedTimestamp":"2026-10-24T16:12:40.004519Z","stageTimestamp":"2026-10-24T16:12:40.004519Z","annotations":{"authorization.k8s.io/decision":"forbid","authorization.k8s.io/reason":""}}
   - type: question
     question:
       questionType: single-line
