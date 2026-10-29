@@ -1900,8 +1900,14 @@ scenarios:
       header: Record the finding in /root/finding.txt as a single line <namespace>/<pod-name>, with nothing else.
       command:
         executable: echo
-        strictness: permissive
-      cel: answer.matches(r'^echo\s+[\x27"]?shop/billing-worker-7f6d9c5b8-kq2mt[\x27"]?\s*>\s*/root/finding\.txt$')
+        positionals:
+        - index: 0
+          value: shop/billing-worker-7f6d9c5b8-kq2mt
+      modifiers:
+      - type: Redirect
+        redirect:
+          type: '>'
+          value: /root/finding.txt
   - type: context
     text: |
       The Pod belongs to the Deployment `billing-worker` (its name without the ReplicaSet hash and the Pod suffix).
@@ -2059,8 +2065,14 @@ scenarios:
       hint: 'A graded format is graded character by character: separator, order and the absence of extra text all count.'
       command:
         executable: echo
-        strictness: permissive
-      cel: answer.matches(r'^echo\s+[\x27"]?shop/report-gen-6d5f7c9b8-x4n2q[\x27"]?\s*>\s*/root/offender\.txt$')
+        positionals:
+        - index: 0
+          value: shop/report-gen-6d5f7c9b8-x4n2q
+      modifiers:
+      - type: Redirect
+        redirect:
+          type: '>'
+          value: /root/offender.txt
   explanation:
     elements:
     - type: context
@@ -2139,8 +2151,14 @@ scenarios:
       header: Write the result to /root/top-pod.txt as <pod-name>,<number of shells> on a single line.
       command:
         executable: echo
-        strictness: permissive
-      cel: answer.matches(r'^echo\s+[\x27"]?cart-5d8f7b6c9-q2w8z,5[\x27"]?\s*>\s*/root/top-pod\.txt$')
+        positionals:
+        - index: 0
+          value: cart-5d8f7b6c9-q2w8z,5
+      modifiers:
+      - type: Redirect
+        redirect:
+          type: '>'
+          value: /root/top-pod.txt
   explanation:
     elements:
     - type: context
@@ -2537,8 +2555,14 @@ scenarios:
       header: 3c. Record the offender as <namespace>,<pod-name> in /root/offender.txt.
       command:
         executable: echo
-        strictness: permissive
-      cel: answer.matches(r'^echo\s+[\x27"]?warehouse,inventory-sync-5b8d6f7c4-w9h2r[\x27"]?\s*>\s*/root/offender\.txt$')
+        positionals:
+        - index: 0
+          value: warehouse,inventory-sync-5b8d6f7c4-w9h2r
+      modifiers:
+      - type: Redirect
+        redirect:
+          type: '>'
+          value: /root/offender.txt
   explanation:
     elements:
     - type: context

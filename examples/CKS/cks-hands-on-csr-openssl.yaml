@@ -912,7 +912,6 @@ scenarios:
       correctAnswerInfo: Use -o jsonpath to select status.certificate, then pipe through base64 -d and redirect into jane.crt.
       command:
         executable: kubectl
-        strictness: permissive
         subcommands:
         - name: get
         positionals:
@@ -928,7 +927,20 @@ scenarios:
           short: o
           required: true
           regex: ^jsonpath=.*status\.certificate
-      cel: answer.matches(r'\|\s*base64\s+(-d|--decode|-D)\s*>\s*jane\.crt\s*$')
+      modifiers:
+      - type: Pipe
+        pipe:
+          command:
+            executable: base64
+            flags:
+            - name: decode
+              short: d
+              boolean: true
+              required: true
+      - type: Redirect
+        redirect:
+          type: '>'
+          value: jane.crt
   - type: manifest
     header: $ openssl x509 -in jane.crt -noout -subject -issuer -enddate
     content: |
@@ -1924,17 +1936,49 @@ scenarios:
         user by name; base64 -d turns the PEM text back into a certificate for openssl x509.
       command:
         executable: kubectl
-        strictness: permissive
         subcommands:
         - name: config
         - name: view
         flags:
         - name: raw
-          required: true
           boolean: true
-      cel: answer.matches(r'-o\s*=?\s*[\x27"]?jsonpath=?.*client-certificate-data') && answer.matches(r'\|\s*base64\s+(-d|--decode|-D)\s*\|\s*openssl\s+x509\b')
-        && answer.matches(r'\|\s*openssl\s+x509\b[^|]*-subject') && answer.matches(r'\|\s*openssl\s+x509\b[^|]*-(enddate|dates)')
-        && answer.matches(r'\|\s*openssl\s+x509\b[^|]*-noout')
+          required: true
+        - name: output
+          short: o
+          regex: ^jsonpath=.*client-certificate-data
+          required: true
+      cel: '''subject'' in pipes[1].flags && (''enddate'' in pipes[1].flags || ''dates'' in pipes[1].flags)'
+      modifiers:
+      - type: Pipe
+        pipe:
+          command:
+            executable: base64
+            flags:
+            - name: decode
+              short: d
+              boolean: true
+              required: true
+      - type: Pipe
+        pipe:
+          command:
+            executable: openssl
+            subcommands:
+            - name: x509
+            flags:
+            - name: noout
+              singleDash: true
+              boolean: true
+              required: true
+            - name: subject
+              singleDash: true
+              boolean: true
+              required: true
+            - name: enddate
+              singleDash: true
+              boolean: true
+            - name: dates
+              singleDash: true
+              boolean: true
   - type: manifest
     header: (output)
     content: |
@@ -1987,16 +2031,40 @@ scenarios:
         PEM block it finds in the output.
       command:
         executable: openssl
-        strictness: permissive
         subcommands:
         - name: s_client
         flags:
         - name: connect
           singleDash: true
-          required: true
           regex: ^[\w.-]+:6443$
-      cel: answer.matches(r'</?\s*/dev/null') && answer.matches(r'\|\s*openssl\s+x509\b[^|]*-noout') && answer.matches(r'\|\s*openssl\s+x509\b[^|]*-subject')
-        && answer.matches(r'\|\s*openssl\s+x509\b[^|]*-(dates|enddate)')
+          required: true
+      cel: '''subject'' in pipes[0].flags && (''enddate'' in pipes[0].flags || ''dates'' in pipes[0].flags)'
+      modifiers:
+      - type: Redirect
+        redirect:
+          type: <
+          value: /dev/null
+      - type: Pipe
+        pipe:
+          command:
+            executable: openssl
+            subcommands:
+            - name: x509
+            flags:
+            - name: noout
+              singleDash: true
+              boolean: true
+              required: true
+            - name: subject
+              singleDash: true
+              boolean: true
+              required: true
+            - name: enddate
+              singleDash: true
+              boolean: true
+            - name: dates
+              singleDash: true
+              boolean: true
   - type: manifest
     header: (output)
     content: |
@@ -2465,7 +2533,6 @@ scenarios:
       header: 5. Save the issued certificate, decoded, as ravi.crt.
       command:
         executable: kubectl
-        strictness: permissive
         subcommands:
         - name: get
         positionals:
@@ -2481,7 +2548,20 @@ scenarios:
           short: o
           required: true
           regex: ^jsonpath=.*status\.certificate
-      cel: answer.matches(r'\|\s*base64\s+(-d|--decode|-D)\s*>\s*ravi\.crt\s*$')
+      modifiers:
+      - type: Pipe
+        pipe:
+          command:
+            executable: base64
+            flags:
+            - name: decode
+              short: d
+              boolean: true
+              required: true
+      - type: Redirect
+        redirect:
+          type: '>'
+          value: ravi.crt
   - type: question
     question:
       questionType: command

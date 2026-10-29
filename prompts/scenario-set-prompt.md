@@ -327,7 +327,8 @@ A terminal-style input with a `$` prompt. Validates that the user typed the corr
 | Field | Required | Description |
 |---|---|---|
 | `questionType` | yes | Must be `"command"`. |
-| `command` | yes | The `CommandSpec` object describing what is accepted. |
+| `command` | yes | The `CommandSpec` object describing what is accepted (the first command of the line). |
+| `modifiers` | no | Ordered pipes and redirects that must follow `command` (see *Pipes and redirects* below). Omit it for a plain single command. |
 | `initialValue` | no | Pre-filled text shown in the command input when the question loads. Use for cloze-style questions where part of the command is provided and the user must complete it. |
 | `header` | no | The question text shown above the input. |
 | `hint` | no | Shown after the first incorrect attempt. |
@@ -391,6 +392,71 @@ Each entry in `flags` describes one flag the validator checks for.
 - This means `required: false` + `value: "default"` expresses "optional, but if supplied the value must equal 'default'".
 - `forbidden` blocks a flag regardless of value — use it to prevent a user from bypassing a constraint (e.g. forbidding `--all-namespaces` when a specific namespace is required).
 - Flag entries are checked independently; order does not matter.
+
+#### Pipes and redirects (`modifiers`)
+
+Use `modifiers` when the expected answer is a **pipeline** or has a **redirect**, for example
+`cat myfile.crt | base64 -d | openssl x509 -noout -text > file.txt`. The `command` property describes the
+first command; `modifiers` lists what follows it, **in order**. Every listed modifier is required, and no
+other pipe or redirect is accepted.
+
+```yaml
+questionType: command
+header: "Decode the certificate, print it in text form and save the output to file.txt"
+command:                     # cat myfile.crt
+  executable: cat
+  positionals:
+    - index: 0
+      value: myfile.crt
+modifiers:
+  - type: Pipe               # | base64 -d
+    pipe:
+      command:
+        executable: base64
+        flags:
+          - name: decode
+            short: d
+            boolean: true
+            required: true
+  - type: Pipe               # | openssl x509 -noout -text
+    pipe:
+      command:
+        executable: openssl
+        subcommands:
+          - name: x509
+        flags:
+          - name: noout
+            singleDash: true
+            boolean: true
+            required: true
+          - name: text
+            singleDash: true
+            boolean: true
+            required: true
+  - type: Redirect           # > file.txt
+    redirect:
+      type: ">"
+      value: file.txt
+```
+
+| Modifier | Fields | Meaning |
+|---|---|---|
+| `type: Pipe` | `pipe.command` — a normal `CommandSpec` | the previous command's output is piped into this command; validated like any other command (its own `strictness`, flags, positionals...) |
+| `type: Redirect` | `redirect.type` — the operator as typed; `redirect.value`, `redirect.pattern` or `redirect.oneOf` — the target | a redirect of the most recent command |
+
+**Redirect rules**
+- `redirect.type` is free text: `>`, `>>`, `<`, `<<<`, `2>`, `&>`, `2>&1`, `>&2`. Whitespace is ignored, and `1>` counts as `>` and `0<` as `<`; `>` and `>>` are different operators.
+- The target is checked with at most one of `value` (exact), `pattern` (regular expression, partial match) or `oneOf` (a list of exact values). Omit all three to accept any target. Operators that carry their own target, such as `2>&1`, take none.
+- Quotes around a target are ignored (`> "file.txt"` equals `> file.txt`).
+
+**Rules**
+- A modifier belongs to **the most recent command**: the question's `command`, or the command of the latest `Pipe` before it. So `a 2>/dev/null | b` is `[Redirect 2>, Pipe b]`, while `a | b 2>/dev/null` is `[Pipe b, Redirect 2>]`. The order of two redirects matters too (`> out 2>&1` is not `2>&1 > out`).
+- Pipes and redirects may be typed with or without spaces (`a|b`, `cat f>out`). Operators inside quotes are ordinary characters (`grep 'a|b' file`, `sh -c 'a | b'`).
+- **When `modifiers` is absent**, the answer is validated exactly as before, as one plain command: a `|` or `>` is just another token (rejected as an unexpected argument unless the spec is `permissive`). **`modifiers: []`** means the answer must be a single command **without** any pipe or redirect.
+- Modifiers cannot be nested: a piped `command` has no `modifiers` of its own; list its redirects as further modifiers.
+- Not supported: `&&`, `||`, `;`, `&`, `|&`, `$(...)`, backticks, subshells and heredocs. The answer is rejected if it contains them.
+- `cel` still runs on the **whole command line** (`answer`) after the structure has been validated. Besides the usual variables for the first command, it can use `pipes` (a list with `executable`, `subcommands`, `positionals`, `flags`, `unknownFlags` and `extras` of each piped command) and `redirects` (a list of `{type, value, command}`, where `command` is the index of the command it belongs to: 0 for the first, 1 for the first pipe, ...).
+- The same `modifiers` property exists on `assemble-command` questions; the pipe and redirect operators are then ordinary buttons (`"|"`, `">"`, `"2>&1"`) among the `components`.
 
 #### Command question examples
 
@@ -841,6 +907,7 @@ Validation is identical to `command`: the selected tokens are joined with single
 |---|---|---|
 | `questionType` | yes | Must be `assemble-command`. |
 | `command` | yes | The `CommandSpec` describing what is accepted (see `command`). |
+| `modifiers` | no | Pipes and redirects that must follow `command`; same as on a `command` question. Put the operators (`"|"`, `">"`, `"2>&1"`) among the `components`. |
 | `components` | yes | Array of at least 2 button labels. Include every token needed for a correct command plus any distractors. Shown in random order. |
 | `header` | no | Question text shown above the prompt line. |
 | `hint` | no | Shown after the first incorrect attempt. |
@@ -1246,6 +1313,7 @@ Before producing the final YAML, verify:
 - [ ] Every scenario has `title`, `category`, `elements` (≥ 1), and `explanation`
 - [ ] Every `explanation` has at least one element
 - [ ] Every `command` question has `executable`; `subcommands` are `SubcommandToken` objects (with `name`, not bare strings); no `subcommandAliases` or `shortForm` fields (use `aliases` and `short` respectively)
+- [ ] Every command whose expected answer contains a pipe or a redirect uses `modifiers` (first command in `command`, each `|` and redirect as one modifier, in order); `redirect.type` is the operator as typed; piped commands have no `modifiers` of their own; no `&&`, `||`, `;` or `$(...)`
 - [ ] For commands whose flags conventionally use one dash (e.g. `find`), each such `FlagSpec` has `singleDash: true` — otherwise multi-character single-dash tokens will be misparsed as bundled short flags
 - [ ] Every `manifest` question has `manifestDefinitionId`
 - [ ] Every `sequence` has at least 2 `steps`

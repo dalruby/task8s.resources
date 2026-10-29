@@ -62,7 +62,7 @@ manifestDefinitions:
       omitStages:
         type: array
         items:
-          enum: &id002
+          enum:
           - RequestReceived
           - ResponseStarted
           - ResponseComplete
@@ -84,14 +84,26 @@ manifestDefinitions:
               - Metadata
               - Request
               - RequestResponse
-            users: &id001
+            users:
               type: array
               items:
                 type: string
-            userGroups: *id001
-            verbs: *id001
-            namespaces: *id001
-            nonResourceURLs: *id001
+            userGroups:
+              type: array
+              items:
+                type: string
+            verbs:
+              type: array
+              items:
+                type: string
+            namespaces:
+              type: array
+              items:
+                type: string
+            nonResourceURLs:
+              type: array
+              items:
+                type: string
             resources:
               type: array
               items:
@@ -100,12 +112,22 @@ manifestDefinitions:
                 properties:
                   group:
                     type: string
-                  resources: *id001
-                  resourceNames: *id001
+                  resources:
+                    type: array
+                    items:
+                      type: string
+                  resourceNames:
+                    type: array
+                    items:
+                      type: string
             omitStages:
               type: array
               items:
-                enum: *id002
+                enum:
+                - RequestReceived
+                - ResponseStarted
+                - ResponseComplete
+                - Panic
             omitManagedFields:
               type: boolean
 - id: pod-v1
@@ -2146,7 +2168,7 @@ scenarios:
       command:
         executable: grep
         strictness: permissive
-        flags: &id003
+        flags:
         - name: a
           short: a
           boolean: true
@@ -2198,8 +2220,14 @@ scenarios:
       header: Record the finding in /root/finding.txt as one line <username>,<source IP>, with nothing else.
       command:
         executable: echo
-        strictness: permissive
-      cel: answer.matches(r'^echo\s+[\x27"]?system:serviceaccount:ci:deployer,10\.244\.1\.17[\x27"]?\s*>\s*/root/finding\.txt$')
+        positionals:
+        - index: 0
+          value: system:serviceaccount:ci:deployer,10.244.1.17
+      modifiers:
+      - type: Redirect
+        redirect:
+          type: '>'
+          value: /root/finding.txt
   explanation:
     elements:
     - type: context
@@ -2236,7 +2264,31 @@ scenarios:
       command:
         executable: grep
         strictness: permissive
-        flags: *id003
+        flags:
+        - name: a
+          short: a
+          boolean: true
+        - name: i
+          short: i
+          boolean: true
+        - name: n
+          short: n
+          boolean: true
+        - name: E
+          short: E
+          boolean: true
+        - name: F
+          short: F
+          boolean: true
+        - name: H
+          short: H
+          boolean: true
+        - name: h
+          short: h
+          boolean: true
+        - name: r
+          short: r
+          boolean: true
       cel: answer.matches(r'^grep\s') && ((answer.contains('subresource') && answer.contains('exec')) || answer.contains('/exec?'))
         && answer.contains('/var/log/kubernetes/audit/audit.log') && !answer.matches(r'grep\s+(-\w*[cvlL]\w*\s+)')
   - type: manifest
@@ -2281,8 +2333,14 @@ scenarios:
         else.
       command:
         executable: echo
-        strictness: permissive
-      cel: answer.matches(r'^echo\s+[\x27"]?alice,web-7d9f6b5c4-x2kq9[\x27"]?\s*>\s*/root/finding\.txt$')
+        positionals:
+        - index: 0
+          value: alice,web-7d9f6b5c4-x2kq9
+      modifiers:
+      - type: Redirect
+        redirect:
+          type: '>'
+          value: /root/finding.txt
   explanation:
     elements:
     - type: context
@@ -2324,7 +2382,31 @@ scenarios:
       command:
         executable: grep
         strictness: permissive
-        flags: *id003
+        flags:
+        - name: a
+          short: a
+          boolean: true
+        - name: i
+          short: i
+          boolean: true
+        - name: n
+          short: n
+          boolean: true
+        - name: E
+          short: E
+          boolean: true
+        - name: F
+          short: F
+          boolean: true
+        - name: H
+          short: H
+          boolean: true
+        - name: h
+          short: h
+          boolean: true
+        - name: r
+          short: r
+          boolean: true
       cel: answer.matches(r'^grep\s') && answer.contains('403') && answer.contains('/var/log/kubernetes/audit/audit.log')
         && !answer.matches(r'grep\s+(-\w*[cvlL]\w*\s+)')
   - type: manifest
@@ -2354,8 +2436,14 @@ scenarios:
         with nothing else.
       command:
         executable: echo
-        strictness: permissive
-      cel: answer.matches(r'^echo\s+[\x27"]?system:serviceaccount:web:frontend,3[\x27"]?\s*>\s*/root/probe\.txt$')
+        positionals:
+        - index: 0
+          value: system:serviceaccount:web:frontend,3
+      modifiers:
+      - type: Redirect
+        redirect:
+          type: '>'
+          value: /root/probe.txt
   explanation:
     elements:
     - type: context
@@ -2525,7 +2613,31 @@ scenarios:
       command:
         executable: grep
         strictness: permissive
-        flags: *id003
+        flags:
+        - name: a
+          short: a
+          boolean: true
+        - name: i
+          short: i
+          boolean: true
+        - name: n
+          short: n
+          boolean: true
+        - name: E
+          short: E
+          boolean: true
+        - name: F
+          short: F
+          boolean: true
+        - name: H
+          short: H
+          boolean: true
+        - name: h
+          short: h
+          boolean: true
+        - name: r
+          short: r
+          boolean: true
       cel: answer.matches(r'^grep\s') && answer.contains('app-settings') && answer.contains('delete') && answer.contains('/var/log/kubernetes/audit/audit.log')
         && !answer.matches(r'grep\s+(-\w*[cvlL]\w*\s+)')
   - type: manifest
@@ -2538,8 +2650,14 @@ scenarios:
       header: 5. Record the user name of the deleter in /root/deleter.txt, as the only content.
       command:
         executable: echo
-        strictness: permissive
-      cel: answer.matches(r'^echo\s+[\x27"]?system:serviceaccount:payments:batch-runner[\x27"]?\s*>\s*/root/deleter\.txt$')
+        positionals:
+        - index: 0
+          value: system:serviceaccount:payments:batch-runner
+      modifiers:
+      - type: Redirect
+        redirect:
+          type: '>'
+          value: /root/deleter.txt
   explanation:
     elements:
     - type: context

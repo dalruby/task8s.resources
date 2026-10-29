@@ -435,6 +435,75 @@
         }
       ]
     },
+    "RedirectSpec": {
+      "type": "object",
+      "description": "One redirect that must appear in the answer. Redirects attach to the most recent command: the question's own command, or the command of the latest Pipe before it.",
+      "required": ["type"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The redirect operator exactly as it is typed: '>', '>>', '<', '<<<', '2>', '2>>', '&>', '2>&1', '>&2'. Whitespace is ignored and the default descriptors are normalised ('1>' means '>', '0<' means '<'), but '>' and '>>' are different. Operators that carry their own target, such as '2>&1', take no value."
+        },
+        "value": {
+          "type": "string",
+          "description": "Exact target, e.g. '/my/file.txt'. Quotes in the answer are ignored. Use at most one of value, pattern and oneOf; omit all three to accept any target."
+        },
+        "pattern": {
+          "type": "string",
+          "description": "Regular expression the target must match (partial match, like regex on positionals), e.g. '\\.txt$'."
+        },
+        "oneOf": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1,
+          "description": "The target must be exactly one of these strings, e.g. ['/dev/null', 'err.log']."
+        }
+      }
+    },
+    "PipeModifier": {
+      "type": "object",
+      "description": "The previous command's output is piped (|) into another command.",
+      "required": ["type", "pipe"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "Pipe", "description": "Modifier type discriminator. Must be 'Pipe'." },
+        "pipe": {
+          "type": "object",
+          "required": ["command"],
+          "additionalProperties": false,
+          "properties": {
+            "command": {
+              "$ref": "#/$defs/CommandSpec",
+              "description": "Specification of the command that receives the pipe. Validated exactly like a normal command (executable, subcommands, positionals, flags, strictness)."
+            }
+          }
+        }
+      }
+    },
+    "RedirectModifier": {
+      "type": "object",
+      "description": "A redirect of the most recent command's input or output.",
+      "required": ["type", "redirect"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "Redirect", "description": "Modifier type discriminator. Must be 'Redirect'." },
+        "redirect": { "$ref": "#/$defs/RedirectSpec" }
+      }
+    },
+    "CommandModifier": {
+      "description": "A pipe or a redirect that must follow the question's command. Modifiers are matched in order against what the user typed, and every listed modifier is required.",
+      "oneOf": [
+        { "$ref": "#/$defs/PipeModifier" },
+        { "$ref": "#/$defs/RedirectModifier" }
+      ]
+    },
+    "CommandModifiers": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/CommandModifier" },
+      "description": "Pipes and redirects that must follow 'command', in this order, e.g. for 'cat f | base64 -d > out.txt': [{type: Pipe, pipe: {command: {executable: base64, ...}}}, {type: Redirect, redirect: {type: '>', value: out.txt}}]. When this property is absent, the answer is validated as a single plain command (pipe and redirect characters are ordinary tokens). An empty list means the answer must be one plain command with no pipe or redirect. A pipe or redirect binds to the command immediately before it. Operators such as &&, ||, ; and $(...) are not supported."
+    },
     "CommandQuestion": {
       "description": "A terminal-style input with a $ prompt. Validates that the user typed the correct executable, subcommands, positional arguments, and flags. Argument order does not matter.",
       "allOf": [
@@ -452,6 +521,7 @@
               "$ref": "#/$defs/CommandSpec",
               "description": "Specification of the expected command structure."
             },
+            "modifiers": { "$ref": "#/$defs/CommandModifiers" },
             "initialValue": {
               "type": "string",
               "description": "Optional text pre-filled in the command input when the question first loads. Use for cloze-style questions where part of the command is given and the user must complete it. The pre-filled portion should establish context (e.g. the subcommand chain), not supply the part being tested."
@@ -616,6 +686,7 @@
               "$ref": "#/$defs/CommandSpec",
               "description": "Specification of the accepted command. Every token needed to satisfy it (executable, subcommands, flag names and values, positionals) must be available in components, written exactly as it should appear in the assembled command."
             },
+            "modifiers": { "$ref": "#/$defs/CommandModifiers" },
             "components": {
               "type": "array",
               "minItems": 2,
