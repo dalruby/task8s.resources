@@ -150,26 +150,17 @@ scenarios:
         killed, and the attempt must not merely be logged.
   - type: question
     question:
-      questionType: multiline
-      expectedAnswer: |
-        {
-          "defaultAction": "SCMP_ACT_ALLOW",
-          "syscalls": [
-            {
-              "names": ["mkdir", "mkdirat"],
-              "action": "SCMP_ACT_ERRNO"
-            }
-          ]
-        }
+      questionType: json
       header: Write the complete contents of /var/lib/kubelet/seccomp/profiles/deny-mkdir.json.
       hint: 'A seccomp profile is JSON: a default action for everything, plus a list of exceptions that each name syscalls
         and an action.'
       correctAnswerInfo: SCMP_ACT_ERRNO returns an error (EPERM unless a code is given) to the caller, which is why the process
         keeps running. SCMP_ACT_KILL would terminate it, and SCMP_ACT_LOG would only record the call.
-      cel: |-
-        (answer.matches(r'"defaultAction"\s*:\s*"SCMP_ACT_ALLOW"')) &&
-        (answer.matches(r'("names"\s*:\s*\[[^\]]*"mkdir"[^\]]*\][^{}]*"action"\s*:\s*"SCMP_ACT_ERRNO")|("action"\s*:\s*"SCMP_ACT_ERRNO"[^{}]*"names"\s*:\s*\[[^\]]*"mkdir"[^\]]*\])')) &&
-        (answer.matches(r'("names"\s*:\s*\[[^\]]*"mkdirat"[^\]]*\][^{}]*"action"\s*:\s*"SCMP_ACT_ERRNO")|("action"\s*:\s*"SCMP_ACT_ERRNO"[^{}]*"names"\s*:\s*\[[^\]]*"mkdirat"[^\]]*\])'))
+      expectedFields:
+      - path: defaultAction
+        expectedValue: SCMP_ACT_ALLOW
+      cel: has(manifest.syscalls) && ['mkdir', 'mkdirat'].all(n, manifest.syscalls.exists(s, has(s.names) && n in s.names
+        && s.action == 'SCMP_ACT_ERRNO'))
   explanation:
     elements:
     - type: context
@@ -208,30 +199,16 @@ scenarios:
       allowed.
   - type: question
     question:
-      questionType: multiline
-      expectedAnswer: |
-        {
-          "defaultAction": "SCMP_ACT_ERRNO",
-          "syscalls": [
-            {
-              "names": ["execve", "read", "write", "close", "futex", "rt_sigreturn", "exit_group"],
-              "action": "SCMP_ACT_ALLOW"
-            }
-          ]
-        }
+      questionType: json
       header: Write the complete contents of /var/lib/kubelet/seccomp/profiles/heartbeat.json.
       hint: Which side of the profile — the default or the rule list — should carry the permissive action?
       correctAnswerInfo: With a deny-by-default profile the rule list becomes an allow list. Real applications need far more
         syscalls than a toy utility, so allow lists are usually built from observed behaviour (see the audit-log scenario).
-      cel: |-
-        (answer.matches(r'"defaultAction"\s*:\s*"SCMP_ACT_ERRNO"')) &&
-        (answer.matches(r'("names"\s*:\s*\[[^\]]*"execve"[^\]]*\][^{}]*"action"\s*:\s*"SCMP_ACT_ALLOW")|("action"\s*:\s*"SCMP_ACT_ALLOW"[^{}]*"names"\s*:\s*\[[^\]]*"execve"[^\]]*\])')) &&
-        (answer.matches(r'("names"\s*:\s*\[[^\]]*"read"[^\]]*\][^{}]*"action"\s*:\s*"SCMP_ACT_ALLOW")|("action"\s*:\s*"SCMP_ACT_ALLOW"[^{}]*"names"\s*:\s*\[[^\]]*"read"[^\]]*\])')) &&
-        (answer.matches(r'("names"\s*:\s*\[[^\]]*"write"[^\]]*\][^{}]*"action"\s*:\s*"SCMP_ACT_ALLOW")|("action"\s*:\s*"SCMP_ACT_ALLOW"[^{}]*"names"\s*:\s*\[[^\]]*"write"[^\]]*\])')) &&
-        (answer.matches(r'("names"\s*:\s*\[[^\]]*"close"[^\]]*\][^{}]*"action"\s*:\s*"SCMP_ACT_ALLOW")|("action"\s*:\s*"SCMP_ACT_ALLOW"[^{}]*"names"\s*:\s*\[[^\]]*"close"[^\]]*\])')) &&
-        (answer.matches(r'("names"\s*:\s*\[[^\]]*"futex"[^\]]*\][^{}]*"action"\s*:\s*"SCMP_ACT_ALLOW")|("action"\s*:\s*"SCMP_ACT_ALLOW"[^{}]*"names"\s*:\s*\[[^\]]*"futex"[^\]]*\])')) &&
-        (answer.matches(r'("names"\s*:\s*\[[^\]]*"rt_sigreturn"[^\]]*\][^{}]*"action"\s*:\s*"SCMP_ACT_ALLOW")|("action"\s*:\s*"SCMP_ACT_ALLOW"[^{}]*"names"\s*:\s*\[[^\]]*"rt_sigreturn"[^\]]*\])')) &&
-        (answer.matches(r'("names"\s*:\s*\[[^\]]*"exit_group"[^\]]*\][^{}]*"action"\s*:\s*"SCMP_ACT_ALLOW")|("action"\s*:\s*"SCMP_ACT_ALLOW"[^{}]*"names"\s*:\s*\[[^\]]*"exit_group"[^\]]*\])'))
+      expectedFields:
+      - path: defaultAction
+        expectedValue: SCMP_ACT_ERRNO
+      cel: has(manifest.syscalls) && ['execve', 'read', 'write', 'close', 'futex', 'rt_sigreturn', 'exit_group'].all(n, manifest.syscalls.exists(s,
+        has(s.names) && n in s.names && s.action == 'SCMP_ACT_ALLOW'))
   explanation:
     elements:
     - type: context
@@ -266,14 +243,14 @@ scenarios:
       `audit.json`.
   - type: question
     question:
-      questionType: multiline
-      expectedAnswer: |
-        {"defaultAction": "SCMP_ACT_LOG"}
+      questionType: json
       header: Write the complete contents of /var/lib/kubelet/seccomp/profiles/audit.json.
       hint: You want one default action for the whole profile and no individual rules.
       correctAnswerInfo: SCMP_ACT_LOG lets the call proceed and writes an audit record (type=1326, SECCOMP) for it. Whether
         those records reach syslog depends on the host's audit/kernel logging configuration.
-      cel: answer.matches(r'"defaultAction"\s*:\s*"SCMP_ACT_LOG"')
+      expectedFields:
+      - path: defaultAction
+        expectedValue: SCMP_ACT_LOG
   - type: context
     text: |
       `batch-export` has now run once to completion in a Pod using that profile. The kernel wrote its
@@ -349,22 +326,16 @@ scenarios:
       262     newfstatat
   - type: question
     question:
-      questionType: multiline
-      expectedAnswer: |
-        {"defaultAction":"SCMP_ACT_ERRNO","syscalls":[{"names":["execve","read","write","close","brk","futex","exit_group","openat"],"action":"SCMP_ACT_ALLOW"}]}
+      questionType: json
       header: 'Write the complete contents of /var/lib/kubelet/seccomp/profiles/batch-export.json: a profile that permits
         exactly the system calls recorded above and refuses all others with an error.'
       hint: Several records repeat the same number. Only the distinct numbers matter, and each has to be translated to a name.
-      cel: |-
-        (answer.matches(r'"defaultAction"\s*:\s*"SCMP_ACT_ERRNO"')) &&
-        (answer.matches(r'("names"\s*:\s*\[[^\]]*"execve"[^\]]*\][^{}]*"action"\s*:\s*"SCMP_ACT_ALLOW")|("action"\s*:\s*"SCMP_ACT_ALLOW"[^{}]*"names"\s*:\s*\[[^\]]*"execve"[^\]]*\])')) &&
-        (answer.matches(r'("names"\s*:\s*\[[^\]]*"read"[^\]]*\][^{}]*"action"\s*:\s*"SCMP_ACT_ALLOW")|("action"\s*:\s*"SCMP_ACT_ALLOW"[^{}]*"names"\s*:\s*\[[^\]]*"read"[^\]]*\])')) &&
-        (answer.matches(r'("names"\s*:\s*\[[^\]]*"write"[^\]]*\][^{}]*"action"\s*:\s*"SCMP_ACT_ALLOW")|("action"\s*:\s*"SCMP_ACT_ALLOW"[^{}]*"names"\s*:\s*\[[^\]]*"write"[^\]]*\])')) &&
-        (answer.matches(r'("names"\s*:\s*\[[^\]]*"close"[^\]]*\][^{}]*"action"\s*:\s*"SCMP_ACT_ALLOW")|("action"\s*:\s*"SCMP_ACT_ALLOW"[^{}]*"names"\s*:\s*\[[^\]]*"close"[^\]]*\])')) &&
-        (answer.matches(r'("names"\s*:\s*\[[^\]]*"brk"[^\]]*\][^{}]*"action"\s*:\s*"SCMP_ACT_ALLOW")|("action"\s*:\s*"SCMP_ACT_ALLOW"[^{}]*"names"\s*:\s*\[[^\]]*"brk"[^\]]*\])')) &&
-        (answer.matches(r'("names"\s*:\s*\[[^\]]*"futex"[^\]]*\][^{}]*"action"\s*:\s*"SCMP_ACT_ALLOW")|("action"\s*:\s*"SCMP_ACT_ALLOW"[^{}]*"names"\s*:\s*\[[^\]]*"futex"[^\]]*\])')) &&
-        (answer.matches(r'("names"\s*:\s*\[[^\]]*"exit_group"[^\]]*\][^{}]*"action"\s*:\s*"SCMP_ACT_ALLOW")|("action"\s*:\s*"SCMP_ACT_ALLOW"[^{}]*"names"\s*:\s*\[[^\]]*"exit_group"[^\]]*\])')) &&
-        (answer.matches(r'("names"\s*:\s*\[[^\]]*"openat"[^\]]*\][^{}]*"action"\s*:\s*"SCMP_ACT_ALLOW")|("action"\s*:\s*"SCMP_ACT_ALLOW"[^{}]*"names"\s*:\s*\[[^\]]*"openat"[^\]]*\])'))
+      expectedFields:
+      - path: defaultAction
+        expectedValue: SCMP_ACT_ERRNO
+      cel: has(manifest.syscalls) && ['execve', 'read', 'write', 'close', 'brk', 'futex', 'exit_group', 'openat'].all(n, manifest.syscalls.exists(s,
+        has(s.names) && n in s.names && s.action == 'SCMP_ACT_ALLOW')) && manifest.syscalls.all(s, s.action != 'SCMP_ACT_ALLOW'
+        || (has(s.names) && s.names.all(n, n in ['execve', 'read', 'write', 'close', 'brk', 'futex', 'exit_group', 'openat'])))
   explanation:
     elements:
     - type: context
@@ -2836,15 +2807,13 @@ scenarios:
           description: host
   - type: question
     question:
-      questionType: multiline
-      expectedAnswer: |
-        {"defaultAction":"SCMP_ACT_ALLOW","syscalls":[{"names":["chmod","fchmod","fchmodat"],"action":"SCMP_ACT_ERRNO"}]}
+      questionType: json
       header: Write the complete contents of /var/lib/kubelet/seccomp/profiles/deny-chmod.json.
-      cel: |-
-        (answer.matches(r'"defaultAction"\s*:\s*"SCMP_ACT_ALLOW"')) &&
-        (answer.matches(r'("names"\s*:\s*\[[^\]]*"chmod"[^\]]*\][^{}]*"action"\s*:\s*"SCMP_ACT_ERRNO")|("action"\s*:\s*"SCMP_ACT_ERRNO"[^{}]*"names"\s*:\s*\[[^\]]*"chmod"[^\]]*\])')) &&
-        (answer.matches(r'("names"\s*:\s*\[[^\]]*"fchmod"[^\]]*\][^{}]*"action"\s*:\s*"SCMP_ACT_ERRNO")|("action"\s*:\s*"SCMP_ACT_ERRNO"[^{}]*"names"\s*:\s*\[[^\]]*"fchmod"[^\]]*\])')) &&
-        (answer.matches(r'("names"\s*:\s*\[[^\]]*"fchmodat"[^\]]*\][^{}]*"action"\s*:\s*"SCMP_ACT_ERRNO")|("action"\s*:\s*"SCMP_ACT_ERRNO"[^{}]*"names"\s*:\s*\[[^\]]*"fchmodat"[^\]]*\])'))
+      expectedFields:
+      - path: defaultAction
+        expectedValue: SCMP_ACT_ALLOW
+      cel: has(manifest.syscalls) && ['chmod', 'fchmod', 'fchmodat'].all(n, manifest.syscalls.exists(s, has(s.names) && n
+        in s.names && s.action == 'SCMP_ACT_ERRNO'))
   - type: question
     question:
       questionType: command

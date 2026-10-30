@@ -272,9 +272,9 @@ Displays tabular data inline in the scenario. Use it to simulate the kind of out
 
 ## Question Types
 
-Available question types: `single-line`, `multiline`, `command`, `manifest`, `sequence`, `multiple-choice`.
+Available question types: `single-line`, `multiline`, `command`, `manifest`, `json`, `sequence`, `multiple-choice`, `ordering`, `assemble-command`.
 
-**Preferred types** (use by default): `single-line`, `multiline`, `command`, `manifest`.  
+**Preferred types** (use by default): `single-line`, `multiline`, `command`, `manifest`, `json` (for JSON documents).  
 **Use with care**: `sequence` (only when steps are tightly coupled with no intermediate feedback).  
 **Not recommended** (available but discouraged): `multiple-choice` (tests recognition, not recall).
 
@@ -679,6 +679,42 @@ expectedFields:
 - `expectedValue` can be any YAML scalar (string, number, boolean).
 
 **Guidance:** Whether to provide `initialContent` is a deliberate difficulty choice. Providing a scaffold (with the required fields left blank) reduces friction and guides the user toward the correct structure. Omitting it entirely requires the user to recall and type the full manifest from memory, which is harder and more realistic for advanced sets. Match the difficulty to the intent of the scenario.
+
+---
+
+### `json`
+
+A code editor for writing a **single JSON object** — a seccomp profile, `daemon.json`, an audit/admission config. Use this instead of `multiline` + regex for any JSON document, and instead of `manifest` (which is YAML-only and requires `kind`/`apiVersion`).
+
+The input is validated in three steps: (1) strict `JSON.parse` — comments, trailing commas, single quotes and unquoted keys are syntax errors; (2) it must be an object, not an array; (3) `expectedFields`, then the optional `cel` expression.
+
+```yaml
+questionType: json
+header: "Write a seccomp profile that allows everything except mkdir and mkdirat"
+initialContent: |
+  {
+    "defaultAction": ""
+  }
+expectedFields:
+  - path: defaultAction
+    expectedValue: SCMP_ACT_ALLOW
+cel: >-
+  manifest.syscalls.exists(s, 'mkdir' in s.names && s.action == 'SCMP_ACT_ERRNO') &&
+  manifest.syscalls.exists(s, 'mkdirat' in s.names && s.action == 'SCMP_ACT_ERRNO')
+hint: "Add a syscalls array with an SCMP_ACT_ERRNO rule."
+correctAnswerInfo: "defaultAction ALLOW plus an ERRNO rule for the two syscalls."
+```
+
+**Fields:**
+
+| Field | Required | Description |
+|---|---|---|
+| `initialContent` | no | Pre-filled JSON (must itself be a valid JSON object). |
+| `expectedFields` | no | Field checks; same `path`/`expectedValue` syntax as `manifest` (dot paths, numeric array indices, `[bracket]` for keys with dots). |
+| `cel` | no | CEL expression. Variables: `answer` (raw text) and `manifest` (the parsed object — the name is shared with `manifest` questions). |
+| `header`, `hint`, `correctAnswerInfo` | no | As for other questions. |
+
+**Guidance:** Prefer `cel` with `exists()`/`all()` over array-index `expectedFields` for lists whose order does not matter (e.g. seccomp `syscalls` rules). There is no JSON-schema validation for this type. Top-level arrays are not supported.
 
 ---
 
