@@ -83,6 +83,14 @@ manifestDefinitions:
                 type: array
                 items:
                   type: object
+          enableDefaultDeny:
+            type: object
+            additionalProperties: false
+            properties:
+              ingress:
+                type: boolean
+              egress:
+                type: boolean
           ingress:
             type: array
             items:
@@ -393,8 +401,8 @@ scenarios:
   - type: question
     question:
       questionType: command
-      header: List the Pods in `prod` together with their labels.
-      hint: One flag of `kubectl get` appends a LABELS column.
+      header: List the Pods of **all namespaces** together with their labels.
+      hint: One flag of `kubectl get` appends a LABELS column; another widens the scope.
       command:
         executable: kubectl
         subcommands:
@@ -404,10 +412,10 @@ scenarios:
           - pod
           - po
         flags:
-        - name: namespace
-          short: n
+        - name: all-namespaces
+          short: A
           required: true
-          value: prod
+          boolean: true
         - name: show-labels
           required: true
           boolean: true
@@ -1162,8 +1170,8 @@ scenarios:
         Points that matter:
 
         - Both selectors sit in **one** `to` element, meaning "the kube-dns Pods *in* kube-system" (see the AND/OR
-          scenarios). Written as two elements it would also open every other Pod in `kube-system` — the API
-          server's neighbours, etcd's neighbours — for any port.
+          scenarios). Written as two elements it would mean "every Pod in `kube-system`, **or** the
+          `k8s-app=kube-dns` Pods in `shop`" — still limited to port 53, but much broader than intended.
         - The protocol defaults to TCP, so UDP must be spelled out.
         - If the cluster uses **NodeLocal DNSCache**, Pods talk to a link-local address on the node instead; the
           peer is then an `ipBlock` for that address and the rule above is not enough.
@@ -2295,7 +2303,7 @@ scenarios:
         - `externalTrafficPolicy: Local`, or a load balancer / ingress that preserves the address, keeps it.
 
         Combine an `ipBlock` with narrow ports; an `ipBlock` cannot be combined with `podSelector` in the same
-        element (the schema allows only one peer type per element).
+        element (the API server rejects an element that mixes `ipBlock` with a selector).
     - type: references
       links:
       - url: https://kubernetes.io/docs/concepts/services-networking/network-policies/
@@ -2623,7 +2631,7 @@ scenarios:
         | Result | Meaning |
         |---|---|
         | answer / HTTP status | allowed and listening |
-        | `Connection refused` immediately | the packet arrived; nothing listens (**not** a policy) |
+        | `Connection refused` immediately | the packet arrived and nothing listens (**not** a policy). Through a **Service with no ready endpoints**, kube-proxy also rejects with 'refused' — check `kubectl get endpoints` before blaming the application |
         | timeout after your limit | dropped: a policy, a firewall or a wrong IP |
         | `bad address` / `could not resolve` | DNS failed — test it separately with `nslookup`, and check egress to kube-dns |
 
@@ -3084,13 +3092,18 @@ scenarios:
       questionType: manifest
       manifestDefinitionId: cnp-v2
       header: Cilium, unlike standard NetworkPolicies, has explicit deny rules. Write a policy for the `app=batch` Pods that
-        forbids them to reach the Kubernetes API server, using the matching entity.
-      hint: The deny variants of the rule lists carry a `Deny` suffix.
-      correctAnswerInfo: A deny rule wins over any allow rule, which is exactly what the additive standard API cannot express.
+        forbids them to reach the Kubernetes API server, using the matching entity. Their other egress traffic must keep working
+        as it does today.
+      hint: Selecting Pods with any policy, even a deny-only one, normally puts them into default deny for that direction.
+        There is a spec field to switch that off.
+      correctAnswerInfo: 'Without `enableDefaultDeny`, the `batch` Pods would lose **all** egress, not just the API server:
+        the deny policy selects them, so they become default-deny for egress.'
       cel: (has(manifest.spec.endpointSelector.matchLabels) && manifest.spec.endpointSelector.matchLabels.size() == 1 && !has(manifest.spec.endpointSelector.matchExpressions)
         && 'app' in manifest.spec.endpointSelector.matchLabels && manifest.spec.endpointSelector.matchLabels['app'] == 'batch')
         && has(manifest.spec.egressDeny) && manifest.spec.egressDeny.size() == 1 && !has(manifest.spec.egress) && !has(manifest.spec.ingress)
-        && has(manifest.spec.egressDeny[0].toEntities) && manifest.spec.egressDeny[0].toEntities == ['kube-apiserver']
+        && has(manifest.spec.egressDeny[0].toEntities) && manifest.spec.egressDeny[0].toEntities == ['kube-apiserver'] &&
+        has(manifest.spec.enableDefaultDeny) && has(manifest.spec.enableDefaultDeny.egress) && manifest.spec.enableDefaultDeny.egress
+        == false && !has(manifest.spec.enableDefaultDeny.ingress)
   explanation:
     elements:
     - type: context
@@ -3098,7 +3111,10 @@ scenarios:
         Cilium-specific features worth recognising (the docs are available on the exam):
 
         - **Entities**: `world`, `cluster`, `host`, `remote-node`, `kube-apiserver`, `all`.
-        - **Deny rules**: `ingressDeny` / `egressDeny` take precedence over every allow.
+        - **Deny rules**: `ingressDeny` / `egressDeny` take precedence over every allow. **Trap:** a Pod selected
+          by *any* policy, including one with only deny rules, enters default deny for that direction. Add
+          `enableDefaultDeny: {egress: false}` (or an explicit allow rule such as `toEntities: [all]`) when you only
+          want to subtract something.
         - **DNS-based egress**: `toFQDNs` (`matchName`, `matchPattern`) needs a companion rule that allows
           DNS to kube-dns with a `rules.dns` section, so that Cilium can learn the addresses.
         - **Namespaces**: add `k8s:io.kubernetes.pod.namespace: <ns>` to the labels of a peer.
@@ -3338,11 +3354,13 @@ scenarios:
   - type: question
     question:
       questionType: single-line
-      expectedAnswer: 'no'
-      header: A teammate adds an extra policy for the `db` Pods that allows ingress from `web` on 5432. Does Claim 2 still
-        hold? (yes/no)
-      hint: Policies are additive.
-      cel: answer.trim().lowerAscii() in ['no']
+      expectedAnswer: 'yes'
+      header: A teammate adds an extra policy for the `db` Pods that allows ingress from `web` on 5432. Does Claim 2 (`web`
+        cannot reach `db`) still hold? (yes/no)
+      hint: Check the sender's egress, not only the receiver's ingress.
+      correctAnswerInfo: '`db` would now accept the connection, but `web` is still isolated for egress and its policy only
+        allows `api` on 8080 and DNS. A hop needs an allow on both sides.'
+      cel: answer.trim().lowerAscii() in ['yes']
   explanation:
     elements:
     - type: context
