@@ -1,0 +1,3359 @@
+apiVersion: v1alpha1
+name: 'CKS (Hands-On): Network Policies'
+k8sVersion: 1.34.0
+timing:
+  enabled: true
+  limitSeconds: 7200
+introduction:
+  elements:
+  - type: context
+    text: |
+      Hands-on practice for **NetworkPolicies**, the CKS tool for restricting traffic inside the cluster
+      (cluster setup) and for containing a compromised workload (runtime security). There is no multiple
+      choice: you write policies, read them, predict which connections succeed and test the result.
+
+      **Lab environment**
+
+      - You are `root` on the control-plane node of a kubeadm cluster (Kubernetes 1.34, containerd) with a
+        CNI plugin that **enforces** NetworkPolicies (Calico), unless a scenario says otherwise. `kubectl`
+        works and the namespaces mentioned in a scenario exist.
+      - Most scenarios use a small shop: the namespace `shop` with `web`, `api` and `db` workloads, plus
+        `prod`, `monitoring` and `ingress-nginx` where a task needs another namespace.
+      - Test containers have `wget`, `nc` and `nslookup`.
+
+      **How answers are checked**
+
+      - *Policies* are validated as `NetworkPolicy` objects against the Kubernetes schema (so a misspelt
+        field is reported) and then for what they *mean*: selectors, directions, peers and ports. Names and
+        field order do not matter.
+      - *Commands* are checked structurally. *Short answers* accept the common spellings.
+      - Question text states what is wanted, not which fields to use.
+
+      Exam content is under NDA: this is practice for the common patterns, not a prediction.
+  - type: references
+    links:
+    - url: https://kubernetes.io/docs/concepts/services-networking/network-policies/
+      text: Network Policies
+    - url: https://kubernetes.io/docs/tasks/administer-cluster/declare-network-policy/
+      text: Declare Network Policy
+    - url: https://kubernetes.io/docs/tasks/debug/debug-application/debug-service/
+      text: Debug Services
+    - url: https://docs.cilium.io/en/stable/security/policy/
+      text: 'Cilium: Network Policy'
+    - url: https://training.linuxfoundation.org/certification/certified-kubernetes-security-specialist-cks/
+      text: CKS Domains and Competencies
+manifestDefinitions:
+- id: netpol-v1
+  kind: NetworkPolicy
+  apiVersion: networking.k8s.io/v1
+  autoLoad: true
+- id: cnp-v2
+  kind: CiliumNetworkPolicy
+  apiVersion: cilium.io/v2
+  schema:
+    type: object
+    required:
+    - apiVersion
+    - kind
+    - metadata
+    - spec
+    additionalProperties: false
+    properties:
+      apiVersion:
+        type: string
+      kind:
+        type: string
+      metadata:
+        type: object
+      spec:
+        type: object
+        additionalProperties: false
+        properties:
+          description:
+            type: string
+          endpointSelector:
+            type: object
+            additionalProperties: false
+            properties:
+              matchLabels:
+                type: object
+                additionalProperties:
+                  type: string
+              matchExpressions:
+                type: array
+                items:
+                  type: object
+          ingress:
+            type: array
+            items:
+              type: object
+              additionalProperties: false
+              properties:
+                description:
+                  type: string
+                toPorts:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: false
+                    properties:
+                      ports:
+                        type: array
+                        items:
+                          type: object
+                          additionalProperties: false
+                          required:
+                          - port
+                          properties:
+                            port:
+                              type: string
+                            endPort:
+                              type: integer
+                            protocol:
+                              type: string
+                              enum:
+                              - TCP
+                              - UDP
+                              - SCTP
+                              - ANY
+                      rules:
+                        type: object
+                fromEndpoints:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: false
+                    properties:
+                      matchLabels:
+                        type: object
+                        additionalProperties:
+                          type: string
+                      matchExpressions:
+                        type: array
+                        items:
+                          type: object
+                fromEntities:
+                  type: array
+                  items:
+                    type: string
+                    enum:
+                    - all
+                    - world
+                    - cluster
+                    - host
+                    - remote-node
+                    - kube-apiserver
+                    - ingress
+                    - init
+                    - health
+                    - unmanaged
+                fromCIDR:
+                  type: array
+                  items:
+                    type: string
+          ingressDeny:
+            type: array
+            items:
+              type: object
+              additionalProperties: false
+              properties:
+                description:
+                  type: string
+                toPorts:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: false
+                    properties:
+                      ports:
+                        type: array
+                        items:
+                          type: object
+                          additionalProperties: false
+                          required:
+                          - port
+                          properties:
+                            port:
+                              type: string
+                            endPort:
+                              type: integer
+                            protocol:
+                              type: string
+                              enum:
+                              - TCP
+                              - UDP
+                              - SCTP
+                              - ANY
+                      rules:
+                        type: object
+                fromEndpoints:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: false
+                    properties:
+                      matchLabels:
+                        type: object
+                        additionalProperties:
+                          type: string
+                      matchExpressions:
+                        type: array
+                        items:
+                          type: object
+                fromEntities:
+                  type: array
+                  items:
+                    type: string
+                    enum:
+                    - all
+                    - world
+                    - cluster
+                    - host
+                    - remote-node
+                    - kube-apiserver
+                    - ingress
+                    - init
+                    - health
+                    - unmanaged
+                fromCIDR:
+                  type: array
+                  items:
+                    type: string
+          egress:
+            type: array
+            items:
+              type: object
+              additionalProperties: false
+              properties:
+                description:
+                  type: string
+                toPorts:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: false
+                    properties:
+                      ports:
+                        type: array
+                        items:
+                          type: object
+                          additionalProperties: false
+                          required:
+                          - port
+                          properties:
+                            port:
+                              type: string
+                            endPort:
+                              type: integer
+                            protocol:
+                              type: string
+                              enum:
+                              - TCP
+                              - UDP
+                              - SCTP
+                              - ANY
+                      rules:
+                        type: object
+                toEndpoints:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: false
+                    properties:
+                      matchLabels:
+                        type: object
+                        additionalProperties:
+                          type: string
+                      matchExpressions:
+                        type: array
+                        items:
+                          type: object
+                toEntities:
+                  type: array
+                  items:
+                    type: string
+                    enum:
+                    - all
+                    - world
+                    - cluster
+                    - host
+                    - remote-node
+                    - kube-apiserver
+                    - ingress
+                    - init
+                    - health
+                    - unmanaged
+                toCIDR:
+                  type: array
+                  items:
+                    type: string
+                toFQDNs:
+                  type: array
+                  items:
+                    type: object
+          egressDeny:
+            type: array
+            items:
+              type: object
+              additionalProperties: false
+              properties:
+                description:
+                  type: string
+                toPorts:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: false
+                    properties:
+                      ports:
+                        type: array
+                        items:
+                          type: object
+                          additionalProperties: false
+                          required:
+                          - port
+                          properties:
+                            port:
+                              type: string
+                            endPort:
+                              type: integer
+                            protocol:
+                              type: string
+                              enum:
+                              - TCP
+                              - UDP
+                              - SCTP
+                              - ANY
+                      rules:
+                        type: object
+                toEndpoints:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: false
+                    properties:
+                      matchLabels:
+                        type: object
+                        additionalProperties:
+                          type: string
+                      matchExpressions:
+                        type: array
+                        items:
+                          type: object
+                toEntities:
+                  type: array
+                  items:
+                    type: string
+                    enum:
+                    - all
+                    - world
+                    - cluster
+                    - host
+                    - remote-node
+                    - kube-apiserver
+                    - ingress
+                    - init
+                    - health
+                    - unmanaged
+                toCIDR:
+                  type: array
+                  items:
+                    type: string
+                toFQDNs:
+                  type: array
+                  items:
+                    type: object
+scenarios:
+- title: Which Pods Does a Policy Select?
+  category: How Policies Work
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      A NetworkPolicy is a **namespaced** object. It selects Pods through `spec.podSelector`, and it can only
+      select Pods in **its own namespace**. This policy was created in `prod`:
+  - type: manifest
+    content: |
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: api-ingress
+        namespace: prod
+      spec:
+        podSelector:
+          matchLabels:
+            app: api
+        policyTypes:
+        - Ingress
+        ingress:
+        - from:
+          - podSelector:
+              matchLabels:
+                app: web
+  - type: question
+    question:
+      questionType: command
+      header: List the Pods in `prod` together with their labels.
+      hint: One flag of `kubectl get` appends a LABELS column.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: get
+        - name: pods
+          aliases:
+          - pod
+          - po
+        flags:
+        - name: namespace
+          short: n
+          required: true
+          value: prod
+        - name: show-labels
+          required: true
+          boolean: true
+  - type: table
+    style: terminal
+    columns:
+    - NAMESPACE
+    - NAME
+    - LABELS
+    rows:
+    - - prod
+      - api-5f7c9d-abcde
+      - app=api,tier=backend
+    - - prod
+      - api-5f7c9d-fghij
+      - app=api,tier=backend
+    - - prod
+      - api-canary-7d4f6-k9x2p
+      - app=api,track=canary
+    - - prod
+      - web-6d8b55-lm4tq
+      - app=web,tier=frontend
+    - - staging
+      - api-7c5d8f-pq98r
+      - app=api,tier=backend
+    - - monitoring
+      - prometheus-0
+      - app=prometheus
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: '3'
+      header: How many of these Pods does the policy select?
+      hint: Check both the label and the namespace of every row.
+      correctAnswerInfo: The two regular `api` Pods and the canary all carry `app=api` and live in `prod`. The `api` Pod in
+        `staging` has the label but is in another namespace.
+      cel: answer.trim().lowerAscii() in ['3']
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: '{}'
+      header: Which value of `spec.podSelector` selects every Pod in the policy's namespace?
+      hint: A selector with no requirements matches everything.
+      correctAnswerInfo: 'An empty selector matches everything. Write it out explicitly even though an omitted `podSelector`
+        behaves the same way: `{}` makes the intent obvious to the next reader.'
+      cel: answer.replace(' ', '') in ['{}', 'podSelector:{}']
+  explanation:
+    elements:
+    - type: context
+      text: |
+        `spec.podSelector` decides **which Pods the policy is about**: the *subject*. Everything else in the policy
+        describes who may talk to those Pods (`ingress`) or whom they may talk to (`egress`).
+
+        - The subject is always chosen from the policy's **own namespace**. A policy cannot reach into another
+          namespace to select Pods there; `namespaceSelector` only appears when naming *peers*.
+        - `matchLabels` entries are ANDed: a Pod needs all of them.
+        - `podSelector: {}` selects every Pod in the namespace, including Pods created later.
+        - `kubectl get pods --show-labels` is the quickest way to see what a selector will match.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/concepts/services-networking/network-policies/
+        text: Network Policies
+- title: Isolation Is Per Direction
+  category: How Policies Work
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The cluster enforces NetworkPolicies and, apart from the policy below, **no other policy exists**. The
+      policy was created in `prod`.
+  - type: manifest
+    content: |
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: db-ingress
+        namespace: prod
+      spec:
+        podSelector:
+          matchLabels:
+            app: db
+        policyTypes:
+        - Ingress
+        ingress:
+        - from:
+          - podSelector:
+              matchLabels:
+                app: api
+          ports:
+          - protocol: TCP
+            port: 5432
+  - type: context
+    text: |
+      `prod` runs four Pods: `db-0` (`app=db`), `api-1` (`app=api`), `cache-0` (`app=cache`) and
+      `batch-1` (`app=batch`). Answer *yes* or *no* for each connection.
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: 'yes'
+      header: Can `db-0` open a connection to a server on the internet?
+      hint: Look at `policyTypes`. Which direction does it list?
+      correctAnswerInfo: The policy only isolates **ingress**. Egress from `db-0` stays completely open.
+      cel: answer.trim().lowerAscii() in ['yes']
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: 'yes'
+      header: Can `batch-1` connect to `cache-0` on any port?
+      hint: Is `cache-0` selected by the policy?
+      correctAnswerInfo: A Pod that no policy selects is not isolated at all. The policy is about `app=db` only.
+      cel: answer.trim().lowerAscii() in ['yes']
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: 'no'
+      header: Can `batch-1` connect to `db-0` on TCP 5432?
+      hint: '`db-0` is isolated for ingress. What does the policy allow in?'
+      cel: answer.trim().lowerAscii() in ['no']
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: 'no'
+      header: Can `api-1` connect to `db-0` on TCP 5433?
+      hint: The source is allowed. Is the port?
+      correctAnswerInfo: Both the peer **and** the port of a rule must match.
+      cel: answer.trim().lowerAscii() in ['no']
+  explanation:
+    elements:
+    - type: context
+      text: |
+        A Pod becomes **isolated** for a direction as soon as at least one policy selects it *and* lists that
+        direction in `policyTypes`. Until then it accepts and makes any connection.
+
+        | Pod state | Ingress | Egress |
+        |---|---|---|
+        | selected by no policy | open | open |
+        | selected, `policyTypes: [Ingress]` | only what a policy allows | open |
+        | selected, `policyTypes: [Egress]` | open | only what a policy allows |
+        | selected, both | only what a policy allows | only what a policy allows |
+
+        Within a rule, `from`/`to` and `ports` are ANDed: the connection must match a peer **and** a port.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/concepts/services-networking/network-policies/
+        text: Network Policies
+- title: Policies Are Additive
+  category: How Policies Work
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      There are **no deny rules** in the standard NetworkPolicy API, and no ordering between policies. Every
+      policy that selects a Pod simply adds to what that Pod allows. Two policies select `app=db` in `prod`:
+  - type: manifest
+    content: |
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: db-from-web
+        namespace: prod
+      spec:
+        podSelector:
+          matchLabels:
+            app: db
+        policyTypes: [Ingress]
+        ingress:
+        - from:
+          - podSelector:
+              matchLabels:
+                app: web
+          ports:
+          - port: 80
+      ---
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: db-from-admin
+        namespace: prod
+      spec:
+        podSelector:
+          matchLabels:
+            app: db
+        policyTypes: [Ingress]
+        ingress:
+        - from:
+          - podSelector:
+              matchLabels:
+                app: admin
+          ports:
+          - port: 443
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: 'no'
+      header: Can an `app=admin` Pod connect to `db` on TCP 80?
+      hint: Which rule mentions both the admin Pods and port 80?
+      correctAnswerInfo: Policies are unioned **rule by rule**. The admin rule only opens 443, and the web rule only admits
+        web Pods.
+      cel: answer.trim().lowerAscii() in ['no']
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: 'no'
+      header: Can an `app=web` Pod connect to `db` on TCP 443?
+      cel: answer.trim().lowerAscii() in ['no']
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: '2'
+      header: Of the four combinations (web or admin, port 80 or 443), how many connections succeed?
+      hint: Web works on one port, admin on one port.
+      correctAnswerInfo: web→80 and admin→443. The policies do not combine into a matrix of peers × ports.
+      cel: answer.trim().lowerAscii() in ['2']
+  explanation:
+    elements:
+    - type: context
+      text: |
+        The effective ingress rules for a Pod are the **union of all rules of all policies that select it**.
+        A connection is allowed if *any single rule* in the union matches it.
+
+        Consequences worth remembering:
+
+        - Adding a policy can only ever **open** more traffic for Pods that are already isolated. It can never
+          close something another policy allows.
+        - There is no way to write "allow all except…" across policies. To subtract something you must
+          narrow the allow rule itself (for example with `ipBlock.except` or `NotIn`).
+        - Rules from different policies never merge: peer A on port 80 plus peer B on port 443 does **not**
+          mean A on 443.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/concepts/services-networking/network-policies/
+        text: Network Policies
+- title: The policyTypes Default
+  category: How Policies Work
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      `policyTypes` is optional. When it is omitted, Kubernetes fills it in: `Ingress` is **always** included,
+      and `Egress` is added **only if the policy has egress rules**. Three policies in `prod`, none of them
+      sets `policyTypes`:
+  - type: manifest
+    content: |
+      # P1
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata: {name: api-out, namespace: prod}
+      spec:
+        podSelector: {matchLabels: {app: api}}
+        egress:
+        - to:
+          - podSelector: {matchLabels: {app: db}}
+          ports:
+          - port: 5432
+      ---
+      # P2
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata: {name: web-in, namespace: prod}
+      spec:
+        podSelector: {matchLabels: {app: web}}
+        ingress:
+        - from:
+          - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: ingress-nginx}}
+      ---
+      # P3
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata: {name: batch-lock, namespace: prod}
+      spec:
+        podSelector: {matchLabels: {app: batch}}
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: both
+      header: Which directions does P1 isolate for the `api` Pods? (ingress, egress or both)
+      hint: P1 has egress rules, and one direction is always included.
+      correctAnswerInfo: The policy author probably wanted egress only, but with no `policyTypes` the policy also isolates
+        ingress — with no ingress rules, i.e. it denies all ingress to `api`.
+      cel: answer.trim().lowerAscii() in ['both']
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: ingress
+      header: Which directions does P2 isolate for the `web` Pods?
+      cel: answer.trim().lowerAscii() in ['ingress']
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: ingress
+      header: Which directions does P3 isolate for the `batch` Pods?
+      hint: No rules at all, and `Ingress` is the unconditional default.
+      correctAnswerInfo: 'This is why a bare `podSelector: {}` policy is a valid *default deny ingress* policy.'
+      cel: answer.trim().lowerAscii() in ['ingress']
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: netpol-v1
+      header: Write a policy for the `batch` Pods in `prod` that isolates **only their egress** and allows them no egress
+        traffic at all. Leave their ingress untouched.
+      hint: Without any egress rules the default no longer adds `Egress` for you.
+      correctAnswerInfo: 'Spelling out `policyTypes: [Egress]` is the only way to isolate egress with zero rules.'
+      cel: 'manifest.spec.podSelector.matchLabels.size() == 1 && manifest.spec.podSelector.matchLabels.app == ''batch'' &&
+        ((has(manifest.spec.policyTypes) ? manifest.spec.policyTypes : (has(manifest.spec.egress) && manifest.spec.egress.size()
+        > 0 ? [''Ingress'', ''Egress''] : [''Ingress''])).size() == 1 && ''Egress'' in (has(manifest.spec.policyTypes) ? manifest.spec.policyTypes
+        : (has(manifest.spec.egress) && manifest.spec.egress.size() > 0 ? [''Ingress'', ''Egress''] : [''Ingress'']))) &&
+        (!has(manifest.spec.egress) || manifest.spec.egress.size() == 0)'
+      initialContent: |
+        apiVersion: networking.k8s.io/v1
+        kind: NetworkPolicy
+        metadata:
+          name: batch-no-egress
+          namespace: prod
+  explanation:
+    elements:
+    - type: context
+      text: |
+        The defaulting rule explains one of the most common surprises:
+
+        | Policy contains | `policyTypes` omitted becomes |
+        |---|---|
+        | only `ingress` rules | `[Ingress]` |
+        | only `egress` rules | `[Ingress, Egress]` — ingress is isolated too |
+        | no rules | `[Ingress]` |
+        | both | `[Ingress, Egress]` |
+
+        So "I wrote an egress policy and the Pods lost all incoming traffic" and "I wanted to block egress with an
+        empty policy and egress is still open" are the same rule seen from two sides. **Always write
+        `policyTypes` explicitly.**
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/concepts/services-networking/network-policies/
+        text: Network Policies
+- title: One Empty Rule Versus No Rules
+  category: How Policies Work
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Two policies select the same Pods. They look almost identical — one line differs.
+  - type: manifest
+    content: |
+      # A
+      spec:
+        podSelector: {matchLabels: {app: public}}
+        policyTypes: [Ingress]
+        ingress:
+        - {}
+      ---
+      # B
+      spec:
+        podSelector: {matchLabels: {app: public}}
+        policyTypes: [Ingress]
+    footer: Only the `spec` is shown; the metadata is irrelevant here.
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: A
+      header: Which of the two (A or B) allows every ingress connection to the selected Pods?
+      hint: A list with one element exists in A. What does an element without conditions match?
+      correctAnswerInfo: '`ingress: [{}]` is one rule with no `from` and no `ports`, so it matches every source on every port.
+        B has no rule: nothing matches, everything is denied.'
+      cel: answer.trim().lowerAscii() in ['a']
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: netpol-v1
+      header: Write the policy `allow-all-ingress` for the Pods labelled `app=public` in `prod` so that **every** ingress
+        connection to them is accepted.
+      hint: You need a rule, but it does not have to say anything.
+      correctAnswerInfo: Why would anyone write this? To open a Pod that is also selected by a restrictive policy — or to
+        document intent in a namespace that has default deny.
+      cel: 'manifest.spec.podSelector.matchLabels.size() == 1 && manifest.spec.podSelector.matchLabels.app == ''public'' &&
+        ((has(manifest.spec.policyTypes) ? manifest.spec.policyTypes : (has(manifest.spec.egress) && manifest.spec.egress.size()
+        > 0 ? [''Ingress'', ''Egress''] : [''Ingress''])).size() == 1 && ''Ingress'' in (has(manifest.spec.policyTypes) ?
+        manifest.spec.policyTypes : (has(manifest.spec.egress) && manifest.spec.egress.size() > 0 ? [''Ingress'', ''Egress'']
+        : [''Ingress'']))) && has(manifest.spec.ingress) && manifest.spec.ingress.size() == 1 && (!has(manifest.spec.ingress[0].from)
+        || manifest.spec.ingress[0].from.size() == 0) && !has(manifest.spec.ingress[0].ports)'
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Two shapes look similar and behave in opposite ways:
+
+        ```yaml
+        ingress:          # one rule, no conditions → allow everything
+        - {}
+        ```
+        ```yaml
+        policyTypes: [Ingress]   # isolated, no rule → deny everything
+        ```
+
+        The same logic applies inside a rule: a rule with `ports` but **no `from`** admits *any* source on those
+        ports, and a rule with `from` but **no `ports`** admits those sources on *any* port. Missing keys widen a
+        rule; they never narrow it.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/concepts/services-networking/network-policies/
+        text: Network Policies
+- title: Does This Cluster Enforce Policies?
+  category: How Policies Work
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The API server stores any valid NetworkPolicy. **Enforcement is done by the CNI plugin**, so a cluster with
+      the wrong plugin accepts policies and silently ignores them. Before relying on policies, find out which
+      plugin the node uses. Its configuration lives in the standard CNI directory.
+  - type: question
+    question:
+      questionType: command
+      header: List the CNI configuration files on the node.
+      hint: The directory is `/etc/cni/net.d`.
+      command:
+        executable: ls
+        positionals:
+        - index: 0
+          regex: ^/etc/cni/net\.d/?$
+  - type: table
+    style: terminal
+    columns:
+    - FILE
+    rows:
+    - - 10-calico.conflist
+    - - calico-kubeconfig
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: 'yes'
+      header: Does this cluster enforce NetworkPolicies?
+      hint: Calico implements the NetworkPolicy API.
+      cel: answer.trim().lowerAscii() in ['yes']
+  - type: context
+    text: |
+      On another cluster the same directory contains only `10-flannel.conflist` (plain Flannel, no policy
+      add-on). You create a perfectly valid `deny all` policy there.
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: 'yes'
+      header: Does the API server accept the policy?
+      cel: answer.trim().lowerAscii() in ['yes']
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: 'no'
+      header: Is any traffic blocked by it?
+      hint: Who would have to enforce it?
+      correctAnswerInfo: Nothing warns you. Always test a policy with a real connection.
+      cel: answer.trim().lowerAscii() in ['no']
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: 'no'
+      header: 'On most CNI plugins, does a NetworkPolicy restrict a Pod that runs with `hostNetwork: true`?'
+      hint: Such a Pod uses the node's own network namespace.
+      correctAnswerInfo: The Kubernetes documentation calls the behaviour for `hostNetwork` Pods undefined; in practice they
+        are treated like the node itself and are not filtered.
+      cel: answer.trim().lowerAscii() in ['no']
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Plugins that enforce NetworkPolicy include **Calico**, **Cilium**, Weave Net and Antrea. **Flannel on its
+        own does not**, and neither does the kubenet/bridge setup of a bare kubeadm cluster without an add-on.
+
+        Practical checks on the exam or in a lab:
+
+        - Look at the CNI config (`/etc/cni/net.d`) or at the Pods in `kube-system` (`calico-node`, `cilium`).
+        - Apply a deny-all policy and verify with a real connection that it is blocked (see the testing
+          scenarios later in this set).
+        - Remember `hostNetwork: true` Pods: a policy cannot be relied on to isolate them.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/concepts/services-networking/network-policies/
+        text: Network Policies
+- title: Default Deny Ingress
+  category: Default Deny
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The `shop` namespace runs `web`, `api` and `db` Pods and has **no NetworkPolicy yet**, so every Pod accepts
+      traffic from anywhere. The first step of hardening a namespace is a baseline that denies all incoming
+      connections; individual policies then open what is needed.
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: netpol-v1
+      header: 'Write the policy `default-deny-ingress` in `shop`: it selects **all** Pods in the namespace and allows no incoming
+        traffic.'
+      hint: One field selects everything, and a rule list is not needed.
+      correctAnswerInfo: 'The explicit `policyTypes: [Ingress]` is optional here (it is the default) but states the intent.'
+      cel: '(!has(manifest.spec.podSelector) || size(manifest.spec.podSelector) == 0) && ((has(manifest.spec.policyTypes)
+        ? manifest.spec.policyTypes : (has(manifest.spec.egress) && manifest.spec.egress.size() > 0 ? [''Ingress'', ''Egress'']
+        : [''Ingress''])).size() == 1 && ''Ingress'' in (has(manifest.spec.policyTypes) ? manifest.spec.policyTypes : (has(manifest.spec.egress)
+        && manifest.spec.egress.size() > 0 ? [''Ingress'', ''Egress''] : [''Ingress'']))) && (!has(manifest.spec.ingress)
+        || manifest.spec.ingress.size() == 0)'
+      initialContent: |
+        apiVersion: networking.k8s.io/v1
+        kind: NetworkPolicy
+        metadata:
+          name: default-deny-ingress
+          namespace: shop
+  - type: question
+    question:
+      questionType: command
+      header: Show the policies in `shop`.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: get
+        - name: networkpolicy
+          aliases:
+          - networkpolicies
+          - netpol
+          - netpols
+        flags:
+        - name: namespace
+          short: n
+          required: true
+          value: shop
+  - type: table
+    style: terminal
+    columns:
+    - NAME
+    - POD-SELECTOR
+    - AGE
+    rows:
+    - - default-deny-ingress
+      - <none>
+      - 8s
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: 'yes'
+      header: The policy lists `<none>` as its pod selector. Does the policy select any Pods? (yes/no)
+      hint: '`<none>` describes an empty selector, not an absent one.'
+      correctAnswerInfo: An empty selector selects all Pods — also the ones created after the policy.
+      cel: answer.trim().lowerAscii() in ['yes']
+  explanation:
+    elements:
+    - type: context
+      text: |
+        ```yaml
+        apiVersion: networking.k8s.io/v1
+        kind: NetworkPolicy
+        metadata:
+          name: default-deny-ingress
+          namespace: shop
+        spec:
+          podSelector: {}
+          policyTypes:
+          - Ingress
+        ```
+
+        Every Pod in the namespace is now isolated for ingress, and nothing allows anything in. Pods in the
+        namespace can no longer reach each other (and neither can other namespaces or the ingress controller)
+        until further policies add allow rules. Egress is untouched.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/concepts/services-networking/network-policies/
+        text: Network Policies
+      - url: https://kubernetes.io/docs/tasks/administer-cluster/declare-network-policy/
+        text: Declare Network Policy
+- title: Default Deny Egress, and Both Directions
+  category: Default Deny
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Ingress is only half of the story: a compromised Pod can still call out to anything. The same technique
+      works for the other direction. Both policies below belong in `shop`.
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: netpol-v1
+      header: 'Write `default-deny-egress`: all Pods in `shop` are isolated for egress and nothing is allowed out. Ingress
+        must stay as it is.'
+      hint: Without egress rules, nothing makes Kubernetes add the egress direction for you.
+      cel: '(!has(manifest.spec.podSelector) || size(manifest.spec.podSelector) == 0) && ((has(manifest.spec.policyTypes)
+        ? manifest.spec.policyTypes : (has(manifest.spec.egress) && manifest.spec.egress.size() > 0 ? [''Ingress'', ''Egress'']
+        : [''Ingress''])).size() == 1 && ''Egress'' in (has(manifest.spec.policyTypes) ? manifest.spec.policyTypes : (has(manifest.spec.egress)
+        && manifest.spec.egress.size() > 0 ? [''Ingress'', ''Egress''] : [''Ingress'']))) && (!has(manifest.spec.egress) ||
+        manifest.spec.egress.size() == 0)'
+      initialContent: |
+        apiVersion: networking.k8s.io/v1
+        kind: NetworkPolicy
+        metadata:
+          name: default-deny-egress
+          namespace: shop
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: netpol-v1
+      header: 'Write one policy `default-deny-all` that does the work of both: all Pods in `shop` are isolated for ingress
+        **and** egress.'
+      hint: '`policyTypes` is a list.'
+      correctAnswerInfo: One object is easier to review and delete than two, and it is the form most often asked for.
+      cel: '(!has(manifest.spec.podSelector) || size(manifest.spec.podSelector) == 0) && ((has(manifest.spec.policyTypes)
+        ? manifest.spec.policyTypes : (has(manifest.spec.egress) && manifest.spec.egress.size() > 0 ? [''Ingress'', ''Egress'']
+        : [''Ingress''])).size() == 2 && ''Ingress'' in (has(manifest.spec.policyTypes) ? manifest.spec.policyTypes : (has(manifest.spec.egress)
+        && manifest.spec.egress.size() > 0 ? [''Ingress'', ''Egress''] : [''Ingress''])) && ''Egress'' in (has(manifest.spec.policyTypes)
+        ? manifest.spec.policyTypes : (has(manifest.spec.egress) && manifest.spec.egress.size() > 0 ? [''Ingress'', ''Egress'']
+        : [''Ingress'']))) && (!has(manifest.spec.ingress) || manifest.spec.ingress.size() == 0) && (!has(manifest.spec.egress)
+        || manifest.spec.egress.size() == 0)'
+  explanation:
+    elements:
+    - type: context
+      text: |
+        ```yaml
+        spec:
+          podSelector: {}
+          policyTypes:
+          - Ingress
+          - Egress
+        ```
+
+        This is the usual starting point on the exam: **deny everything, then allow what the task asks for**.
+        Keep in mind that a connection between two isolated Pods needs *two* allow rules: egress on the sender
+        **and** ingress on the receiver.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/concepts/services-networking/network-policies/
+        text: Network Policies
+- title: Default-Deny Egress Breaks DNS
+  category: Default Deny
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      `default-deny-all` is active in `shop`. Immediately the application reports that it cannot resolve
+      service names, although the target Services exist:
+
+      ```
+      $ kubectl exec -n shop deploy/web -- nslookup api
+      ;; connection timed out; no servers could be reached
+      ```
+
+      Name resolution is a connection like any other: the Pod sends it to the cluster DNS Pods, and egress is
+      denied.
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: '53'
+      header: Which port number does DNS use?
+      cel: answer.trim().lowerAscii() in ['53']
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: UDP and TCP
+      header: Which transport protocol(s) must be allowed? (name them)
+      hint: Most lookups use one; large answers and zone transfers need the other.
+      correctAnswerInfo: Resolvers fall back to TCP when an answer is truncated, so allowing UDP alone causes rare, hard-to-find
+        failures.
+      cel: answer.lowerAscii().contains('udp') && answer.lowerAscii().contains('tcp')
+  - type: question
+    question:
+      questionType: command
+      header: Show the Pods in `kube-system` with their labels, to find what identifies the DNS Pods.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: get
+        - name: pods
+          aliases:
+          - pod
+          - po
+        flags:
+        - name: namespace
+          short: n
+          required: true
+          value: kube-system
+        - name: show-labels
+          required: true
+          boolean: true
+  - type: table
+    style: terminal
+    columns:
+    - NAME
+    - READY
+    - STATUS
+    - LABELS
+    rows:
+    - - coredns-668d6bf9bc-5jv7n
+      - 1/1
+      - Running
+      - k8s-app=kube-dns,pod-template-hash=668d6bf9bc
+    - - coredns-668d6bf9bc-t2m8z
+      - 1/1
+      - Running
+      - k8s-app=kube-dns,pod-template-hash=668d6bf9bc
+    - - etcd-cp1
+      - 1/1
+      - Running
+      - component=etcd,tier=control-plane
+    - - kube-apiserver-cp1
+      - 1/1
+      - Running
+      - component=kube-apiserver,tier=control-plane
+    - - kube-proxy-9x2lq
+      - 1/1
+      - Running
+      - controller-revision-hash=7c4f8d,k8s-app=kube-proxy
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: netpol-v1
+      header: 'Write the policy `allow-dns` for **all** Pods in `shop`: egress to the cluster DNS Pods on the DNS port, for
+        both protocols. It must not allow any other egress and must not isolate ingress.'
+      hint: The peer has to be 'DNS Pods *in* kube-system'. One `to` entry, two selectors.
+      correctAnswerInfo: Allowing the *Service* IP is not an option — policies are evaluated against the Pod IPs, after the
+        Service has been translated.
+      cel: '(!has(manifest.spec.podSelector) || size(manifest.spec.podSelector) == 0) && ((has(manifest.spec.policyTypes)
+        ? manifest.spec.policyTypes : (has(manifest.spec.egress) && manifest.spec.egress.size() > 0 ? [''Ingress'', ''Egress'']
+        : [''Ingress''])).size() == 1 && ''Egress'' in (has(manifest.spec.policyTypes) ? manifest.spec.policyTypes : (has(manifest.spec.egress)
+        && manifest.spec.egress.size() > 0 ? [''Ingress'', ''Egress''] : [''Ingress'']))) && has(manifest.spec.egress) &&
+        manifest.spec.egress.all(r, has(r.to) && r.to.size() == 1 && has(r.to[0].namespaceSelector) && has(r.to[0].podSelector)
+        && !has(r.to[0].ipBlock) && (has(r.to[0].namespaceSelector.matchLabels) && r.to[0].namespaceSelector.matchLabels.size()
+        == 1 && !has(r.to[0].namespaceSelector.matchExpressions) && ''kubernetes.io/metadata.name'' in r.to[0].namespaceSelector.matchLabels
+        && r.to[0].namespaceSelector.matchLabels[''kubernetes.io/metadata.name''] == ''kube-system'') && (has(r.to[0].podSelector.matchLabels)
+        && r.to[0].podSelector.matchLabels.size() == 1 && !has(r.to[0].podSelector.matchExpressions) && ''k8s-app'' in r.to[0].podSelector.matchLabels
+        && r.to[0].podSelector.matchLabels[''k8s-app''] == ''kube-dns'') && has(r.ports)) && manifest.spec.egress.exists(r,
+        r.ports.exists(p, (p.port == 53 && has(p.protocol) && p.protocol == ''UDP''))) && manifest.spec.egress.exists(r, r.ports.exists(p,
+        (p.port == 53 && (!has(p.protocol) || p.protocol == ''TCP''))))'
+      initialContent: |
+        apiVersion: networking.k8s.io/v1
+        kind: NetworkPolicy
+        metadata:
+          name: allow-dns
+          namespace: shop
+  explanation:
+    elements:
+    - type: context
+      text: |
+        A DNS allow rule is the first thing to add after any default-deny-egress:
+
+        ```yaml
+        egress:
+        - to:
+          - namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: kube-system
+            podSelector:
+              matchLabels:
+                k8s-app: kube-dns
+          ports:
+          - {protocol: UDP, port: 53}
+          - {protocol: TCP, port: 53}
+        ```
+
+        Points that matter:
+
+        - Both selectors sit in **one** `to` element, meaning "the kube-dns Pods *in* kube-system" (see the AND/OR
+          scenarios). Written as two elements it would also open every other Pod in `kube-system` — the API
+          server's neighbours, etcd's neighbours — for any port.
+        - The protocol defaults to TCP, so UDP must be spelled out.
+        - If the cluster uses **NodeLocal DNSCache**, Pods talk to a link-local address on the node instead; the
+          peer is then an `ipBlock` for that address and the rule above is not enough.
+        - This policy is additive. One `allow-dns` per namespace is enough, on top of the deny-all.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/concepts/services-networking/network-policies/
+        text: Network Policies
+- title: A podSelector Peer Stays in Its Own Namespace
+  category: Selectors
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      A rule names its peers in `from` (ingress) or `to` (egress). A peer is a `podSelector`, a
+      `namespaceSelector` or an `ipBlock`. This policy lives in `prod`:
+  - type: manifest
+    content: |
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: db-ingress
+        namespace: prod
+      spec:
+        podSelector:
+          matchLabels:
+            app: db
+        policyTypes: [Ingress]
+        ingress:
+        - from:
+          - podSelector:
+              matchLabels:
+                app: web
+          ports:
+          - port: 5432
+  - type: table
+    style: terminal
+    columns:
+    - NAMESPACE
+    - POD
+    - LABELS
+    rows:
+    - - prod
+      - web-6d8b55-lm4tq
+      - app=web
+    - - prod
+      - worker-5c7d9-x2kqp
+      - app=worker
+    - - staging
+      - web-6d8b55-9fjzr
+      - app=web
+    - - monitoring
+      - web-exporter-0
+      - app=web
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: '1'
+      header: How many of these four Pods may connect to the `db` Pods on port 5432?
+      hint: A bare `podSelector` peer is evaluated in one namespace only. Which?
+      correctAnswerInfo: Only `prod/web-…`. The `web`-labelled Pods in `staging` and `monitoring` are in other namespaces.
+      cel: answer.trim().lowerAscii() in ['1']
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: namespaceSelector
+      header: Which of the three peer types lets a rule name Pods of **other** namespaces?
+      cel: answer.trim().lowerAscii() in ['namespaceselector']
+  explanation:
+    elements:
+    - type: context
+      text: |
+        - `podSelector` alone → Pods in the **policy's own namespace** only.
+        - `namespaceSelector` alone → **all Pods** in every namespace whose labels match.
+        - `namespaceSelector` **and** `podSelector` in the same element → Pods with those labels in matching
+          namespaces (the next scenarios).
+        - `ipBlock` → addresses; meant for traffic from or to *outside* the cluster.
+
+        Whenever a cross-namespace connection fails although a "web" label matches, check this first.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/concepts/services-networking/network-policies/
+        text: Network Policies
+- title: AND or OR? Reading Two Policies
+  category: Selectors
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      One dash can change a policy from narrow to wide. Two policies protect the `api` Pods in `prod` on port
+      9090. They differ **only** in the `from` section:
+  - type: manifest
+    content: |
+      # Policy A
+      ingress:
+      - from:
+        - namespaceSelector:
+            matchLabels:
+              team: ops
+          podSelector:
+            matchLabels:
+              app: prometheus
+        ports:
+        - port: 9090
+      ---
+      # Policy B
+      ingress:
+      - from:
+        - namespaceSelector:
+            matchLabels:
+              team: ops
+        - podSelector:
+            matchLabels:
+              app: prometheus
+        ports:
+        - port: 9090
+  - type: table
+    style: terminal
+    columns:
+    - NAMESPACE
+    - NS LABELS
+    - POD
+    - POD LABELS
+    rows:
+    - - monitoring
+      - team=ops
+      - prometheus-0
+      - app=prometheus
+    - - monitoring
+      - team=ops
+      - grafana-0
+      - app=grafana
+    - - tools
+      - team=dev
+      - prometheus-0
+      - app=prometheus
+    - - prod
+      - team=prod
+      - prometheus-0
+      - app=prometheus
+    - - prod
+      - team=prod
+      - web-0
+      - app=web
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: '1'
+      header: How many of the five Pods can connect to `api` on port 9090 under **policy A**?
+      hint: In A, `namespaceSelector` and `podSelector` belong to the same list element.
+      correctAnswerInfo: 'A means: Pods labelled `app=prometheus` **in** namespaces labelled `team=ops` — only `monitoring/prometheus-0`.'
+      cel: answer.trim().lowerAscii() in ['1']
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: '3'
+      header: How many can connect under **policy B**?
+      hint: In B the selectors are two separate elements, so their results are added together. The second one is evaluated
+        in the policy's own namespace.
+      correctAnswerInfo: 'B means: *every* Pod in `team=ops` namespaces (both `monitoring` Pods) **or** `app=prometheus` Pods
+        in `prod` (the policy''s own namespace). `tools/prometheus-0` matches neither element.'
+      cel: answer.trim().lowerAscii() in ['3']
+  explanation:
+    elements:
+    - type: context
+      text: |
+        ```yaml
+        - from:
+          - namespaceSelector: {…}     # one element, two keys
+            podSelector: {…}           # → AND: Pods that match the podSelector IN namespaces that match
+        ```
+        ```yaml
+        - from:
+          - namespaceSelector: {…}     # element 1
+          - podSelector: {…}           # element 2 → OR: all Pods of those namespaces,
+                                       #   or those Pods in the policy's own namespace
+        ```
+
+        The difference is a single `-`. Rule of thumb for reading: **count the dashes**. Elements of a list are
+        ORed; keys inside one element are ANDed. The same applies to `to` in egress rules, and a mistake in
+        this direction usually *over*-permits, so nothing breaks and nobody notices.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/concepts/services-networking/network-policies/
+        text: Network Policies
+- title: Fixing a Policy That Is Too Open
+  category: Selectors
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      A review of the `prod` policy below found that the Grafana Pod in `monitoring` can reach the `api` Pods
+      on port 9090, although only **Prometheus in the ops namespaces** was ever meant to scrape them.
+  - type: manifest
+    content: |
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: api-scrape
+        namespace: prod
+      spec:
+        podSelector:
+          matchLabels:
+            app: api
+        policyTypes:
+        - Ingress
+        ingress:
+        - from:
+          - namespaceSelector:
+              matchLabels:
+                team: ops
+          - podSelector:
+              matchLabels:
+                app: prometheus
+          ports:
+          - port: 9090
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: netpol-v1
+      header: Correct the policy so that only Pods labelled `app=prometheus` in namespaces labelled `team=ops` can connect.
+        Keep the port.
+      hint: The labels are right; the structure is not.
+      correctAnswerInfo: Moving `podSelector` into the first element (removing one dash) turns the OR into an AND.
+      cel: 'manifest.spec.podSelector.matchLabels.size() == 1 && manifest.spec.podSelector.matchLabels.app == ''api'' && ((has(manifest.spec.policyTypes)
+        ? manifest.spec.policyTypes : (has(manifest.spec.egress) && manifest.spec.egress.size() > 0 ? [''Ingress'', ''Egress'']
+        : [''Ingress''])).size() == 1 && ''Ingress'' in (has(manifest.spec.policyTypes) ? manifest.spec.policyTypes : (has(manifest.spec.egress)
+        && manifest.spec.egress.size() > 0 ? [''Ingress'', ''Egress''] : [''Ingress'']))) && has(manifest.spec.ingress) &&
+        manifest.spec.ingress.size() == 1 && has(manifest.spec.ingress[0].from) && manifest.spec.ingress[0].from.size() ==
+        1 && has(manifest.spec.ingress[0].from[0].namespaceSelector) && has(manifest.spec.ingress[0].from[0].podSelector)
+        && !has(manifest.spec.ingress[0].from[0].ipBlock) && (has(manifest.spec.ingress[0].from[0].namespaceSelector.matchLabels)
+        && manifest.spec.ingress[0].from[0].namespaceSelector.matchLabels.size() == 1 && !has(manifest.spec.ingress[0].from[0].namespaceSelector.matchExpressions)
+        && ''team'' in manifest.spec.ingress[0].from[0].namespaceSelector.matchLabels && manifest.spec.ingress[0].from[0].namespaceSelector.matchLabels[''team'']
+        == ''ops'') && (has(manifest.spec.ingress[0].from[0].podSelector.matchLabels) && manifest.spec.ingress[0].from[0].podSelector.matchLabels.size()
+        == 1 && !has(manifest.spec.ingress[0].from[0].podSelector.matchExpressions) && ''app'' in manifest.spec.ingress[0].from[0].podSelector.matchLabels
+        && manifest.spec.ingress[0].from[0].podSelector.matchLabels[''app''] == ''prometheus'') && has(manifest.spec.ingress[0].ports)
+        && manifest.spec.ingress[0].ports.size() == 1 && manifest.spec.ingress[0].ports.exists(p, (p.port == 9090 && (!has(p.protocol)
+        || p.protocol == ''TCP'')))'
+      initialContent: |
+        apiVersion: networking.k8s.io/v1
+        kind: NetworkPolicy
+        metadata:
+          name: api-scrape
+          namespace: prod
+        spec:
+          podSelector:
+            matchLabels:
+              app: api
+          policyTypes:
+          - Ingress
+          ingress:
+          - from:
+            - namespaceSelector:
+                matchLabels:
+                  team: ops
+            - podSelector:
+                matchLabels:
+                  app: prometheus
+            ports:
+            - port: 9090
+  explanation:
+    elements:
+    - type: context
+      text: |
+        A reliable way to review a `from`/`to` list: write down, for each **dash**, the sentence it means.
+
+        | YAML | Meaning |
+        |---|---|
+        | one element with `namespaceSelector` + `podSelector` | Pods matching the pod labels, in namespaces matching the namespace labels |
+        | two elements | all Pods of the matching namespaces **or** the matching Pods of the policy's own namespace |
+
+        Also note the failure mode: the broken policy still *works* for the intended client, so tests that only
+        check "does Prometheus get through?" pass. Negative tests (a client that must **not** get through) are
+        what find this class of bug.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/concepts/services-networking/network-policies/
+        text: Network Policies
+- title: Selecting a Namespace by Name
+  category: Selectors
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      `namespaceSelector` matches **labels** of namespaces, not their names. You need a label that holds the
+      name of the `monitoring` namespace. Find out how the namespaces are labelled.
+  - type: question
+    question:
+      questionType: command
+      header: List all namespaces together with their labels.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: get
+        - name: namespaces
+          aliases:
+          - namespace
+          - ns
+        flags:
+        - name: show-labels
+          required: true
+          boolean: true
+  - type: table
+    style: terminal
+    columns:
+    - NAME
+    - STATUS
+    - AGE
+    - LABELS
+    rows:
+    - - default
+      - Active
+      - 41d
+      - kubernetes.io/metadata.name=default
+    - - kube-system
+      - Active
+      - 41d
+      - kubernetes.io/metadata.name=kube-system
+    - - monitoring
+      - Active
+      - 12d
+      - kubernetes.io/metadata.name=monitoring
+    - - prod
+      - Active
+      - 30d
+      - env=production,kubernetes.io/metadata.name=prod
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: netpol-v1
+      header: Write a policy in `prod` that lets **every Pod in the namespace `monitoring`** connect to the `app=api` Pods
+        on TCP 8080 and nothing else.
+      hint: Use the label that every namespace carries automatically.
+      correctAnswerInfo: The label is set by the API server on every namespace and cannot be removed, which makes it the dependable
+        way to select by name.
+      cel: 'manifest.spec.podSelector.matchLabels.size() == 1 && manifest.spec.podSelector.matchLabels.app == ''api'' && ((has(manifest.spec.policyTypes)
+        ? manifest.spec.policyTypes : (has(manifest.spec.egress) && manifest.spec.egress.size() > 0 ? [''Ingress'', ''Egress'']
+        : [''Ingress''])).size() == 1 && ''Ingress'' in (has(manifest.spec.policyTypes) ? manifest.spec.policyTypes : (has(manifest.spec.egress)
+        && manifest.spec.egress.size() > 0 ? [''Ingress'', ''Egress''] : [''Ingress'']))) && has(manifest.spec.ingress) &&
+        manifest.spec.ingress.size() == 1 && has(manifest.spec.ingress[0].from) && manifest.spec.ingress[0].from.size() ==
+        1 && has(manifest.spec.ingress[0].from[0].namespaceSelector) && !has(manifest.spec.ingress[0].from[0].podSelector)
+        && !has(manifest.spec.ingress[0].from[0].ipBlock) && (has(manifest.spec.ingress[0].from[0].namespaceSelector.matchLabels)
+        && manifest.spec.ingress[0].from[0].namespaceSelector.matchLabels.size() == 1 && !has(manifest.spec.ingress[0].from[0].namespaceSelector.matchExpressions)
+        && ''kubernetes.io/metadata.name'' in manifest.spec.ingress[0].from[0].namespaceSelector.matchLabels && manifest.spec.ingress[0].from[0].namespaceSelector.matchLabels[''kubernetes.io/metadata.name'']
+        == ''monitoring'') && has(manifest.spec.ingress[0].ports) && manifest.spec.ingress[0].ports.size() == 1 && manifest.spec.ingress[0].ports.exists(p,
+        (p.port == 8080 && (!has(p.protocol) || p.protocol == ''TCP'')))'
+  explanation:
+    elements:
+    - type: context
+      text: |
+        ```yaml
+        namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: monitoring
+        ```
+
+        Since Kubernetes 1.22 (stable) every namespace has `kubernetes.io/metadata.name=<its name>`. Before
+        that, selecting by name meant labelling the namespace yourself — a policy then silently matched nothing
+        if somebody forgot. A custom label like `name: monitoring` only works if you actually put it there,
+        so on an exam cluster check with `kubectl get ns --show-labels` rather than assuming.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/concepts/services-networking/network-policies/
+        text: Network Policies
+- title: Labelling a Namespace First
+  category: Selectors
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The platform team ships this policy for the `prod` namespace. It admits traffic from any namespace that
+      carries the label `purpose=metrics`:
+  - type: manifest
+    content: |
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: allow-metrics
+        namespace: prod
+      spec:
+        podSelector: {}
+        policyTypes: [Ingress]
+        ingress:
+        - from:
+          - namespaceSelector:
+              matchLabels:
+                purpose: metrics
+          ports:
+          - port: 9090
+  - type: context
+    text: |
+      The `monitoring` namespace has only the automatic label, so Prometheus is blocked. The policy is
+      correct; the namespace is not.
+  - type: question
+    question:
+      questionType: command
+      header: 'Make the policy apply to `monitoring`: add the label it expects to that namespace.'
+      hint: The command works on a namespace by name and takes `key=value`.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: label
+        - name: namespace
+          aliases:
+          - namespaces
+          - ns
+        positionals:
+        - index: 0
+          value: monitoring
+        - index: 1
+          value: purpose=metrics
+  - type: table
+    style: terminal
+    columns:
+    - NAME
+    - STATUS
+    - AGE
+    - LABELS
+    rows:
+    - - monitoring
+      - Active
+      - 12d
+      - kubernetes.io/metadata.name=monitoring,purpose=metrics
+  - type: question
+    question:
+      questionType: command
+      header: The experiment is over. Remove the label from the namespace again.
+      hint: A key followed by a minus sign removes it.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: label
+        - name: namespace
+          aliases:
+          - namespaces
+          - ns
+        positionals:
+        - index: 0
+          value: monitoring
+        - index: 1
+          value: purpose-
+  explanation:
+    elements:
+    - type: context
+      text: |
+        ```bash
+        kubectl label namespace monitoring purpose=metrics    # add
+        kubectl label namespace monitoring purpose-           # remove
+        kubectl label namespace monitoring purpose=infra --overwrite   # change an existing value
+        ```
+
+        Policies depend on labels that live on *other* objects (Pods and namespaces). Changing a label is a
+        security-relevant action: whoever may label a namespace can decide which policies select it. In a real
+        cluster, restrict that permission and prefer the immutable `kubernetes.io/metadata.name` label for
+        allow-lists of specific namespaces.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/concepts/services-networking/network-policies/
+        text: Network Policies
+- title: All Namespaces, or All Except One
+  category: Selectors
+  hintsEnabled: true
+  elements:
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: all namespaces
+      header: 'What does `namespaceSelector: {}` match?'
+      hint: An empty selector has no requirements.
+      correctAnswerInfo: Every namespace — and, as the only element of a `from`, therefore every Pod in the cluster.
+      cel: answer.lowerAscii().contains('all') || answer.lowerAscii().contains('every')
+  - type: context
+    text: |
+      The `web` Pods in `shop` serve the whole company on port 8080: clients may come from any namespace except
+      `untrusted`, where a vendor runs its own workloads.
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: netpol-v1
+      header: Write the ingress policy for the `web` Pods in `shop` that admits Pods of every namespace **except** `untrusted`,
+        on TCP 8080 only.
+      hint: There is no 'except' for namespaces; use a selector expression with an operator that excludes values.
+      cel: 'manifest.spec.podSelector.matchLabels.size() == 1 && manifest.spec.podSelector.matchLabels.app == ''web'' && ((has(manifest.spec.policyTypes)
+        ? manifest.spec.policyTypes : (has(manifest.spec.egress) && manifest.spec.egress.size() > 0 ? [''Ingress'', ''Egress'']
+        : [''Ingress''])).size() == 1 && ''Ingress'' in (has(manifest.spec.policyTypes) ? manifest.spec.policyTypes : (has(manifest.spec.egress)
+        && manifest.spec.egress.size() > 0 ? [''Ingress'', ''Egress''] : [''Ingress'']))) && has(manifest.spec.ingress) &&
+        manifest.spec.ingress.size() == 1 && has(manifest.spec.ingress[0].from) && manifest.spec.ingress[0].from.size() ==
+        1 && has(manifest.spec.ingress[0].from[0].namespaceSelector) && !has(manifest.spec.ingress[0].from[0].podSelector)
+        && !has(manifest.spec.ingress[0].from[0].ipBlock) && !has(manifest.spec.ingress[0].from[0].namespaceSelector.matchLabels)
+        && has(manifest.spec.ingress[0].from[0].namespaceSelector.matchExpressions) && manifest.spec.ingress[0].from[0].namespaceSelector.matchExpressions.size()
+        == 1 && manifest.spec.ingress[0].from[0].namespaceSelector.matchExpressions[0].key == ''kubernetes.io/metadata.name''
+        && manifest.spec.ingress[0].from[0].namespaceSelector.matchExpressions[0].operator == ''NotIn'' && manifest.spec.ingress[0].from[0].namespaceSelector.matchExpressions[0].values
+        == [''untrusted''] && has(manifest.spec.ingress[0].ports) && manifest.spec.ingress[0].ports.size() == 1 && manifest.spec.ingress[0].ports.exists(p,
+        (p.port == 8080 && (!has(p.protocol) || p.protocol == ''TCP'')))'
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: Exists
+      header: Which `matchExpressions` operator selects every namespace that carries a given label key, whatever its value?
+      hint: The operators are In, NotIn, Exists and DoesNotExist.
+      cel: answer.trim().lowerAscii() in ['exists']
+  explanation:
+    elements:
+    - type: context
+      text: |
+        `matchExpressions` supports four operators: `In`, `NotIn`, `Exists`, `DoesNotExist`. Together with the
+        automatic name label this expresses "every namespace except X" (`NotIn`) or "only these namespaces"
+        (`In`) in one peer.
+
+        ```yaml
+        namespaceSelector:
+          matchExpressions:
+          - key: kubernetes.io/metadata.name
+            operator: NotIn
+            values: [untrusted]
+        ```
+
+        Remember that `namespaceSelector: {}` plus no `podSelector` means *every Pod in the cluster* — a very
+        open rule. If you want "everything in the same namespace", use `podSelector: {}` instead.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/concepts/services-networking/network-policies/
+        text: Network Policies
+- title: Protocol and Port
+  category: Ports
+  hintsEnabled: true
+  elements:
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: TCP
+      header: Which protocol does a `ports` entry use when `protocol` is left out?
+      cel: answer.trim().lowerAscii() in ['tcp']
+  - type: context
+    text: |
+      The `syslog` Pods in `shop` collect log lines that other Pods send over **UDP port 514**. Every Pod in
+      the namespace may send them; nobody from outside the namespace, and no other port.
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: netpol-v1
+      header: Write the policy for the `app=syslog` Pods.
+      hint: Peers in the policy's own namespace need a selector that matches every Pod there.
+      cel: 'manifest.spec.podSelector.matchLabels.size() == 1 && manifest.spec.podSelector.matchLabels.app == ''syslog'' &&
+        ((has(manifest.spec.policyTypes) ? manifest.spec.policyTypes : (has(manifest.spec.egress) && manifest.spec.egress.size()
+        > 0 ? [''Ingress'', ''Egress''] : [''Ingress''])).size() == 1 && ''Ingress'' in (has(manifest.spec.policyTypes) ?
+        manifest.spec.policyTypes : (has(manifest.spec.egress) && manifest.spec.egress.size() > 0 ? [''Ingress'', ''Egress'']
+        : [''Ingress'']))) && has(manifest.spec.ingress) && manifest.spec.ingress.size() == 1 && has(manifest.spec.ingress[0].from)
+        && manifest.spec.ingress[0].from.size() == 1 && has(manifest.spec.ingress[0].from[0].podSelector) && size(manifest.spec.ingress[0].from[0].podSelector)
+        == 0 && !has(manifest.spec.ingress[0].from[0].namespaceSelector) && !has(manifest.spec.ingress[0].from[0].ipBlock)
+        && has(manifest.spec.ingress[0].ports) && manifest.spec.ingress[0].ports.size() == 1 && manifest.spec.ingress[0].ports.exists(p,
+        (p.port == 514 && has(p.protocol) && p.protocol == ''UDP''))'
+  explanation:
+    elements:
+    - type: context
+      text: |
+        ```yaml
+        ports:
+        - protocol: UDP        # TCP | UDP | SCTP — default TCP
+          port: 514
+        ```
+
+        The classic mistake is a DNS or syslog rule without `protocol: UDP`: it validates, looks right and
+        blocks all datagrams. Each entry is one protocol/port pair; list the pairs you need.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/concepts/services-networking/network-policies/
+        text: Network Policies
+- title: Named Ports and Port Ranges
+  category: Ports
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The container of the `exporter` Pods declares a **named** port:
+  - type: manifest
+    content: |
+      containers:
+      - name: exporter
+        image: registry.example.com/node-exporter:1.8
+        ports:
+        - name: metrics
+          containerPort: 9100
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: netpol-v1
+      header: In `shop`, allow Pods of the namespace `monitoring` to reach the `app=exporter` Pods on their `metrics` port.
+        Refer to the port by its **name**, not its number.
+      hint: '`port` accepts a number or a name.'
+      correctAnswerInfo: A named port keeps the policy correct when the container port number changes — and it only matches
+        Pods whose container actually defines that name.
+      cel: 'manifest.spec.podSelector.matchLabels.size() == 1 && manifest.spec.podSelector.matchLabels.app == ''exporter''
+        && ((has(manifest.spec.policyTypes) ? manifest.spec.policyTypes : (has(manifest.spec.egress) && manifest.spec.egress.size()
+        > 0 ? [''Ingress'', ''Egress''] : [''Ingress''])).size() == 1 && ''Ingress'' in (has(manifest.spec.policyTypes) ?
+        manifest.spec.policyTypes : (has(manifest.spec.egress) && manifest.spec.egress.size() > 0 ? [''Ingress'', ''Egress'']
+        : [''Ingress'']))) && has(manifest.spec.ingress) && manifest.spec.ingress.size() == 1 && has(manifest.spec.ingress[0].from)
+        && manifest.spec.ingress[0].from.size() == 1 && has(manifest.spec.ingress[0].from[0].namespaceSelector) && !has(manifest.spec.ingress[0].from[0].podSelector)
+        && (has(manifest.spec.ingress[0].from[0].namespaceSelector.matchLabels) && manifest.spec.ingress[0].from[0].namespaceSelector.matchLabels.size()
+        == 1 && !has(manifest.spec.ingress[0].from[0].namespaceSelector.matchExpressions) && ''kubernetes.io/metadata.name''
+        in manifest.spec.ingress[0].from[0].namespaceSelector.matchLabels && manifest.spec.ingress[0].from[0].namespaceSelector.matchLabels[''kubernetes.io/metadata.name'']
+        == ''monitoring'') && has(manifest.spec.ingress[0].ports) && manifest.spec.ingress[0].ports.size() == 1 && manifest.spec.ingress[0].ports.exists(p,
+        (p.port == ''metrics'' && (!has(p.protocol) || p.protocol == ''TCP'')))'
+  - type: context
+    text: |
+      Another workload, `ftp`, opens its **passive data connections on any TCP port from 30000 to 30100**. Any
+      client may use them.
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: netpol-v1
+      header: Write the policy for the `app=ftp` Pods that admits any source on that range of ports, as a single `ports` entry.
+      hint: One field gives the first port, another the last.
+      cel: 'manifest.spec.podSelector.matchLabels.size() == 1 && manifest.spec.podSelector.matchLabels.app == ''ftp'' && ((has(manifest.spec.policyTypes)
+        ? manifest.spec.policyTypes : (has(manifest.spec.egress) && manifest.spec.egress.size() > 0 ? [''Ingress'', ''Egress'']
+        : [''Ingress''])).size() == 1 && ''Ingress'' in (has(manifest.spec.policyTypes) ? manifest.spec.policyTypes : (has(manifest.spec.egress)
+        && manifest.spec.egress.size() > 0 ? [''Ingress'', ''Egress''] : [''Ingress'']))) && has(manifest.spec.ingress) &&
+        manifest.spec.ingress.size() == 1 && (!has(manifest.spec.ingress[0].from) || manifest.spec.ingress[0].from.size()
+        == 0) && has(manifest.spec.ingress[0].ports) && manifest.spec.ingress[0].ports.size() == 1 && manifest.spec.ingress[0].ports.exists(p,
+        p.port == 30000 && has(p.endPort) && p.endPort == 30100 && (!has(p.protocol) || p.protocol == ''TCP''))'
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: 'no'
+      header: Can `endPort` be combined with a **named** port? (yes/no)
+      hint: A range needs two numbers.
+      cel: answer.trim().lowerAscii() in ['no']
+  explanation:
+    elements:
+    - type: context
+      text: |
+        | `port` | Meaning |
+        |---|---|
+        | `8080` | exactly that port |
+        | `metrics` | the container port with that **name**, resolved per Pod |
+        | `30000` + `endPort: 30100` | the inclusive range; `port` must be a number |
+
+        `endPort` is stable since Kubernetes 1.25 and needs a CNI that supports it. A named port that the
+        selected Pods do not define matches nothing — a quiet way for a policy to do nothing.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/concepts/services-networking/network-policies/
+        text: Network Policies
+- title: Service Port Versus Container Port
+  category: Ports
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The `web` Pods call the `api` Service on port 80 and the requests now time out since this policy was
+      applied. The Service and the policy:
+  - type: manifest
+    content: |
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: api
+        namespace: shop
+      spec:
+        selector:
+          app: api
+        ports:
+        - port: 80
+          targetPort: 8080
+      ---
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: api-from-web
+        namespace: shop
+      spec:
+        podSelector:
+          matchLabels:
+            app: api
+        policyTypes:
+        - Ingress
+        ingress:
+        - from:
+          - podSelector:
+              matchLabels:
+                app: web
+          ports:
+          - port: 80
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: '8080'
+      header: Which port number must the policy name for the connection to be allowed?
+      hint: The policy sees the packet after the Service address has been translated to a Pod address.
+      correctAnswerInfo: Policies are enforced on Pod IPs and the **container's** port. The Service's own port number is gone
+        by then.
+      cel: answer.trim().lowerAscii() in ['8080']
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: netpol-v1
+      header: Correct the policy.
+      cel: 'manifest.spec.podSelector.matchLabels.size() == 1 && manifest.spec.podSelector.matchLabels.app == ''api'' && ((has(manifest.spec.policyTypes)
+        ? manifest.spec.policyTypes : (has(manifest.spec.egress) && manifest.spec.egress.size() > 0 ? [''Ingress'', ''Egress'']
+        : [''Ingress''])).size() == 1 && ''Ingress'' in (has(manifest.spec.policyTypes) ? manifest.spec.policyTypes : (has(manifest.spec.egress)
+        && manifest.spec.egress.size() > 0 ? [''Ingress'', ''Egress''] : [''Ingress'']))) && has(manifest.spec.ingress) &&
+        manifest.spec.ingress.size() == 1 && has(manifest.spec.ingress[0].from) && manifest.spec.ingress[0].from.size() ==
+        1 && has(manifest.spec.ingress[0].from[0].podSelector) && !has(manifest.spec.ingress[0].from[0].namespaceSelector)
+        && (has(manifest.spec.ingress[0].from[0].podSelector.matchLabels) && manifest.spec.ingress[0].from[0].podSelector.matchLabels.size()
+        == 1 && !has(manifest.spec.ingress[0].from[0].podSelector.matchExpressions) && ''app'' in manifest.spec.ingress[0].from[0].podSelector.matchLabels
+        && manifest.spec.ingress[0].from[0].podSelector.matchLabels[''app''] == ''web'') && has(manifest.spec.ingress[0].ports)
+        && manifest.spec.ingress[0].ports.size() == 1 && manifest.spec.ingress[0].ports.exists(p, (p.port == 8080 && (!has(p.protocol)
+        || p.protocol == ''TCP'')))'
+      initialContent: |
+        apiVersion: networking.k8s.io/v1
+        kind: NetworkPolicy
+        metadata:
+          name: api-from-web
+          namespace: shop
+        spec:
+          podSelector:
+            matchLabels:
+              app: api
+          policyTypes:
+          - Ingress
+          ingress:
+          - from:
+            - podSelector:
+                matchLabels:
+                  app: web
+            ports:
+            - port: 80
+  explanation:
+    elements:
+    - type: context
+      text: |
+        A Service is only a virtual address. The packet that reaches the CNI has already been rewritten (DNAT) to
+        `<Pod IP>:<targetPort>`, which is what policies match. The same applies to egress: to allow a client to
+        reach a Service, allow the **Pod IPs and container ports behind it**, not the ClusterIP.
+
+        When a connection through a Service is blocked but a direct connection to the Pod IP works, compare
+        `kubectl get svc -o wide` (the `targetPort`) with the ports in the policy.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/concepts/services-networking/network-policies/
+        text: Network Policies
+- title: 'Three Tiers: Protecting the Database'
+  category: Writing Policies
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The `shop` namespace has three tiers, labelled `tier=frontend`, `tier=backend` and `tier=db`, and a
+      default-deny-ingress policy is active. The ticket says:
+
+      1. `frontend` may reach `backend` on TCP 8080.
+      2. `backend` may reach `db` on TCP 5432.
+      3. Nothing else may reach `db`.
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: netpol-v1
+      header: Write the policy for the `db` tier.
+      hint: Select the Pods that are protected, and name who may come in.
+      cel: '(has(manifest.spec.podSelector.matchLabels) && manifest.spec.podSelector.matchLabels.size() == 1 && !has(manifest.spec.podSelector.matchExpressions)
+        && ''tier'' in manifest.spec.podSelector.matchLabels && manifest.spec.podSelector.matchLabels[''tier''] == ''db'')
+        && ((has(manifest.spec.policyTypes) ? manifest.spec.policyTypes : (has(manifest.spec.egress) && manifest.spec.egress.size()
+        > 0 ? [''Ingress'', ''Egress''] : [''Ingress''])).size() == 1 && ''Ingress'' in (has(manifest.spec.policyTypes) ?
+        manifest.spec.policyTypes : (has(manifest.spec.egress) && manifest.spec.egress.size() > 0 ? [''Ingress'', ''Egress'']
+        : [''Ingress'']))) && has(manifest.spec.ingress) && manifest.spec.ingress.size() == 1 && has(manifest.spec.ingress[0].from)
+        && manifest.spec.ingress[0].from.size() == 1 && has(manifest.spec.ingress[0].from[0].podSelector) && !has(manifest.spec.ingress[0].from[0].namespaceSelector)
+        && !has(manifest.spec.ingress[0].from[0].ipBlock) && (has(manifest.spec.ingress[0].from[0].podSelector.matchLabels)
+        && manifest.spec.ingress[0].from[0].podSelector.matchLabels.size() == 1 && !has(manifest.spec.ingress[0].from[0].podSelector.matchExpressions)
+        && ''tier'' in manifest.spec.ingress[0].from[0].podSelector.matchLabels && manifest.spec.ingress[0].from[0].podSelector.matchLabels[''tier'']
+        == ''backend'') && has(manifest.spec.ingress[0].ports) && manifest.spec.ingress[0].ports.size() == 1 && manifest.spec.ingress[0].ports.exists(p,
+        (p.port == 5432 && (!has(p.protocol) || p.protocol == ''TCP'')))'
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: netpol-v1
+      header: Write the policy for the `backend` tier.
+      cel: '(has(manifest.spec.podSelector.matchLabels) && manifest.spec.podSelector.matchLabels.size() == 1 && !has(manifest.spec.podSelector.matchExpressions)
+        && ''tier'' in manifest.spec.podSelector.matchLabels && manifest.spec.podSelector.matchLabels[''tier''] == ''backend'')
+        && ((has(manifest.spec.policyTypes) ? manifest.spec.policyTypes : (has(manifest.spec.egress) && manifest.spec.egress.size()
+        > 0 ? [''Ingress'', ''Egress''] : [''Ingress''])).size() == 1 && ''Ingress'' in (has(manifest.spec.policyTypes) ?
+        manifest.spec.policyTypes : (has(manifest.spec.egress) && manifest.spec.egress.size() > 0 ? [''Ingress'', ''Egress'']
+        : [''Ingress'']))) && has(manifest.spec.ingress) && manifest.spec.ingress.size() == 1 && has(manifest.spec.ingress[0].from)
+        && manifest.spec.ingress[0].from.size() == 1 && has(manifest.spec.ingress[0].from[0].podSelector) && !has(manifest.spec.ingress[0].from[0].namespaceSelector)
+        && !has(manifest.spec.ingress[0].from[0].ipBlock) && (has(manifest.spec.ingress[0].from[0].podSelector.matchLabels)
+        && manifest.spec.ingress[0].from[0].podSelector.matchLabels.size() == 1 && !has(manifest.spec.ingress[0].from[0].podSelector.matchExpressions)
+        && ''tier'' in manifest.spec.ingress[0].from[0].podSelector.matchLabels && manifest.spec.ingress[0].from[0].podSelector.matchLabels[''tier'']
+        == ''frontend'') && has(manifest.spec.ingress[0].ports) && manifest.spec.ingress[0].ports.size() == 1 && manifest.spec.ingress[0].ports.exists(p,
+        (p.port == 8080 && (!has(p.protocol) || p.protocol == ''TCP'')))'
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: 'no'
+      header: With only these two policies (and the default deny) in place, can a `frontend` Pod connect to `db` on TCP 5432?
+      hint: Which rules admit anything to `db`?
+      cel: answer.trim().lowerAscii() in ['no']
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: 'no'
+      header: Can a `backend` Pod open a connection **to** a `frontend` Pod on TCP 8080? There is no egress policy.
+      hint: Think about the ingress side of the Pod that receives it.
+      correctAnswerInfo: Egress is unrestricted, but `frontend` has no ingress allow rule for `backend` and is isolated by
+        the default deny. Every hop needs the receiver's permission.
+      cel: answer.trim().lowerAscii() in ['no']
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Only the **receiving** side needs a policy when egress is open, and each policy is attached to the Pods
+        it protects:
+
+        ```
+        frontend ──8080──▶ backend ──5432──▶ db
+                    ▲                 ▲
+          policy on backend   policy on db
+        ```
+
+        Allowing a flow in one direction says nothing about the reverse. If egress were also denied, every hop
+        would need two rules (sender egress, receiver ingress) — see the capstone.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/concepts/services-networking/network-policies/
+        text: Network Policies
+- title: 'Cross-Namespace Access: The Prometheus Scrape'
+  category: Writing Policies
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      In the namespace `prod`, **only** Pods labelled `app=prometheus` that run in the namespace `monitoring`
+      may scrape metrics. The metrics port of every Pod in `prod` is TCP 9090. Nothing else may connect to
+      that port.
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: netpol-v1
+      header: Write the policy in `prod`.
+      hint: 'Pods of one kind in a named namespace: how many list elements does that take?'
+      correctAnswerInfo: 'Selecting namespace and Pod in one element is the safe form for scrapers: another team''s `app=prometheus`
+        Pod elsewhere does not qualify.'
+      cel: '(!has(manifest.spec.podSelector) || size(manifest.spec.podSelector) == 0) && ((has(manifest.spec.policyTypes)
+        ? manifest.spec.policyTypes : (has(manifest.spec.egress) && manifest.spec.egress.size() > 0 ? [''Ingress'', ''Egress'']
+        : [''Ingress''])).size() == 1 && ''Ingress'' in (has(manifest.spec.policyTypes) ? manifest.spec.policyTypes : (has(manifest.spec.egress)
+        && manifest.spec.egress.size() > 0 ? [''Ingress'', ''Egress''] : [''Ingress'']))) && has(manifest.spec.ingress) &&
+        manifest.spec.ingress.size() == 1 && has(manifest.spec.ingress[0].from) && manifest.spec.ingress[0].from.size() ==
+        1 && has(manifest.spec.ingress[0].from[0].namespaceSelector) && has(manifest.spec.ingress[0].from[0].podSelector)
+        && !has(manifest.spec.ingress[0].from[0].ipBlock) && (has(manifest.spec.ingress[0].from[0].namespaceSelector.matchLabels)
+        && manifest.spec.ingress[0].from[0].namespaceSelector.matchLabels.size() == 1 && !has(manifest.spec.ingress[0].from[0].namespaceSelector.matchExpressions)
+        && ''kubernetes.io/metadata.name'' in manifest.spec.ingress[0].from[0].namespaceSelector.matchLabels && manifest.spec.ingress[0].from[0].namespaceSelector.matchLabels[''kubernetes.io/metadata.name'']
+        == ''monitoring'') && (has(manifest.spec.ingress[0].from[0].podSelector.matchLabels) && manifest.spec.ingress[0].from[0].podSelector.matchLabels.size()
+        == 1 && !has(manifest.spec.ingress[0].from[0].podSelector.matchExpressions) && ''app'' in manifest.spec.ingress[0].from[0].podSelector.matchLabels
+        && manifest.spec.ingress[0].from[0].podSelector.matchLabels[''app''] == ''prometheus'') && has(manifest.spec.ingress[0].ports)
+        && manifest.spec.ingress[0].ports.size() == 1 && manifest.spec.ingress[0].ports.exists(p, (p.port == 9090 && (!has(p.protocol)
+        || p.protocol == ''TCP'')))'
+      initialContent: |
+        apiVersion: networking.k8s.io/v1
+        kind: NetworkPolicy
+        metadata:
+          name: allow-prometheus
+          namespace: prod
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: 'no'
+      header: A Pod labelled `app=prometheus` in a namespace called `staging` tries to scrape a `prod` Pod. Does it get through?
+        (yes/no)
+      cel: answer.trim().lowerAscii() in ['no']
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: 'no'
+      header: The Prometheus Pod tries port 8080 on a `prod` Pod instead. Does it get through? (yes/no)
+      hint: Peers and ports are ANDed.
+      cel: answer.trim().lowerAscii() in ['no']
+  explanation:
+    elements:
+    - type: context
+      text: |
+        ```yaml
+        ingress:
+        - from:
+          - namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: monitoring
+            podSelector:
+              matchLabels:
+                app: prometheus
+          ports:
+          - port: 9090
+        ```
+
+        `podSelector: {}` as the subject protects every Pod in `prod` with a single policy. Compare with the
+        "fix a policy that is too open" scenario: the two forms differ by one dash.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/concepts/services-networking/network-policies/
+        text: Network Policies
+- title: Allowing the Ingress Controller
+  category: Writing Policies
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      External users reach the `web` Pods in `shop` through the NGINX ingress controller, which runs in the
+      namespace `ingress-nginx`. The `web` container listens on TCP 8080. Everything that does not come from
+      the controller must be refused.
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: netpol-v1
+      header: Write the policy for `web` in `shop`.
+      hint: The client is a namespace, and the port is the container's.
+      correctAnswerInfo: 'Adding `podSelector: {matchLabels: {app.kubernetes.io/name: ingress-nginx}}` to the same element
+        is an optional extra restriction.'
+      cel: '(has(manifest.spec.podSelector.matchLabels) && manifest.spec.podSelector.matchLabels.size() == 1 && !has(manifest.spec.podSelector.matchExpressions)
+        && ''app'' in manifest.spec.podSelector.matchLabels && manifest.spec.podSelector.matchLabels[''app''] == ''web'')
+        && ((has(manifest.spec.policyTypes) ? manifest.spec.policyTypes : (has(manifest.spec.egress) && manifest.spec.egress.size()
+        > 0 ? [''Ingress'', ''Egress''] : [''Ingress''])).size() == 1 && ''Ingress'' in (has(manifest.spec.policyTypes) ?
+        manifest.spec.policyTypes : (has(manifest.spec.egress) && manifest.spec.egress.size() > 0 ? [''Ingress'', ''Egress'']
+        : [''Ingress'']))) && has(manifest.spec.ingress) && manifest.spec.ingress.size() == 1 && has(manifest.spec.ingress[0].from)
+        && manifest.spec.ingress[0].from.size() == 1 && has(manifest.spec.ingress[0].from[0].namespaceSelector) && !has(manifest.spec.ingress[0].from[0].ipBlock)
+        && (has(manifest.spec.ingress[0].from[0].namespaceSelector.matchLabels) && manifest.spec.ingress[0].from[0].namespaceSelector.matchLabels.size()
+        == 1 && !has(manifest.spec.ingress[0].from[0].namespaceSelector.matchExpressions) && ''kubernetes.io/metadata.name''
+        in manifest.spec.ingress[0].from[0].namespaceSelector.matchLabels && manifest.spec.ingress[0].from[0].namespaceSelector.matchLabels[''kubernetes.io/metadata.name'']
+        == ''ingress-nginx'') && (!has(manifest.spec.ingress[0].from[0].podSelector) || (has(manifest.spec.ingress[0].from[0].podSelector.matchLabels)
+        && manifest.spec.ingress[0].from[0].podSelector.matchLabels.size() == 1 && !has(manifest.spec.ingress[0].from[0].podSelector.matchExpressions)
+        && ''app.kubernetes.io/name'' in manifest.spec.ingress[0].from[0].podSelector.matchLabels && manifest.spec.ingress[0].from[0].podSelector.matchLabels[''app.kubernetes.io/name'']
+        == ''ingress-nginx'')) && has(manifest.spec.ingress[0].ports) && manifest.spec.ingress[0].ports.size() == 1 && manifest.spec.ingress[0].ports.exists(p,
+        (p.port == 8080 && (!has(p.protocol) || p.protocol == ''TCP'')))'
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: 'no'
+      header: After the policy is applied, can the `api` Pods in `shop` connect to `web` on TCP 8080? (yes/no)
+      hint: Who is on the allow list?
+      cel: answer.trim().lowerAscii() in ['no']
+  explanation:
+    elements:
+    - type: context
+      text: |
+        The ingress controller is just another client Pod, from the policy's point of view: allow its
+        namespace (and optionally its Pod labels), on the port of the **backend container**. Two common
+        stumbling blocks:
+
+        - The controller connects to the **Pod IP** of the backend (not the Service), so the container port
+          applies.
+        - If the controller runs with `hostNetwork: true`, its traffic comes from the node's IP and a
+          namespace selector will not match; allow the node CIDR with an `ipBlock` instead.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/concepts/services-networking/network-policies/
+        text: Network Policies
+- title: An Egress Allow-List
+  category: Writing Policies
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The `api` Pods in `shop` are a juicy target: they hold database credentials. Their outgoing traffic must
+      be limited to **two destinations**: the `db` Pods in the same namespace on TCP 5432, and cluster DNS.
+      Their ingress must not change.
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: netpol-v1
+      header: Write the egress policy for the `app=api` Pods.
+      hint: Two destinations, two rules; keep each rule's ports with its own peer.
+      cel: '(has(manifest.spec.podSelector.matchLabels) && manifest.spec.podSelector.matchLabels.size() == 1 && !has(manifest.spec.podSelector.matchExpressions)
+        && ''app'' in manifest.spec.podSelector.matchLabels && manifest.spec.podSelector.matchLabels[''app''] == ''api'')
+        && ((has(manifest.spec.policyTypes) ? manifest.spec.policyTypes : (has(manifest.spec.egress) && manifest.spec.egress.size()
+        > 0 ? [''Ingress'', ''Egress''] : [''Ingress''])).size() == 1 && ''Egress'' in (has(manifest.spec.policyTypes) ? manifest.spec.policyTypes
+        : (has(manifest.spec.egress) && manifest.spec.egress.size() > 0 ? [''Ingress'', ''Egress''] : [''Ingress'']))) &&
+        has(manifest.spec.egress) && manifest.spec.egress.size() == 2 && manifest.spec.egress.all(r, has(r.to) && has(r.ports))
+        && manifest.spec.egress.exists(r, r.to.size() == 1 && has(r.to[0].podSelector) && !has(r.to[0].namespaceSelector)
+        && !has(r.to[0].ipBlock) && (has(r.to[0].podSelector.matchLabels) && r.to[0].podSelector.matchLabels.size() == 1 &&
+        !has(r.to[0].podSelector.matchExpressions) && ''app'' in r.to[0].podSelector.matchLabels && r.to[0].podSelector.matchLabels[''app'']
+        == ''db'') && r.ports.size() == 1 && r.ports.exists(p, (p.port == 5432 && (!has(p.protocol) || p.protocol == ''TCP''))))
+        && manifest.spec.egress.exists(r, r.to.size() == 1 && has(r.to[0].namespaceSelector) && has(r.to[0].podSelector) &&
+        !has(r.to[0].ipBlock) && (has(r.to[0].namespaceSelector.matchLabels) && r.to[0].namespaceSelector.matchLabels.size()
+        == 1 && !has(r.to[0].namespaceSelector.matchExpressions) && ''kubernetes.io/metadata.name'' in r.to[0].namespaceSelector.matchLabels
+        && r.to[0].namespaceSelector.matchLabels[''kubernetes.io/metadata.name''] == ''kube-system'') && (has(r.to[0].podSelector.matchLabels)
+        && r.to[0].podSelector.matchLabels.size() == 1 && !has(r.to[0].podSelector.matchExpressions) && ''k8s-app'' in r.to[0].podSelector.matchLabels
+        && r.to[0].podSelector.matchLabels[''k8s-app''] == ''kube-dns'') && r.ports.size() == 2 && r.ports.exists(p, (p.port
+        == 53 && has(p.protocol) && p.protocol == ''UDP'')) && r.ports.exists(p, (p.port == 53 && (!has(p.protocol) || p.protocol
+        == ''TCP''))))'
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: 'no'
+      header: Can an `api` Pod still connect to a `web` Pod in `shop` on TCP 8080? (yes/no)
+      cel: answer.trim().lowerAscii() in ['no']
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: 'yes'
+      header: Can a `web` Pod still connect **to** an `api` Pod? Assume nothing else selects `api` for ingress. (yes/no)
+      hint: The policy isolates one direction.
+      cel: answer.trim().lowerAscii() in ['yes']
+  explanation:
+    elements:
+    - type: context
+      text: |
+        An egress allow-list always contains the DNS rule next to the "real" destinations, otherwise the Pod
+        cannot even resolve the name of the database. Notice that `policyTypes: [Egress]` is spelled out: with
+        egress rules and no `policyTypes`, Kubernetes would also isolate **ingress**, cutting `web` off from
+        `api`.
+
+        Two rules, each with its own ports, are not the same as one rule with two peers: with `to: [db, dns]`
+        and `ports: [5432, 53]` the database would also be reachable on port 53 and the DNS Pods on 5432.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/concepts/services-networking/network-policies/
+        text: Network Policies
+- title: Blocking the Cloud Metadata Endpoint
+  category: Writing Policies
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The `worker` Pods in `shop` download files from the internet, so they need outgoing access to arbitrary
+      external addresses. On a cloud provider, though, a compromised Pod that can reach the **instance
+      metadata service at 169.254.169.254** can steal the node's credentials. Allow external egress and make
+      that single address unreachable.
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: netpol-v1
+      header: 'Write the egress policy for the `app=worker` Pods: any address, except the metadata service.'
+      hint: An `ipBlock` can subtract addresses from its range.
+      correctAnswerInfo: A single address is written as a /32. Every `except` entry must lie inside the `cidr`.
+      cel: '(has(manifest.spec.podSelector.matchLabels) && manifest.spec.podSelector.matchLabels.size() == 1 && !has(manifest.spec.podSelector.matchExpressions)
+        && ''app'' in manifest.spec.podSelector.matchLabels && manifest.spec.podSelector.matchLabels[''app''] == ''worker'')
+        && ((has(manifest.spec.policyTypes) ? manifest.spec.policyTypes : (has(manifest.spec.egress) && manifest.spec.egress.size()
+        > 0 ? [''Ingress'', ''Egress''] : [''Ingress''])).size() == 1 && ''Egress'' in (has(manifest.spec.policyTypes) ? manifest.spec.policyTypes
+        : (has(manifest.spec.egress) && manifest.spec.egress.size() > 0 ? [''Ingress'', ''Egress''] : [''Ingress'']))) &&
+        has(manifest.spec.egress) && manifest.spec.egress.size() == 1 && has(manifest.spec.egress[0].to) && manifest.spec.egress[0].to.size()
+        == 1 && has(manifest.spec.egress[0].to[0].ipBlock) && !has(manifest.spec.egress[0].to[0].podSelector) && !has(manifest.spec.egress[0].to[0].namespaceSelector)
+        && manifest.spec.egress[0].to[0].ipBlock.cidr == ''0.0.0.0/0'' && has(manifest.spec.egress[0].to[0].ipBlock.except)
+        && manifest.spec.egress[0].to[0].ipBlock.except == [''169.254.169.254/32'']'
+  - type: context
+    text: |
+      Later a colleague adds a second policy for the same Pods, intended to let them talk to the node-local
+      log agent. Its egress rule lists `ipBlock: {cidr: 169.254.169.254/32}`.
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: 'yes'
+      header: Is the metadata service reachable from the `worker` Pods again? (yes/no)
+      hint: What happens when two policies select the same Pod?
+      correctAnswerInfo: 'Policies are additive: the second policy opens the address that the first one excepted. An `except`
+        only narrows the rule it sits in.'
+      cel: answer.trim().lowerAscii() in ['yes']
+  explanation:
+    elements:
+    - type: context
+      text: |
+        ```yaml
+        egress:
+        - to:
+          - ipBlock:
+              cidr: 0.0.0.0/0
+              except:
+              - 169.254.169.254/32
+        ```
+
+        Things to know:
+
+        - `ipBlock` is designed for addresses **outside** the cluster. Pod IPs are ephemeral, and depending on the
+          plugin in-cluster traffic may be translated, so use `podSelector`/`namespaceSelector` for Pods.
+          A catch-all `0.0.0.0/0` therefore also overlaps the Pod network on some plugins: add explicit
+          rules for in-cluster destinations (such as DNS) instead of relying on it.
+        - The address 169.254.169.254 is the metadata endpoint of the major clouds; other ranges may need excepting
+          in other environments.
+        - With a default-deny egress in place, the metadata address is already unreachable for Pods that no
+          rule opens. The explicit `except` matters for Pods that are granted *broad* external access.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/concepts/services-networking/network-policies/
+        text: Network Policies
+- title: Ingress Only from the Office Network
+  category: Writing Policies
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The `admin-ui` Pods in `shop` are reachable from outside the cluster. Only the office network
+      **203.0.113.0/24** may connect, to TCP 443.
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: netpol-v1
+      header: Write the policy for `app=admin-ui`.
+      cel: '(has(manifest.spec.podSelector.matchLabels) && manifest.spec.podSelector.matchLabels.size() == 1 && !has(manifest.spec.podSelector.matchExpressions)
+        && ''app'' in manifest.spec.podSelector.matchLabels && manifest.spec.podSelector.matchLabels[''app''] == ''admin-ui'')
+        && ((has(manifest.spec.policyTypes) ? manifest.spec.policyTypes : (has(manifest.spec.egress) && manifest.spec.egress.size()
+        > 0 ? [''Ingress'', ''Egress''] : [''Ingress''])).size() == 1 && ''Ingress'' in (has(manifest.spec.policyTypes) ?
+        manifest.spec.policyTypes : (has(manifest.spec.egress) && manifest.spec.egress.size() > 0 ? [''Ingress'', ''Egress'']
+        : [''Ingress'']))) && has(manifest.spec.ingress) && manifest.spec.ingress.size() == 1 && has(manifest.spec.ingress[0].from)
+        && manifest.spec.ingress[0].from.size() == 1 && has(manifest.spec.ingress[0].from[0].ipBlock) && !has(manifest.spec.ingress[0].from[0].podSelector)
+        && !has(manifest.spec.ingress[0].from[0].namespaceSelector) && manifest.spec.ingress[0].from[0].ipBlock.cidr == ''203.0.113.0/24''
+        && !has(manifest.spec.ingress[0].from[0].ipBlock.except) && has(manifest.spec.ingress[0].ports) && manifest.spec.ingress[0].ports.size()
+        == 1 && manifest.spec.ingress[0].ports.exists(p, (p.port == 443 && (!has(p.protocol) || p.protocol == ''TCP'')))'
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: podSelector
+      header: Which peer type should be used to allow traffic from **another Pod in the cluster** instead of an address block?
+      hint: Pod IPs change whenever a Pod is rescheduled.
+      cel: answer.lowerAscii().contains('podselector') || answer.lowerAscii().contains('selector')
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: Local
+      header: 'A client in the office reaches the cluster through a `LoadBalancer` Service with `externalTrafficPolicy: Cluster`.
+        The policy may then never match the office addresses. Which `externalTrafficPolicy` value preserves the client''s
+        source IP?'
+      correctAnswerInfo: With `Cluster` the node performs SNAT, so the Pod sees a node address as the source. `Local` keeps
+        the client IP (and only routes to Pods on that node).
+      cel: answer.trim().lowerAscii() in ['local']
+  explanation:
+    elements:
+    - type: context
+      text: |
+        `ipBlock` compares the **source address as the Pod's node sees it**. For traffic from outside it is the
+        right peer, but only if the real client address survives the way in:
+
+        - Service type `LoadBalancer` or `NodePort` with `externalTrafficPolicy: Cluster` (default): SNAT hides
+          the client behind a node address.
+        - `externalTrafficPolicy: Local`, or a load balancer / ingress that preserves the address, keeps it.
+
+        Combine an `ipBlock` with narrow ports; an `ipBlock` cannot be combined with `podSelector` in the same
+        element (the schema allows only one peer type per element).
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/concepts/services-networking/network-policies/
+        text: Network Policies
+- title: Containing a Compromised Pod
+  category: Containment
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      A Falco alert flags the Pod `web-7d9f6c-x2k4q` in `shop` (labels `app=web`, `pod-template-hash=7d9f6c`)
+      for a reverse shell. You want it cut off from the network in **both directions** without touching the
+      other `web` replicas, and you want to keep it running for forensics.
+
+      Existing allow policies select `app=web`. A containment policy is prepared for Pods labelled
+      `quarantine=true`.
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: netpol-v1
+      header: 'Write the policy `quarantine` for Pods labelled `quarantine=true`: no traffic in or out.'
+      hint: Isolate both directions and list no rules.
+      cel: '(has(manifest.spec.podSelector.matchLabels) && manifest.spec.podSelector.matchLabels.size() == 1 && !has(manifest.spec.podSelector.matchExpressions)
+        && ''quarantine'' in manifest.spec.podSelector.matchLabels && manifest.spec.podSelector.matchLabels[''quarantine'']
+        == ''true'') && ((has(manifest.spec.policyTypes) ? manifest.spec.policyTypes : (has(manifest.spec.egress) && manifest.spec.egress.size()
+        > 0 ? [''Ingress'', ''Egress''] : [''Ingress''])).size() == 2 && ''Ingress'' in (has(manifest.spec.policyTypes) ?
+        manifest.spec.policyTypes : (has(manifest.spec.egress) && manifest.spec.egress.size() > 0 ? [''Ingress'', ''Egress'']
+        : [''Ingress''])) && ''Egress'' in (has(manifest.spec.policyTypes) ? manifest.spec.policyTypes : (has(manifest.spec.egress)
+        && manifest.spec.egress.size() > 0 ? [''Ingress'', ''Egress''] : [''Ingress'']))) && (!has(manifest.spec.ingress)
+        || manifest.spec.ingress.size() == 0) && (!has(manifest.spec.egress) || manifest.spec.egress.size() == 0)'
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: 'no'
+      header: If you only **add** the label `quarantine=true` to the Pod (keeping `app=web`), is the Pod fully isolated? (yes/no)
+      hint: The Pod is then selected by several policies. What do they do together?
+      correctAnswerInfo: 'Policies are additive: the existing `app=web` allow rules still apply to the Pod, so it can still
+        talk to whatever they permit. A quarantine policy cannot subtract them.'
+      cel: answer.trim().lowerAscii() in ['no']
+  - type: question
+    question:
+      questionType: command
+      header: 'In one command, move the Pod into quarantine so that no other policy selects it: add the quarantine label and
+        remove the label the allow policies use.'
+      hint: A key with a trailing minus sign deletes that label.
+      correctAnswerInfo: Removing `app` also makes the ReplicaSet stop owning the Pod, so it starts a healthy replacement
+        while the compromised one stays around for analysis.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: label
+        - name: pod
+          aliases:
+          - pods
+          - po
+        positionals:
+        - index: 0
+          value: web-7d9f6c-x2k4q
+        - index: 1
+          oneOf:
+          - quarantine=true
+          - app-
+        - index: 2
+          oneOf:
+          - quarantine=true
+          - app-
+        flags:
+        - name: namespace
+          short: n
+          required: true
+          value: shop
+      cel: '''quarantine=true'' in positionals && ''app-'' in positionals'
+  explanation:
+    elements:
+    - type: context
+      text: |
+        The sequence in a real incident:
+
+        1. Apply the `quarantine` policy once (it can live in the namespace permanently).
+        2. Re-label the suspect Pod: `kubectl label pod <pod> -n shop quarantine=true app-`.
+        3. The owning ReplicaSet no longer matches the Pod and creates a replacement, so capacity is restored.
+        4. Investigate the isolated Pod (logs, `crictl`, filesystem) and delete it afterwards.
+
+        Remember what a policy can **not** do: it does not stop processes already in the Pod, it cannot revoke
+        credentials the attacker holds (a mounted service-account token still works from elsewhere), and
+        connections that were already established may survive depending on the CNI plugin.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/concepts/services-networking/network-policies/
+        text: Network Policies
+      - url: https://falco.org/docs/
+        text: Falco documentation
+- title: Reading Policies with kubectl
+  category: Debugging
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Before changing anything on an unfamiliar cluster, find out which policies exist and what they say.
+      Start with the overview of **all namespaces**.
+  - type: question
+    question:
+      questionType: command
+      header: List the NetworkPolicies of all namespaces.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: get
+        - name: networkpolicy
+          aliases:
+          - networkpolicies
+          - netpol
+          - netpols
+        flags:
+        - name: all-namespaces
+          short: A
+          required: true
+          boolean: true
+  - type: table
+    style: terminal
+    columns:
+    - NAMESPACE
+    - NAME
+    - POD-SELECTOR
+    - AGE
+    rows:
+    - - monitoring
+      - default-deny-all
+      - <none>
+      - 9d
+    - - shop
+      - db-allow
+      - tier=db
+      - 3d
+    - - shop
+      - metrics-in
+      - app=api
+      - 3d
+  - type: question
+    question:
+      questionType: command
+      header: Show the details of the policy `db-allow` in `shop`, in the human-readable form that spells out peers and ports.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: describe
+        - name: networkpolicy
+          aliases:
+          - networkpolicies
+          - netpol
+          - netpols
+        positionals:
+        - index: 0
+          value: db-allow
+        flags:
+        - name: namespace
+          short: n
+          required: true
+          value: shop
+  - type: context
+    text: |
+      ```
+      Name:         db-allow
+      Namespace:    shop
+      Created on:   2026-10-12 09:14:07 +0000 UTC
+      Labels:       <none>
+      Annotations:  <none>
+      Spec:
+        PodSelector:     tier=db
+        Allowing ingress traffic:
+          To Port: 5432/TCP
+          From:
+            PodSelector: tier=backend
+        Not affecting egress traffic
+        Policy Types: Ingress
+      ```
+
+      Use this output to answer the following questions. All Pods are in `shop` unless stated.
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: 'yes'
+      header: Can a `tier=backend` Pod connect to a `tier=db` Pod on TCP 5432? (yes/no)
+      cel: answer.trim().lowerAscii() in ['yes']
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: 'no'
+      header: Can a `tier=backend` Pod in the namespace `staging` connect to a `tier=db` Pod in `shop` on TCP 5432? (yes/no)
+      hint: A `PodSelector` line without a `NamespaceSelector` stays in one namespace.
+      cel: answer.trim().lowerAscii() in ['no']
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: 'no'
+      header: Is the egress traffic of the `tier=db` Pods restricted by this policy? (yes/no)
+      hint: Read the line about egress.
+      cel: answer.trim().lowerAscii() in ['no']
+  - type: context
+    text: |
+      The other policy, `metrics-in`, is described like this:
+
+      ```
+      Spec:
+        PodSelector:     app=api
+        Allowing ingress traffic:
+          To Port: 9090/TCP
+          From:
+            NamespaceSelector: team=ops
+          From:
+            PodSelector: app=prometheus
+        Not affecting egress traffic
+        Policy Types: Ingress
+      ```
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: OR
+      header: Each `From:` block is one list element. Are the two selectors combined with AND or OR?
+      hint: Separate blocks are separate list elements.
+      cel: answer.trim().lowerAscii() in ['or']
+  explanation:
+    elements:
+    - type: context
+      text: |
+        ```bash
+        kubectl get netpol -A
+        kubectl describe netpol <name> -n <ns>
+        kubectl get netpol <name> -n <ns> -o yaml
+        ```
+
+        `describe` renders the AND/OR structure literally: one `From:` block with two selectors inside is an AND,
+        two `From:` blocks are an OR. It also says explicitly whether a direction is affected
+        (`Not affecting egress traffic`). It does **not** tell you which Pods currently match — compare the
+        selectors with `kubectl get pods --show-labels`.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/concepts/services-networking/network-policies/
+        text: Network Policies
+- title: 'Testing Connectivity: Timeout Versus Refused'
+  category: Debugging
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The `web` Pod must reach the `api` Service on port 8080 in `shop`. The Pod is `web-6d8b55-lm4tq`.
+      Test it from inside the Pod with a **short timeout**: without one a blocked connection hangs for minutes.
+  - type: question
+    question:
+      questionType: command
+      header: Run an HTTP request against `http://api:8080` from inside the `web` Pod, giving up after 2 seconds. Only the
+        response body should be printed.
+      hint: Everything after the double dash runs in the container. `wget` and `curl` both have a timeout option.
+      command:
+        executable: kubectl
+        strictness: permissive
+        subcommands:
+        - name: exec
+        positionals:
+        - index: 0
+          regex: ^(deploy(ment)?/web|web-[a-z0-9]+-[a-z0-9]+)$
+        flags:
+        - name: namespace
+          short: n
+          required: true
+          value: shop
+      cel: extras.size() >= 2 && ((extras[0] == 'wget' && extras.join(' ').matches('(--timeout[= ]|-T ?[0-9]|-qO-? ?--timeout)'))
+        || (extras[0] == 'curl' && extras.join(' ').matches('(--max-time|-m ?[0-9])'))) && extras.join(' ').matches('api(\\.shop(\\.svc(\\.cluster\\.local)?)?)?:8080')
+  - type: context
+    text: |
+      Output of the command:
+
+      ```
+      wget: download timed out
+      ```
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: blocked
+      header: Is the connection blocked by the network (a policy), or did it reach the Pod while nothing listens on the port?
+        Answer `blocked` or `listening`.
+      hint: A packet that is silently dropped never gets an answer.
+      cel: answer.trim().lowerAscii() in ['blocked', 'block', 'policy']
+  - type: context
+    text: |
+      After a policy change, the same test prints:
+
+      ```
+      wget: can't connect to remote host (10.244.2.14): Connection refused
+      ```
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: 'no'
+      header: Is this connection still blocked by a policy? (yes/no)
+      hint: Something answered with a reset.
+      correctAnswerInfo: '''Connection refused'' comes from the destination host: the packet **arrived**, and no process listens
+        on that port (or the Pod is not ready). A deny policy produces a timeout instead.'
+      cel: answer.trim().lowerAscii() in ['no']
+  - type: question
+    question:
+      questionType: command
+      header: 'A request by name times out as well. Test name resolution on its own: look up `api` from the `web` Pod.'
+      hint: The lookup tool, followed by the name, runs after the double dash.
+      command:
+        executable: kubectl
+        strictness: permissive
+        subcommands:
+        - name: exec
+        positionals:
+        - index: 0
+          regex: ^(deploy(ment)?/web|web-[a-z0-9]+-[a-z0-9]+)$
+        flags:
+        - name: namespace
+          short: n
+          required: true
+          value: shop
+      cel: extras.size() >= 2 && extras[0] == 'nslookup' && extras[1].matches('^api(\\.shop(\\.svc(\\.cluster\\.local)?)?)?$')
+  explanation:
+    elements:
+    - type: context
+      text: |
+        A simple decision table for `wget`/`curl`/`nc` against a Pod or Service:
+
+        | Result | Meaning |
+        |---|---|
+        | answer / HTTP status | allowed and listening |
+        | `Connection refused` immediately | the packet arrived; nothing listens (**not** a policy) |
+        | timeout after your limit | dropped: a policy, a firewall or a wrong IP |
+        | `bad address` / `could not resolve` | DNS failed — test it separately with `nslookup`, and check egress to kube-dns |
+
+        Alternatives to HTTP tools: `nc -zv -w 2 <host> <port>` for a plain TCP check (`-u` for UDP), and
+        `kubectl run`/`kubectl debug` for a throw-away client Pod with the labels you want to test.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/concepts/services-networking/network-policies/
+        text: Network Policies
+- title: 'A Policy That Does Nothing: Labels'
+  category: Debugging
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      A policy was written to restrict the database in `shop` to the `api` Pods, yet any Pod can still
+      connect to the database. The policy:
+  - type: manifest
+    content: |
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: db-allow-api
+        namespace: shop
+      spec:
+        podSelector:
+          matchLabels:
+            app: database
+        policyTypes:
+        - Ingress
+        ingress:
+        - from:
+          - podSelector:
+              matchLabels:
+                app: api
+          ports:
+          - port: 5432
+  - type: question
+    question:
+      questionType: command
+      header: Check the labels of the Pods in `shop`.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: get
+        - name: pods
+          aliases:
+          - pod
+          - po
+        flags:
+        - name: namespace
+          short: n
+          required: true
+          value: shop
+        - name: show-labels
+          required: true
+          boolean: true
+  - type: table
+    style: terminal
+    columns:
+    - NAME
+    - READY
+    - STATUS
+    - LABELS
+    rows:
+    - - web-6d8b55-lm4tq
+      - 1/1
+      - Running
+      - app=web,pod-template-hash=6d8b55
+    - - api-7c5d8f-pq98r
+      - 1/1
+      - Running
+      - app=api,pod-template-hash=7c5d8f
+    - - db-0
+      - 1/1
+      - Running
+      - app=db,controller-revision-hash=db-5f9c,statefulset.kubernetes.io/pod-name=db-0
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: db
+      header: Why is the policy not isolating the database? Name the label value the selector should use instead of the one
+        it has.
+      hint: Compare the selector in the policy with the labels of `db-0`.
+      correctAnswerInfo: 'A selector that matches no Pod is not an error: the policy exists, selects nothing and therefore
+        changes nothing.'
+      cel: answer.trim().lowerAscii() in ['db']
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: netpol-v1
+      header: Correct the policy.
+      cel: 'manifest.spec.podSelector.matchLabels.size() == 1 && manifest.spec.podSelector.matchLabels.app == ''db'' && ((has(manifest.spec.policyTypes)
+        ? manifest.spec.policyTypes : (has(manifest.spec.egress) && manifest.spec.egress.size() > 0 ? [''Ingress'', ''Egress'']
+        : [''Ingress''])).size() == 1 && ''Ingress'' in (has(manifest.spec.policyTypes) ? manifest.spec.policyTypes : (has(manifest.spec.egress)
+        && manifest.spec.egress.size() > 0 ? [''Ingress'', ''Egress''] : [''Ingress'']))) && has(manifest.spec.ingress) &&
+        manifest.spec.ingress.size() == 1 && has(manifest.spec.ingress[0].from) && manifest.spec.ingress[0].from.size() ==
+        1 && (has(manifest.spec.ingress[0].from[0].podSelector.matchLabels) && manifest.spec.ingress[0].from[0].podSelector.matchLabels.size()
+        == 1 && !has(manifest.spec.ingress[0].from[0].podSelector.matchExpressions) && ''app'' in manifest.spec.ingress[0].from[0].podSelector.matchLabels
+        && manifest.spec.ingress[0].from[0].podSelector.matchLabels[''app''] == ''api'') && manifest.spec.ingress[0].ports.size()
+        == 1 && manifest.spec.ingress[0].ports.exists(p, (p.port == 5432 && (!has(p.protocol) || p.protocol == ''TCP'')))'
+      initialContent: |
+        apiVersion: networking.k8s.io/v1
+        kind: NetworkPolicy
+        metadata:
+          name: db-allow-api
+          namespace: shop
+        spec:
+          podSelector:
+            matchLabels:
+              app: database
+          policyTypes:
+          - Ingress
+          ingress:
+          - from:
+            - podSelector:
+                matchLabels:
+                  app: api
+            ports:
+            - port: 5432
+  explanation:
+    elements:
+    - type: context
+      text: |
+        "The policy does nothing" has a short checklist:
+
+        1. **Labels**: does `spec.podSelector` match any Pod? (`kubectl get pods -n <ns> --show-labels`, or
+           `kubectl get pods -n <ns> -l app=db` to test the selector itself).
+        2. **Namespace**: is the policy in the same namespace as the Pods it should protect?
+        3. **Namespace labels**: does every `namespaceSelector` match an existing label?
+        4. **Ports and protocols**: the container port, and UDP spelled out where needed.
+        5. **The CNI**: does it enforce policies at all?
+
+        Steps 1 and 2 account for most real-world cases, and `-l <selector>` is the fastest test of a selector.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/concepts/services-networking/network-policies/
+        text: Network Policies
+- title: 'A Policy That Does Nothing: Namespaces'
+  category: Debugging
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      You applied `deny-all.yaml` to protect the `shop` namespace, but the Pods there still accept every
+      connection. The manifest had no `metadata.namespace`, and your current kubectl context namespace is
+      `default`.
+  - type: question
+    question:
+      questionType: command
+      header: 'Find the policy: list the NetworkPolicies of every namespace.'
+      command:
+        executable: kubectl
+        subcommands:
+        - name: get
+        - name: networkpolicy
+          aliases:
+          - networkpolicies
+          - netpol
+          - netpols
+        flags:
+        - name: all-namespaces
+          short: A
+          required: true
+          boolean: true
+  - type: table
+    style: terminal
+    columns:
+    - NAMESPACE
+    - NAME
+    - POD-SELECTOR
+    - AGE
+    rows:
+    - - default
+      - deny-all
+      - <none>
+      - 2m
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: default
+      header: In which namespace did the policy end up?
+      correctAnswerInfo: It protects the Pods of `default` — and none of `shop`.
+      cel: answer.trim().lowerAscii() in ['default']
+  - type: question
+    question:
+      questionType: command
+      header: Remove the misplaced policy.
+      hint: Name the namespace explicitly, as the policy is not where your context points.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: delete
+        - name: networkpolicy
+          aliases:
+          - networkpolicies
+          - netpol
+          - netpols
+        positionals:
+        - index: 0
+          value: deny-all
+        flags:
+        - name: namespace
+          short: n
+          required: true
+          value: default
+  - type: context
+    text: |
+      A second policy in `shop` allows ingress from `namespaceSelector: {matchLabels: {env: staging}}`.
+      `kubectl get ns --show-labels` shows **no namespace** with an `env=staging` label.
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: nobody
+      header: Which clients does that rule allow? (a short answer)
+      hint: A selector that matches nothing contributes nothing to the allow list.
+      correctAnswerInfo: The Pods stay isolated, and the rule silently admits nobody. The usual cause is a label that was
+        never applied or a typo in the key.
+      cel: answer.lowerAscii().contains('no one') || answer.lowerAscii().contains('nobody') || answer.lowerAscii().contains('none')
+        || answer.lowerAscii().contains('nothing')
+  explanation:
+    elements:
+    - type: context
+      text: |
+        A policy's namespace is part of its meaning. `kubectl apply -f` without `-n` and without
+        `metadata.namespace` uses the **current context's namespace**. Prevent surprises:
+
+        - Put `metadata.namespace` in every policy manifest.
+        - Pass `-n` explicitly in exam commands.
+        - After applying, `kubectl get netpol -A` shows where the object really is.
+
+        The same class of problem exists on the peer side: `namespaceSelector` and `podSelector` match labels,
+        never "intent". A rule whose selector matches no namespace or Pod is valid, allows nobody, and gives no
+        error.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/concepts/services-networking/network-policies/
+        text: Network Policies
+- title: Which Connection Succeeds?
+  category: Debugging
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Three policies are active in `shop`. The namespace `monitoring` is labelled `purpose=metrics`. Pods:
+      `web` (`app=web`), `api` (`app=api`) and `db` (`app=db`) in `shop`, and `prometheus` (`app=prometheus`) in
+      `monitoring`. Nothing else is deployed, and there is no other policy.
+  - type: manifest
+    content: |
+      # P1
+      metadata: {name: db-from-api, namespace: shop}
+      spec:
+        podSelector: {matchLabels: {app: db}}
+        ingress:
+        - from:
+          - podSelector: {matchLabels: {app: api}}
+          ports:
+          - port: 5432
+      ---
+      # P2
+      metadata: {name: db-from-prom, namespace: shop}
+      spec:
+        podSelector: {matchLabels: {app: db}}
+        ingress:
+        - from:
+          - namespaceSelector: {matchLabels: {purpose: metrics}}
+            podSelector: {matchLabels: {app: prometheus}}
+          ports:
+          - port: 9187
+      ---
+      # P3
+      metadata: {name: api-out, namespace: shop}
+      spec:
+        podSelector: {matchLabels: {app: api}}
+        egress:
+        - to:
+          - podSelector: {matchLabels: {app: db}}
+          ports:
+          - port: 5432
+    footer: None of the three sets policyTypes.
+  - type: table
+    style: terminal
+    columns:
+    - '#'
+    - FROM
+    - TO
+    - PORT
+    rows:
+    - - '1'
+      - api
+      - db
+      - '5432'
+    - - '2'
+      - web
+      - api
+      - '8080'
+    - - '3'
+      - prometheus (monitoring)
+      - db
+      - '9187'
+    - - '4'
+      - prometheus (monitoring)
+      - db
+      - '5432'
+    - - '5'
+      - api
+      - db
+      - '9187'
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: '2'
+      header: How many of the five connection attempts succeed?
+      hint: 'For each attempt: is the sender allowed to leave, and is the receiver willing to accept?'
+      correctAnswerInfo: 'Attempts 1 and 3 succeed. 2: `api` is isolated for ingress by P3 (no `policyTypes` → Ingress is
+        always included) and no rule admits `web`. 4: P1 admits only `api`, and P2 only port 9187. 5: P3 lets `api` send only
+        to port 5432.'
+      cel: answer.trim().lowerAscii() in ['2']
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: '2'
+      header: Which attempt fails **only** because of the `policyTypes` default?
+      hint: Which policy's author probably did not think about ingress?
+      cel: answer.trim().lowerAscii() in ['2']
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: '2'
+      header: 'Which single attempt would start to succeed if P3 declared `policyTypes: [Egress]`?'
+      hint: Then `api` would no longer be isolated for ingress.
+      cel: answer.trim().lowerAscii() in ['2']
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Walk every attempt through the same checklist:
+
+        1. **Egress of the sender**: is the sender selected by a policy that isolates egress? If so, one egress
+           rule must match the destination and port.
+        2. **Ingress of the receiver**: is the receiver isolated for ingress (remember the `policyTypes`
+           default)? If so, one ingress rule of any policy must match the sender and port.
+        3. Rules of different policies are unioned; inside one rule, peer and port must both match.
+        4. A peer element with two selectors is an AND (P2); several elements are an OR.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/concepts/services-networking/network-policies/
+        text: Network Policies
+- title: 'Cilium: Translating a NetworkPolicy'
+  category: Cilium
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The cluster runs **Cilium**, which also understands its own `CiliumNetworkPolicy` (CRD
+      `cilium.io/v2`). Here is a standard policy in `shop`; the task is to express the same thing in Cilium's
+      syntax.
+  - type: manifest
+    content: |
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: api-from-web
+        namespace: shop
+      spec:
+        podSelector:
+          matchLabels:
+            app: api
+        policyTypes:
+        - Ingress
+        ingress:
+        - from:
+          - podSelector:
+              matchLabels:
+                app: web
+          ports:
+          - protocol: TCP
+            port: 8080
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: endpointSelector
+      header: Which field of a CiliumNetworkPolicy `spec` plays the role of `podSelector` and names the protected Pods?
+      cel: answer.trim().lowerAscii() in ['endpointselector']
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: cnp-v2
+      header: Write the equivalent `CiliumNetworkPolicy` in `shop`.
+      hint: Peers are 'endpoints'; ports live in a `toPorts` list, and Cilium wants the port number as a string.
+      correctAnswerInfo: 'A port written as a bare number is rejected by the CRD: `port: "8080"`.'
+      cel: (has(manifest.spec.endpointSelector.matchLabels) && manifest.spec.endpointSelector.matchLabels.size() == 1 && !has(manifest.spec.endpointSelector.matchExpressions)
+        && 'app' in manifest.spec.endpointSelector.matchLabels && manifest.spec.endpointSelector.matchLabels['app'] == 'api')
+        && has(manifest.spec.ingress) && manifest.spec.ingress.size() == 1 && !has(manifest.spec.egress) && has(manifest.spec.ingress[0].fromEndpoints)
+        && manifest.spec.ingress[0].fromEndpoints.size() == 1 && (has(manifest.spec.ingress[0].fromEndpoints[0].matchLabels)
+        && manifest.spec.ingress[0].fromEndpoints[0].matchLabels.size() == 1 && !has(manifest.spec.ingress[0].fromEndpoints[0].matchExpressions)
+        && 'app' in manifest.spec.ingress[0].fromEndpoints[0].matchLabels && manifest.spec.ingress[0].fromEndpoints[0].matchLabels['app']
+        == 'web') && has(manifest.spec.ingress[0].toPorts) && manifest.spec.ingress[0].toPorts.size() == 1 && manifest.spec.ingress[0].toPorts[0].ports.size()
+        == 1 && manifest.spec.ingress[0].toPorts[0].ports[0].port == '8080' && has(manifest.spec.ingress[0].toPorts[0].ports[0].protocol)
+        && manifest.spec.ingress[0].toPorts[0].ports[0].protocol == 'TCP'
+  explanation:
+    elements:
+    - type: context
+      text: |
+        | NetworkPolicy | CiliumNetworkPolicy |
+        |---|---|
+        | `podSelector` | `endpointSelector` |
+        | `ingress[].from[].podSelector` | `ingress[].fromEndpoints[]` |
+        | `egress[].to[].podSelector` | `egress[].toEndpoints[]` |
+        | `ports[]` | `toPorts[].ports[]` — `port` is a **string** |
+
+        As with standard policies, selecting an endpoint in a direction isolates it in that direction. A
+        `CiliumNetworkPolicy` is namespaced and, without a namespace label in the peer, `fromEndpoints` refers to
+        the policy's own namespace.
+    - type: references
+      links:
+      - url: https://docs.cilium.io/en/stable/security/policy/
+        text: 'Cilium: Network Policy'
+      - url: https://kubernetes.io/docs/concepts/services-networking/network-policies/
+        text: Network Policies
+- title: 'Cilium: Entities, Namespaces and Explicit Deny'
+  category: Cilium
+  hintsEnabled: true
+  elements:
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: world
+      header: Which Cilium entity stands for every destination outside the cluster?
+      hint: Others are `host`, `cluster` and `kube-apiserver`.
+      cel: answer.trim().lowerAscii() in ['world']
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: k8s:io.kubernetes.pod.namespace
+      header: Which label key does Cilium use to match the **namespace** of a Pod in an endpoint selector?
+      cel: answer.trim() in ['k8s:io.kubernetes.pod.namespace', 'io.kubernetes.pod.namespace']
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: cnp-v2
+      header: Write a `CiliumNetworkPolicy` so that only Pods labelled `app=prometheus` **in the namespace `monitoring`**
+        can reach the `app=api` Pods in `shop`, on TCP 9090.
+      hint: Both conditions go into the labels of one endpoint selector.
+      cel: (has(manifest.spec.endpointSelector.matchLabels) && manifest.spec.endpointSelector.matchLabels.size() == 1 && !has(manifest.spec.endpointSelector.matchExpressions)
+        && 'app' in manifest.spec.endpointSelector.matchLabels && manifest.spec.endpointSelector.matchLabels['app'] == 'api')
+        && has(manifest.spec.ingress) && manifest.spec.ingress.size() == 1 && !has(manifest.spec.egress) && manifest.spec.ingress[0].fromEndpoints.size()
+        == 1 && has(manifest.spec.ingress[0].fromEndpoints[0].matchLabels) && manifest.spec.ingress[0].fromEndpoints[0].matchLabels.size()
+        == 2 && 'app' in manifest.spec.ingress[0].fromEndpoints[0].matchLabels && manifest.spec.ingress[0].fromEndpoints[0].matchLabels.app
+        == 'prometheus' && (('k8s:io.kubernetes.pod.namespace' in manifest.spec.ingress[0].fromEndpoints[0].matchLabels &&
+        manifest.spec.ingress[0].fromEndpoints[0].matchLabels['k8s:io.kubernetes.pod.namespace'] == 'monitoring') || ('io.kubernetes.pod.namespace'
+        in manifest.spec.ingress[0].fromEndpoints[0].matchLabels && manifest.spec.ingress[0].fromEndpoints[0].matchLabels['io.kubernetes.pod.namespace']
+        == 'monitoring')) && has(manifest.spec.ingress[0].toPorts) && manifest.spec.ingress[0].toPorts.size() == 1 && manifest.spec.ingress[0].toPorts[0].ports.size()
+        == 1 && manifest.spec.ingress[0].toPorts[0].ports[0].port == '9090' && manifest.spec.ingress[0].toPorts[0].ports[0].protocol
+        == 'TCP'
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: cnp-v2
+      header: Cilium, unlike standard NetworkPolicies, has explicit deny rules. Write a policy for the `app=batch` Pods that
+        forbids them to reach the Kubernetes API server, using the matching entity.
+      hint: The deny variants of the rule lists carry a `Deny` suffix.
+      correctAnswerInfo: A deny rule wins over any allow rule, which is exactly what the additive standard API cannot express.
+      cel: (has(manifest.spec.endpointSelector.matchLabels) && manifest.spec.endpointSelector.matchLabels.size() == 1 && !has(manifest.spec.endpointSelector.matchExpressions)
+        && 'app' in manifest.spec.endpointSelector.matchLabels && manifest.spec.endpointSelector.matchLabels['app'] == 'batch')
+        && has(manifest.spec.egressDeny) && manifest.spec.egressDeny.size() == 1 && !has(manifest.spec.egress) && !has(manifest.spec.ingress)
+        && has(manifest.spec.egressDeny[0].toEntities) && manifest.spec.egressDeny[0].toEntities == ['kube-apiserver']
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Cilium-specific features worth recognising (the docs are available on the exam):
+
+        - **Entities**: `world`, `cluster`, `host`, `remote-node`, `kube-apiserver`, `all`.
+        - **Deny rules**: `ingressDeny` / `egressDeny` take precedence over every allow.
+        - **DNS-based egress**: `toFQDNs` (`matchName`, `matchPattern`) needs a companion rule that allows
+          DNS to kube-dns with a `rules.dns` section, so that Cilium can learn the addresses.
+        - **Namespaces**: add `k8s:io.kubernetes.pod.namespace: <ns>` to the labels of a peer.
+
+        Everything else (default deny by selecting, additive allows, ports) works as in the standard API.
+    - type: references
+      links:
+      - url: https://docs.cilium.io/en/stable/security/policy/
+        text: 'Cilium: Network Policy'
+- title: 'Capstone: Locking Down the Shop'
+  category: Capstone
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      **Ticket.** The namespace `shop` contains three workloads: `web` (`app=web`, listens on TCP 8080),
+      `api` (`app=api`, TCP 8080) and `db` (`app=db`, TCP 5432). Customers arrive through the NGINX ingress
+      controller in the namespace `ingress-nginx`. Security wants this:
+
+      1. Deny all traffic, in both directions, for every Pod in the namespace.
+      2. Allow every Pod to resolve names through cluster DNS.
+      3. `web` may reach `api` on 8080, and `api` may reach `db` on 5432. Nothing else between them.
+      4. `web` accepts ingress only from the `ingress-nginx` namespace.
+      5. `api` may also reach external addresses, but never the cloud metadata endpoint.
+
+      You write one policy per question. Because everything is denied by default, each connection needs an
+      egress rule on the sender **and** an ingress rule on the receiver.
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: netpol-v1
+      header: 'Step 1: the baseline policy for the namespace.'
+      cel: '(!has(manifest.spec.podSelector) || size(manifest.spec.podSelector) == 0) && ((has(manifest.spec.policyTypes)
+        ? manifest.spec.policyTypes : (has(manifest.spec.egress) && manifest.spec.egress.size() > 0 ? [''Ingress'', ''Egress'']
+        : [''Ingress''])).size() == 2 && ''Ingress'' in (has(manifest.spec.policyTypes) ? manifest.spec.policyTypes : (has(manifest.spec.egress)
+        && manifest.spec.egress.size() > 0 ? [''Ingress'', ''Egress''] : [''Ingress''])) && ''Egress'' in (has(manifest.spec.policyTypes)
+        ? manifest.spec.policyTypes : (has(manifest.spec.egress) && manifest.spec.egress.size() > 0 ? [''Ingress'', ''Egress'']
+        : [''Ingress'']))) && (!has(manifest.spec.ingress) || manifest.spec.ingress.size() == 0) && (!has(manifest.spec.egress)
+        || manifest.spec.egress.size() == 0)'
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: netpol-v1
+      header: 'Step 2: DNS for all Pods.'
+      cel: '(!has(manifest.spec.podSelector) || size(manifest.spec.podSelector) == 0) && ((has(manifest.spec.policyTypes)
+        ? manifest.spec.policyTypes : (has(manifest.spec.egress) && manifest.spec.egress.size() > 0 ? [''Ingress'', ''Egress'']
+        : [''Ingress''])).size() == 1 && ''Egress'' in (has(manifest.spec.policyTypes) ? manifest.spec.policyTypes : (has(manifest.spec.egress)
+        && manifest.spec.egress.size() > 0 ? [''Ingress'', ''Egress''] : [''Ingress'']))) && has(manifest.spec.egress) &&
+        manifest.spec.egress.all(r, has(r.to) && r.to.size() == 1 && has(r.to[0].namespaceSelector) && has(r.to[0].podSelector)
+        && !has(r.to[0].ipBlock) && (has(r.to[0].namespaceSelector.matchLabels) && r.to[0].namespaceSelector.matchLabels.size()
+        == 1 && !has(r.to[0].namespaceSelector.matchExpressions) && ''kubernetes.io/metadata.name'' in r.to[0].namespaceSelector.matchLabels
+        && r.to[0].namespaceSelector.matchLabels[''kubernetes.io/metadata.name''] == ''kube-system'') && (has(r.to[0].podSelector.matchLabels)
+        && r.to[0].podSelector.matchLabels.size() == 1 && !has(r.to[0].podSelector.matchExpressions) && ''k8s-app'' in r.to[0].podSelector.matchLabels
+        && r.to[0].podSelector.matchLabels[''k8s-app''] == ''kube-dns'') && has(r.ports)) && manifest.spec.egress.exists(r,
+        r.ports.exists(p, (p.port == 53 && has(p.protocol) && p.protocol == ''UDP''))) && manifest.spec.egress.exists(r, r.ports.exists(p,
+        (p.port == 53 && (!has(p.protocol) || p.protocol == ''TCP''))))'
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: netpol-v1
+      header: 'Steps 3 and 4 for `web`: reaching `api`, and accepting traffic from the ingress controller.'
+      hint: One policy, both directions, each with exactly one rule.
+      cel: '(has(manifest.spec.podSelector.matchLabels) && manifest.spec.podSelector.matchLabels.size() == 1 && !has(manifest.spec.podSelector.matchExpressions)
+        && ''app'' in manifest.spec.podSelector.matchLabels && manifest.spec.podSelector.matchLabels[''app''] == ''web'')
+        && ((has(manifest.spec.policyTypes) ? manifest.spec.policyTypes : (has(manifest.spec.egress) && manifest.spec.egress.size()
+        > 0 ? [''Ingress'', ''Egress''] : [''Ingress''])).size() == 2 && ''Ingress'' in (has(manifest.spec.policyTypes) ?
+        manifest.spec.policyTypes : (has(manifest.spec.egress) && manifest.spec.egress.size() > 0 ? [''Ingress'', ''Egress'']
+        : [''Ingress''])) && ''Egress'' in (has(manifest.spec.policyTypes) ? manifest.spec.policyTypes : (has(manifest.spec.egress)
+        && manifest.spec.egress.size() > 0 ? [''Ingress'', ''Egress''] : [''Ingress'']))) && has(manifest.spec.ingress) &&
+        manifest.spec.ingress.size() == 1 && manifest.spec.ingress[0].from.size() == 1 && has(manifest.spec.ingress[0].from[0].namespaceSelector)  &&
+        !has(manifest.spec.ingress[0].from[0].ipBlock) && (has(manifest.spec.ingress[0].from[0].namespaceSelector.matchLabels)
+        && manifest.spec.ingress[0].from[0].namespaceSelector.matchLabels.size() == 1 && !has(manifest.spec.ingress[0].from[0].namespaceSelector.matchExpressions)
+        && ''kubernetes.io/metadata.name'' in manifest.spec.ingress[0].from[0].namespaceSelector.matchLabels && manifest.spec.ingress[0].from[0].namespaceSelector.matchLabels[''kubernetes.io/metadata.name'']
+        == ''ingress-nginx'') && has(manifest.spec.ingress[0].ports) && manifest.spec.ingress[0].ports.size() == 1 && manifest.spec.ingress[0].ports.exists(p,
+        (p.port == 8080 && (!has(p.protocol) || p.protocol == ''TCP''))) && has(manifest.spec.egress) && manifest.spec.egress.size()
+        == 1 && manifest.spec.egress[0].to.size() == 1 && has(manifest.spec.egress[0].to[0].podSelector) && !has(manifest.spec.egress[0].to[0].namespaceSelector)
+        && !has(manifest.spec.egress[0].to[0].ipBlock) && (has(manifest.spec.egress[0].to[0].podSelector.matchLabels) && manifest.spec.egress[0].to[0].podSelector.matchLabels.size()
+        == 1 && !has(manifest.spec.egress[0].to[0].podSelector.matchExpressions) && ''app'' in manifest.spec.egress[0].to[0].podSelector.matchLabels
+        && manifest.spec.egress[0].to[0].podSelector.matchLabels[''app''] == ''api'') && has(manifest.spec.egress[0].ports)
+        && manifest.spec.egress[0].ports.size() == 1 && manifest.spec.egress[0].ports.exists(p, (p.port == 8080 && (!has(p.protocol)
+        || p.protocol == ''TCP'')))'
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: netpol-v1
+      header: 'Step 3 for `api`: accept `web`, and reach `db`.'
+      cel: '(has(manifest.spec.podSelector.matchLabels) && manifest.spec.podSelector.matchLabels.size() == 1 && !has(manifest.spec.podSelector.matchExpressions)
+        && ''app'' in manifest.spec.podSelector.matchLabels && manifest.spec.podSelector.matchLabels[''app''] == ''api'')
+        && ((has(manifest.spec.policyTypes) ? manifest.spec.policyTypes : (has(manifest.spec.egress) && manifest.spec.egress.size()
+        > 0 ? [''Ingress'', ''Egress''] : [''Ingress''])).size() == 2 && ''Ingress'' in (has(manifest.spec.policyTypes) ?
+        manifest.spec.policyTypes : (has(manifest.spec.egress) && manifest.spec.egress.size() > 0 ? [''Ingress'', ''Egress'']
+        : [''Ingress''])) && ''Egress'' in (has(manifest.spec.policyTypes) ? manifest.spec.policyTypes : (has(manifest.spec.egress)
+        && manifest.spec.egress.size() > 0 ? [''Ingress'', ''Egress''] : [''Ingress'']))) && has(manifest.spec.ingress) &&
+        manifest.spec.ingress.size() == 1 && manifest.spec.ingress[0].from.size() == 1 && has(manifest.spec.ingress[0].from[0].podSelector)
+        && !has(manifest.spec.ingress[0].from[0].namespaceSelector) && !has(manifest.spec.ingress[0].from[0].ipBlock) && (has(manifest.spec.ingress[0].from[0].podSelector.matchLabels)
+        && manifest.spec.ingress[0].from[0].podSelector.matchLabels.size() == 1 && !has(manifest.spec.ingress[0].from[0].podSelector.matchExpressions)
+        && ''app'' in manifest.spec.ingress[0].from[0].podSelector.matchLabels && manifest.spec.ingress[0].from[0].podSelector.matchLabels[''app'']
+        == ''web'') && has(manifest.spec.ingress[0].ports) && manifest.spec.ingress[0].ports.size() == 1 && manifest.spec.ingress[0].ports.exists(p,
+        (p.port == 8080 && (!has(p.protocol) || p.protocol == ''TCP''))) && has(manifest.spec.egress) && manifest.spec.egress.size()
+        == 1 && manifest.spec.egress[0].to.size() == 1 && has(manifest.spec.egress[0].to[0].podSelector) && !has(manifest.spec.egress[0].to[0].namespaceSelector)
+        && !has(manifest.spec.egress[0].to[0].ipBlock) && (has(manifest.spec.egress[0].to[0].podSelector.matchLabels) && manifest.spec.egress[0].to[0].podSelector.matchLabels.size()
+        == 1 && !has(manifest.spec.egress[0].to[0].podSelector.matchExpressions) && ''app'' in manifest.spec.egress[0].to[0].podSelector.matchLabels
+        && manifest.spec.egress[0].to[0].podSelector.matchLabels[''app''] == ''db'') && has(manifest.spec.egress[0].ports)
+        && manifest.spec.egress[0].ports.size() == 1 && manifest.spec.egress[0].ports.exists(p, (p.port == 5432 && (!has(p.protocol)
+        || p.protocol == ''TCP'')))'
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: netpol-v1
+      header: 'Step 3 for `db`: accept only `api`.'
+      cel: '(has(manifest.spec.podSelector.matchLabels) && manifest.spec.podSelector.matchLabels.size() == 1 && !has(manifest.spec.podSelector.matchExpressions)
+        && ''app'' in manifest.spec.podSelector.matchLabels && manifest.spec.podSelector.matchLabels[''app''] == ''db'') &&
+        ((has(manifest.spec.policyTypes) ? manifest.spec.policyTypes : (has(manifest.spec.egress) && manifest.spec.egress.size()
+        > 0 ? [''Ingress'', ''Egress''] : [''Ingress''])).size() == 1 && ''Ingress'' in (has(manifest.spec.policyTypes) ?
+        manifest.spec.policyTypes : (has(manifest.spec.egress) && manifest.spec.egress.size() > 0 ? [''Ingress'', ''Egress'']
+        : [''Ingress'']))) && (!has(manifest.spec.egress) || manifest.spec.egress.size() == 0) && has(manifest.spec.ingress)
+        && manifest.spec.ingress.size() == 1 && manifest.spec.ingress[0].from.size() == 1 && has(manifest.spec.ingress[0].from[0].podSelector)
+        && !has(manifest.spec.ingress[0].from[0].namespaceSelector) && !has(manifest.spec.ingress[0].from[0].ipBlock) && (has(manifest.spec.ingress[0].from[0].podSelector.matchLabels)
+        && manifest.spec.ingress[0].from[0].podSelector.matchLabels.size() == 1 && !has(manifest.spec.ingress[0].from[0].podSelector.matchExpressions)
+        && ''app'' in manifest.spec.ingress[0].from[0].podSelector.matchLabels && manifest.spec.ingress[0].from[0].podSelector.matchLabels[''app'']
+        == ''api'') && has(manifest.spec.ingress[0].ports) && manifest.spec.ingress[0].ports.size() == 1 && manifest.spec.ingress[0].ports.exists(p,
+        (p.port == 5432 && (!has(p.protocol) || p.protocol == ''TCP'')))'
+  - type: question
+    question:
+      questionType: manifest
+      manifestDefinitionId: netpol-v1
+      header: 'Step 5: external egress for `api` without the metadata endpoint.'
+      cel: '(has(manifest.spec.podSelector.matchLabels) && manifest.spec.podSelector.matchLabels.size() == 1 && !has(manifest.spec.podSelector.matchExpressions)
+        && ''app'' in manifest.spec.podSelector.matchLabels && manifest.spec.podSelector.matchLabels[''app''] == ''api'')
+        && ((has(manifest.spec.policyTypes) ? manifest.spec.policyTypes : (has(manifest.spec.egress) && manifest.spec.egress.size()
+        > 0 ? [''Ingress'', ''Egress''] : [''Ingress''])).size() == 1 && ''Egress'' in (has(manifest.spec.policyTypes) ? manifest.spec.policyTypes
+        : (has(manifest.spec.egress) && manifest.spec.egress.size() > 0 ? [''Ingress'', ''Egress''] : [''Ingress'']))) &&
+        has(manifest.spec.egress) && manifest.spec.egress.size() == 1 && manifest.spec.egress[0].to.size() == 1 && has(manifest.spec.egress[0].to[0].ipBlock)
+        && manifest.spec.egress[0].to[0].ipBlock.cidr == ''0.0.0.0/0'' && has(manifest.spec.egress[0].to[0].ipBlock.except)
+        && manifest.spec.egress[0].to[0].ipBlock.except == [''169.254.169.254/32'']'
+  explanation:
+    elements:
+    - type: context
+      text: |
+        The six policies together:
+
+        | Policy | Subject | Ingress | Egress |
+        |---|---|---|---|
+        | `default-deny-all` | all | none | none |
+        | `allow-dns` | all | – | kube-dns 53 UDP/TCP |
+        | `web-policy` | `web` | `ingress-nginx` :8080 | `api` :8080 |
+        | `api-policy` | `api` | `web` :8080 | `db` :5432 |
+        | `db-policy` | `db` | `api` :5432 | – |
+        | `api-external` | `api` | – | `0.0.0.0/0` except metadata |
+
+        Step 5 shows the additive model at work: the metadata endpoint is unreachable for every Pod because no
+        policy opens it, and `api-external` opens "everything but" it for `api` alone. Never add a policy that
+        lists that address as an allowed `cidr`.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/concepts/services-networking/network-policies/
+        text: Network Policies
+- title: 'Capstone: Prove It Works'
+  category: Capstone
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The policies are applied. A policy that has not been tested is a guess: verify the three claims from the
+      ticket from inside the `web` Pod (`web-6d8b55-lm4tq` in `shop`), with short timeouts.
+  - type: question
+    question:
+      questionType: command
+      header: 'Claim 1: `web` can reach `api` on 8080. Request `http://api:8080` with a 2-second limit.'
+      command:
+        executable: kubectl
+        strictness: permissive
+        subcommands:
+        - name: exec
+        positionals:
+        - index: 0
+          regex: ^(deploy(ment)?/web|web-[a-z0-9]+-[a-z0-9]+)$
+        flags:
+        - name: namespace
+          short: n
+          required: true
+          value: shop
+      cel: extras.size() >= 2 && ((extras[0] == 'wget' && extras.join(' ').matches('(--timeout[= ]|-T ?[0-9])')) || (extras[0]
+        == 'curl' && extras.join(' ').matches('(--max-time|-m ?[0-9])'))) && extras.join(' ').matches('api(\\.shop(\\.svc(\\.cluster\\.local)?)?)?:8080')
+  - type: context
+    text: |
+      ```
+      {"status":"ok","service":"api"}
+      ```
+  - type: question
+    question:
+      questionType: command
+      header: 'Claim 2: `web` can **not** reach `db` on 5432. Check the TCP port with a 2-second connect timeout.'
+      hint: '`nc` has a flag for a zero-I/O port check and one for the timeout.'
+      command:
+        executable: kubectl
+        strictness: permissive
+        subcommands:
+        - name: exec
+        positionals:
+        - index: 0
+          regex: ^(deploy(ment)?/web|web-[a-z0-9]+-[a-z0-9]+)$
+        flags:
+        - name: namespace
+          short: n
+          required: true
+          value: shop
+      cel: extras.size() >= 4 && extras[0] == 'nc' && extras.join(' ').matches(' -w ?2') && extras.join(' ').matches(' db(\\.shop(\\.svc(\\.cluster\\.local)?)?)?
+        5432$')
+  - type: context
+    text: |
+      The command returns after two seconds with exit status 1 and no output.
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: blocked
+      header: The silence after the timeout means the connection is...? (`blocked` or `refused`)
+      cel: answer.trim().lowerAscii() in ['blocked', 'block', 'dropped']
+  - type: question
+    question:
+      questionType: command
+      header: 'Claim 3: DNS still works. Look up `api` from the `web` Pod.'
+      command:
+        executable: kubectl
+        strictness: permissive
+        subcommands:
+        - name: exec
+        positionals:
+        - index: 0
+          regex: ^(deploy(ment)?/web|web-[a-z0-9]+-[a-z0-9]+)$
+        flags:
+        - name: namespace
+          short: n
+          required: true
+          value: shop
+      cel: extras.size() >= 2 && extras[0] == 'nslookup' && extras[1].matches('^api(\\.shop(\\.svc(\\.cluster\\.local)?)?)?$')
+  - type: question
+    question:
+      questionType: single-line
+      expectedAnswer: 'no'
+      header: A teammate adds an extra policy for the `db` Pods that allows ingress from `web` on 5432. Does Claim 2 still
+        hold? (yes/no)
+      hint: Policies are additive.
+      cel: answer.trim().lowerAscii() in ['no']
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Test **positive and negative** cases, each with a timeout. A suite for this ticket is: web→api works,
+        web→db is blocked, DNS resolves, `api` cannot reach the metadata address, and (if you have a client in
+        another namespace) that client is refused.
+
+        Remember the limits of what you tested: a passing check shows the policy allows one flow, not that it
+        blocks all others. The negative tests are the ones that catch over-permissive rules.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/concepts/services-networking/network-policies/
+        text: Network Policies

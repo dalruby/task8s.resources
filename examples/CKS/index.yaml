@@ -127,3 +127,13 @@ sets:
       - kube-apiserver
       - Troubleshooting
       - Hard
+  - name: "CKS (Hands-On): Network Policies"
+    filename: cks-hands-on-network-policies.yaml
+    description: "No multiple choice. Write and read NetworkPolicies: how selection, isolation and the policyTypes defaults work, default deny and the DNS rule, the AND/OR selector trap, cross-namespace access, ports (named, ranges, Service vs container port), egress allow-lists, ipBlock and the metadata endpoint, containing a compromised Pod, debugging with describe and timeouts, a short Cilium section, and an end-to-end capstone."
+    tags:
+      - NetworkPolicy
+      - Networking
+      - Hands-On
+      - Cluster Setup
+      - Runtime Security
+      - Hard
