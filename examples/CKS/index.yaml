@@ -137,3 +137,12 @@ sets:
       - Cluster Setup
       - Runtime Security
       - Hard
+  - name: "CKS (Hands-On): RBAC and ServiceAccounts"
+    filename: cks-hands-on-rbac-service-accounts.yaml
+    description: "No multiple choice. Read, write and audit RBAC: Roles vs ClusterRoles, apiGroups and subresources, the binding scope matrix, subjects and ServiceAccount identities, imperative create role/rolebinding, auth can-i with --as and --list, finding cluster-admin and anonymous bindings, escalation paths (Pod creation, escalate/bind/impersonate, token minting), dedicated ServiceAccounts, disabling token automount, projected vs legacy tokens, and an end-to-end least-privilege capstone."
+    tags:
+      - RBAC
+      - ServiceAccounts
+      - Hands-On
+      - Cluster Hardening
+      - Hard
