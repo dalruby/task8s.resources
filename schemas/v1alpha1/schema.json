@@ -616,6 +616,96 @@
         }
       ]
     },
+    "DockerfileQuestion": {
+      "description": "A code editor for writing a Dockerfile. The input is parsed into build stages and normalized instructions (syntax errors such as unknown instructions, a missing FROM or missing arguments are reported with line numbers), then checked against 'expected' (stages matched in order) and the optional cel expression (variables: answer = raw text, dockerfile = {args, stages[]} where each stage has index, name, line, from{raw,image,tag,digest,platform} and instructions[]{name,line,form,args,flags,text,values}). Shell and exec forms are interchangeable unless 'form' is set: ENTRYPOINT [\"a\",\"b\"], ENTRYPOINT a b and ENTRYPOINT \"a\", \"b\" all give args [a, b].",
+      "allOf": [
+        { "$ref": "#/$defs/BaseQuestion" },
+        {
+          "type": "object",
+          "required": ["questionType"],
+          "additionalProperties": false,
+          "properties": {
+            "questionType": {
+              "const": "dockerfile",
+              "description": "Question type discriminator. Must be 'dockerfile'."
+            },
+            "initialContent": {
+              "type": "string",
+              "description": "Optional Dockerfile pre-filled in the editor (must parse without syntax errors). Omit to require the user to write it from scratch."
+            },
+            "expected": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/DockerfileStageSpec" },
+              "description": "Per-stage expectations, matched against the answer's stages in order. A named entry matches the stage with that FROM ... AS alias (which must come after the previously matched stage); an unnamed entry matches the next stage after the previous match."
+            },
+            "exactStages": {
+              "type": "boolean",
+              "description": "When true, the answer may not contain more stages than 'expected' lists. Default false."
+            },
+            "header": { "type": "string" },
+            "hint": { "type": "string" },
+            "correctAnswerInfo": { "type": "string" },
+            "cel": { "$ref": "#/$defs/Cel" }
+          }
+        }
+      ]
+    },
+    "DockerfileStageSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "stage": { "type": "string", "description": "Stage alias (FROM ... AS name). Omit to match the next stage in order." },
+        "from": { "$ref": "#/$defs/DockerfileFromSpec" },
+        "instructions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/DockerfileInstructionSpec" },
+          "description": "Instructions the stage must (or must not) contain, in any order."
+        }
+      }
+    },
+    "DockerfileValueMatch": {
+      "description": "An exact string, or { not: value } to forbid a value.",
+      "oneOf": [
+        { "type": "string" },
+        {
+          "type": "object",
+          "required": ["not"],
+          "additionalProperties": false,
+          "properties": { "not": { "type": "string" } }
+        }
+      ]
+    },
+    "DockerfileFromSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "image": { "type": "string", "description": "Image name without tag or digest, including any registry (e.g. gcr.io/distroless/static)." },
+        "tag": { "$ref": "#/$defs/DockerfileValueMatch" },
+        "digest": { "type": "boolean", "description": "true requires a pinned @sha256 digest; false forbids one." }
+      }
+    },
+    "DockerfileInstructionSpec": {
+      "type": "object",
+      "required": ["instruction"],
+      "additionalProperties": false,
+      "properties": {
+        "instruction": { "type": "string", "description": "Instruction keyword, case-insensitive (RUN, COPY, USER, ENTRYPOINT, ...)." },
+        "args": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Exact argument tokens, flags excluded. Exec and shell form are equivalent unless 'form' is set."
+        },
+        "form": { "enum": ["exec", "shell"], "description": "Require the JSON-array (exec) or plain (shell) form." },
+        "contains": { "type": "string", "description": "Substring that must occur in the instruction text (flags excluded, continuations joined)." },
+        "matches": { "type": "string", "description": "Regular expression the instruction text must match." },
+        "flags": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "description": "Flags that must be present with these values, keys without dashes (e.g. from: build, chown: '1000:1000')."
+        },
+        "absent": { "type": "boolean", "description": "true asserts that no matching instruction exists in the stage." }
+      }
+    },
     "ChoiceAnswerType": {
       "type": "string",
       "enum": ["Solution", "PartOfSolution", "Invalid"],
@@ -798,7 +888,8 @@
         { "$ref": "#/$defs/MultipleChoiceQuestion" },
         { "$ref": "#/$defs/OrderingQuestion" },
         { "$ref": "#/$defs/AssembleCommandQuestion" },
-        { "$ref": "#/$defs/JsonQuestion" }
+        { "$ref": "#/$defs/JsonQuestion" },
+        { "$ref": "#/$defs/DockerfileQuestion" }
       ]
     },
     "ContextScenarioElement": {

@@ -44,6 +44,7 @@ Run these steps in order. Ask one question at a time. Acknowledge each answer in
 > - `multiline` — longer free-text answer
 > - `manifest` — write a Kubernetes YAML manifest
 > - `json` — write a JSON document (e.g. seccomp profile) with strict parsing
+> - `dockerfile` — write a Dockerfile; parsed into stages and instructions, checked per stage
 > - `sequence` — multi-step questions answered in order
 > - `multiple-choice` — select from options
 > - `ordering` — drag items into the correct sequence

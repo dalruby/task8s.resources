@@ -272,9 +272,9 @@ Displays tabular data inline in the scenario. Use it to simulate the kind of out
 
 ## Question Types
 
-Available question types: `single-line`, `multiline`, `command`, `manifest`, `json`, `sequence`, `multiple-choice`, `ordering`, `assemble-command`.
+Available question types: `single-line`, `multiline`, `command`, `manifest`, `json`, `dockerfile`, `sequence`, `multiple-choice`, `ordering`, `assemble-command`.
 
-**Preferred types** (use by default): `single-line`, `multiline`, `command`, `manifest`, `json` (for JSON documents).  
+**Preferred types** (use by default): `single-line`, `multiline`, `command`, `manifest`, `json` (for JSON documents), `dockerfile` (for Dockerfiles).  
 **Use with care**: `sequence` (only when steps are tightly coupled with no intermediate feedback).  
 **Not recommended** (available but discouraged): `multiple-choice` (tests recognition, not recall).
 
@@ -715,6 +715,55 @@ correctAnswerInfo: "defaultAction ALLOW plus an ERRNO rule for the two syscalls.
 | `header`, `hint`, `correctAnswerInfo` | no | As for other questions. |
 
 **Guidance:** Prefer `cel` with `exists()`/`all()` over array-index `expectedFields` for lists whose order does not matter (e.g. seccomp `syscalls` rules). There is no JSON-schema validation for this type. Top-level arrays are not supported.
+
+---
+
+### `dockerfile`
+
+A code editor for writing a **Dockerfile**. The answer is parsed into build stages and normalized instructions, so spelling does not matter: `ENTRYPOINT ["a","b"]`, `ENTRYPOINT a b` and `ENTRYPOINT "a", "b"` all normalize to the arguments `[a, b]`, unless you require a `form`. Continuations (`\`), interleaved comments, lowercase keywords and heredocs are handled.
+
+Validation steps: (1) syntax — unknown instruction, missing `FROM`, instruction before `FROM` (only `ARG` may precede it), missing arguments, `COPY`/`ADD` without source and destination, malformed `FROM`, duplicate stage names, unterminated `[` or quote — reported as `Line N: …`; (2) `expected`, per stage and in order; (3) the optional `cel`.
+
+```yaml
+questionType: dockerfile
+header: "Harden this Dockerfile: build in a golang stage, ship from a pinned distroless image as non-root"
+initialContent: |
+  FROM golang:1.22
+  COPY . .
+  RUN go build -o /app .
+  CMD /app
+expected:
+  - stage: build
+    from: { image: golang, tag: "1.22" }
+    instructions:
+      - { instruction: RUN, contains: go build }
+  - from:
+      image: gcr.io/distroless/static
+      tag: { not: latest }
+    instructions:
+      - { instruction: COPY, flags: { from: build } }
+      - { instruction: USER, args: ["65532"] }
+      - { instruction: ENTRYPOINT, args: ["/app"] }
+cel:
+  - name: Pinned base images
+    expression: dockerfile.stages.all(s, s.from.tag != '' && s.from.tag != 'latest')
+    message: Pin every base image to a specific tag
+hint: "Use two FROM lines; the second stage copies the binary with COPY --from=build."
+correctAnswerInfo: "Multi-stage build, pinned distroless runtime image, non-root user."
+```
+
+**Fields:**
+
+| Field | Required | Description |
+|---|---|---|
+| `initialContent` | no | Pre-filled Dockerfile (must parse without syntax errors). |
+| `expected` | no | List of stage expectations, **matched in order**. `stage` (optional alias from `FROM … AS`) selects a named stage, which must come after the previously matched one; an entry without `stage` matches the next stage after the previous match. `from` checks the base image: `image` (name incl. registry, no tag/digest), `tag` (string or `{ not: value }`), `digest` (`true` = must be pinned with `@sha256:`, `false` = must not be). `instructions` is a list of per-instruction checks, in any order. |
+| `expected[].instructions[]` | | `instruction` (required, case-insensitive); `args` (exact token list, flags excluded); `form` (`exec` or `shell`; omit to accept both); `contains` (substring of the instruction text); `matches` (regular expression on the instruction text); `flags` (map of required flags without dashes, e.g. `from: build`, `chown: "1000:1000"`); `absent: true` (the stage must not contain such an instruction). |
+| `exactStages` | no | `true` forbids stages beyond those listed in `expected`. Default: extra stages are allowed. |
+| `cel` | no | CEL string or named-check list. Variables: `answer` (raw text) and `dockerfile` with `args` (instructions before the first `FROM`) and `stages[]`; each stage has `index`, `name` (alias or `""`), `line`, `from {raw, image, tag, digest, platform}` (missing parts are `""`) and `instructions[]` (excluding `FROM`) with `name` (upper-case), `line`, `form`, `args`, `flags` (map), `text` (arguments without flags, continuations joined) and `values` (key/value map for `ENV`/`ARG`/`LABEL`). |
+| `header`, `hint`, `correctAnswerInfo` | no | As for other questions. |
+
+**Guidance:** For `USER`, `CMD`, `ENTRYPOINT`, `WORKDIR`, `HEALTHCHECK`, `STOPSIGNAL` and `SHELL` only the **last** occurrence in a stage counts (as in Docker); for all other instructions any occurrence may satisfy a check. Prefer `args` over `contains` when the exact tokens matter, and `form` only when the exec/shell difference is the point of the question (signals, PID 1). `COPY`/`ADD` paths are opaque — check them with `args` or `cel` if needed. Use `cel` (named checks) for cross-stage rules and negative checks such as "no `curl | sh`" (`dockerfile.stages.all(s, !s.instructions.exists(i, i.name == 'RUN' && i.text.matches('curl .*\\|\\s*(ba)?sh')))`). The build itself is never run; `FROM` images are not resolved.
 
 ---
 
