@@ -165,7 +165,8 @@ scenarios:
           command:
             executable: scp
             flags:
-              - flag: "-i"
+              - name: i
+                singleDash: true
                 value: /home/exam/.ssh/id_rsa
                 required: true
             positionals:
@@ -182,7 +183,8 @@ scenarios:
           command:
             executable: scp
             flags:
-              - flag: "-i"
+              - name: i
+                singleDash: true
                 value: /home/exam/.ssh/id_rsa
                 required: true
             positionals:
@@ -199,10 +201,13 @@ scenarios:
           command:
             executable: scp
             flags:
-              - flag: "-i"
+              - name: i
+                singleDash: true
                 value: /home/exam/.ssh/id_rsa
                 required: true
-              - flag: "-r"
+              - name: r
+                singleDash: true
+                boolean: true
                 required: true
             positionals:
               - index: 0

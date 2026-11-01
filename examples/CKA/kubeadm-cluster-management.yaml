@@ -560,7 +560,7 @@ scenarios:
             subcommands:
               - name: get
               - name: nodes
-                aliases: [node, no]
+                aliases: [node, 'no']
       - type: context
         text: |
           The output shows:
@@ -897,7 +897,7 @@ scenarios:
             subcommands:
               - name: get
               - name: nodes
-                aliases: [node, no]
+                aliases: [node, 'no']
       - type: context
         text: |
           Expected output after a successful upgrade to v1.30.0:
