@@ -363,6 +363,24 @@
         }
       }
     },
+    "CelCheck": {
+      "type": "object",
+      "description": "One named requirement of a CEL check list. The learner sees a failing check as 'name (message)'.",
+      "required": ["name", "expression", "message"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "description": "Short label of the requirement, e.g. 'Match all IP addresses'." },
+        "expression": { "type": "string", "description": "CEL expression that must evaluate to true. Same variables as a plain cel expression." },
+        "message": { "type": "string", "description": "What is functionally required, in plain words (not the literal answer), e.g. 'Ensure the rule matches all IP addresses'." }
+      }
+    },
+    "Cel": {
+      "description": "Either a single CEL expression (a failure is reported generically) or a list of named checks that must ALL pass; each failing check is reported to the learner as 'CEL validation failed for <name> (<message>)'.",
+      "oneOf": [
+        { "type": "string" },
+        { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/CelCheck" } }
+      ]
+    },
     "BaseQuestion": {
       "type": "object",
       "description": "Fields common to all question types.",
@@ -380,7 +398,7 @@
           "description": "Extra explanation shown inline below the success message after the user answers correctly. Use to add depth or context about why the answer is correct. Shown after the answer is submitted — may reference the answer. Plain text only, no markdown."
         },
         "cel": {
-          "type": "string",
+          "$ref": "#/$defs/Cel",
           "description": "CEL (Common Expression Language) expression for custom validation logic. For single-line and multiline questions, replaces the expectedAnswer check entirely. For command questions, runs as an additional gate after structural validation passes. For manifest questions, runs alongside expectedFields. The bound variable 'answer' always contains the raw input string. For manifest questions, 'manifest' is also bound to the parsed YAML object, so you can traverse fields (e.g. manifest.metadata.name == 'foo') in addition to string-searching the raw YAML with answer.contains(...). Command questions also expose: executable, subcommands, positionals, flags, unknownFlags, extras."
         }
       }
@@ -405,7 +423,7 @@
             "header": { "type": "string" },
             "hint": { "type": "string" },
             "correctAnswerInfo": { "type": "string" },
-            "cel": { "type": "string" }
+            "cel": { "$ref": "#/$defs/Cel" }
           }
         }
       ]
@@ -430,7 +448,7 @@
             "header": { "type": "string" },
             "hint": { "type": "string" },
             "correctAnswerInfo": { "type": "string" },
-            "cel": { "type": "string" }
+            "cel": { "$ref": "#/$defs/Cel" }
           }
         }
       ]
@@ -529,7 +547,7 @@
             "header": { "type": "string" },
             "hint": { "type": "string" },
             "correctAnswerInfo": { "type": "string" },
-            "cel": { "type": "string" }
+            "cel": { "$ref": "#/$defs/Cel" }
           }
         }
       ]
@@ -563,7 +581,7 @@
             "header": { "type": "string" },
             "hint": { "type": "string" },
             "correctAnswerInfo": { "type": "string" },
-            "cel": { "type": "string" }
+            "cel": { "$ref": "#/$defs/Cel" }
           }
         }
       ]
@@ -593,7 +611,7 @@
             "header": { "type": "string" },
             "hint": { "type": "string" },
             "correctAnswerInfo": { "type": "string" },
-            "cel": { "type": "string" }
+            "cel": { "$ref": "#/$defs/Cel" }
           }
         }
       ]
@@ -726,7 +744,7 @@
             "header": { "type": "string" },
             "hint": { "type": "string" },
             "correctAnswerInfo": { "type": "string" },
-            "cel": { "type": "string" }
+            "cel": { "$ref": "#/$defs/Cel" }
           }
         }
       ]

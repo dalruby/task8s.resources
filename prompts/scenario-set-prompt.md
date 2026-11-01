@@ -989,12 +989,15 @@ Note: The explanation does not have a `break` element (unlike the introduction).
 
 ## Markdown support
 
-**Only `context` elements support markdown.** This applies in three places:
-- Introduction `context` elements
-- Scenario `context` elements
-- Explanation `context` elements
+**Full markdown** is supported in `context` elements: introduction, scenario and explanation.
 
-All other text fields — question `header`, `hint`, `correctAnswerInfo`, table headers and cells, reference link text, image `alt`, `name`, `description` — are rendered as **plain text**. Do not use markdown syntax (e.g. `**bold**`, `_italic_`, `## heading`) in those fields; it will appear as literal characters.
+**Inline markdown** (code spans, **bold**, _italic_, links; no block elements such as lists, headings or fenced blocks) is supported in:
+- question `header` (including `sequence` step headers)
+- `manifest` display element `header` and `footer`
+
+Inline code in all of these is **click-to-copy**, so wrap names, labels, paths and values the learner may need to type in backticks.
+
+All other text fields — `hint`, `correctAnswerInfo`, table headers and cells, reference link text, image `alt`, `name`, `description` — are rendered as **plain text**. Do not use markdown syntax (e.g. `**bold**`, `_italic_`, `## heading`) in those fields; it will appear as literal characters.
 
 ### Supported markdown
 
@@ -1038,6 +1041,35 @@ Any question except `sequence` can define a `cel` field. The behavior differs sl
 - **`single-line` / `multiline`**: CEL *replaces* the default `expectedAnswer` check entirely.
 - **`command`**: CEL runs *after* the structural validator passes. Both must succeed — the structural check validates executable, subcommands, positionals, and flags first; CEL is an additional gate for logic the structural validator cannot express. If the structural check fails, CEL is never evaluated.
 - **`manifest`**: CEL runs alongside `expectedFields` checks (both must pass).
+
+#### Named checks: `cel` as a list
+
+Instead of one string, `cel` can be a **list of named checks**. Every check must evaluate to `true`; each
+check that fails is reported to the learner by name and message, so a long expression no longer ends in an
+anonymous "validation failed":
+
+```yaml
+cel:
+  - name: Match all IP addresses
+    expression: "manifest.spec.egress[0].to[0].ipBlock.cidr == '0.0.0.0/0'"
+    message: Ensure the rule matches all IP addresses
+  - name: Exclude the metadata endpoint
+    expression: "manifest.spec.egress[0].to[0].ipBlock.except == ['169.254.169.254/32']"
+    message: Ensure the metadata endpoint is excluded
+```
+
+A failing answer shows `CEL validation failed for Match all IP addresses (Ensure the rule matches all IP
+addresses)`; several failures are listed together, separated by `;`.
+
+- `name` is a short label of the requirement; `message` says what is **functionally required**, in plain
+  words. It must not reveal the literal answer (no field values, flags or commands that the question is
+  testing) — it is feedback, not a hint.
+- All checks see the same variables as a plain expression (`answer`, `manifest`, the command variables, …).
+- A check that cannot be evaluated (for example a missing field) counts as failed; write each expression to
+  be safe with `has()` where a field may be absent.
+- One check per independent requirement works best. Prefer this form over a single long `&&` chain.
+- A plain string keeps working exactly as before. For `single-line` and `multiline` questions the check
+  messages are shown as the error; with a plain string those questions only say "Incorrect".
 
 For `manifest` questions, CEL receives two variables:
 
@@ -1352,6 +1384,7 @@ Before producing the final YAML, verify:
 - [ ] Every command whose expected answer contains a pipe or a redirect uses `modifiers` (first command in `command`, each `|` and redirect as one modifier, in order); `redirect.type` is the operator as typed; piped commands have no `modifiers` of their own; no `&&`, `||`, `;` or `$(...)`
 - [ ] For commands whose flags conventionally use one dash (e.g. `find`), each such `FlagSpec` has `singleDash: true` — otherwise multi-character single-dash tokens will be misparsed as bundled short flags
 - [ ] Every `manifest` question has `manifestDefinitionId`
+- [ ] Where `cel` is a list, every entry has `name`, `expression` and `message`, and no `message` reveals the literal answer
 - [ ] Every `sequence` has at least 2 `steps`
 - [ ] Every `multiple-choice` question has at least 2 `choices`; each choice has `text` and `answerType`; `PartOfSolution` and `Solution` are not mixed in the same question
 - [ ] Every `ordering` question has at least 2 `items`; every ID in `correctOrder` matches an `id` in `items`; lengths match
