@@ -1,0 +1,684 @@
+apiVersion: v1alpha1
+name: 'CKS (Hands-On): Static Analysis with kubesec and KubeLinter'
+k8sVersion: 1.34.0
+timing:
+  enabled: true
+  limitSeconds: 7200
+introduction:
+  elements:
+  - type: context
+    text: |
+      Hands-on practice with **static analysis of Kubernetes manifests** for the CKS *Supply Chain Security* domain: score manifests with
+      `kubesec`, lint them with `kube-linter`, configure the checks that run, record exceptions and fix workloads until the findings are
+      gone. There is no multiple choice.
+
+      **Lab environment**
+
+      - You are `root` on a control-plane node with `kubectl`, `kubesec`, `kube-linter` and `jq` installed. Manifests to review are
+        stored in `/root` and `/srv/manifests`.
+      - Tool outputs in the scenarios are shortened but follow the real formats.
+
+      **How answers are checked**
+
+      - *Manifests* are validated against the Kubernetes schema and then for what they *mean*: the dangerous settings are gone and the
+        required hardening is present. The order of fields does not matter.
+      - *Commands* are checked structurally; short answers accept common spellings.
+
+      Exam content is under NDA: this is practice for the common patterns, not a prediction.
+  - type: references
+    links:
+    - url: https://kubesec.io/
+      text: kubesec.io
+    - url: https://docs.kubelinter.io/
+      text: KubeLinter documentation
+    - url: https://docs.kubelinter.io/#/generated/checks
+      text: 'KubeLinter: built-in checks'
+    - url: https://training.linuxfoundation.org/certification/certified-kubernetes-security-specialist-cks/
+      text: CKS Domains and Competencies
+manifestDefinitions:
+- id: pod-v1
+  kind: Pod
+  apiVersion: v1
+  autoLoad: true
+- id: deployment-v1
+  kind: Deployment
+  apiVersion: apps/v1
+  autoLoad: true
+- id: daemonset-v1
+  kind: DaemonSet
+  apiVersion: apps/v1
+  autoLoad: true
+scenarios:
+- title: Scan a Manifest with kubesec
+  category: kubesec
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      A developer sends `/root/webapp-pod.yaml` for review before it is applied. You are not allowed to deploy anything to find out if it
+      is dangerous. `kubesec` is installed on the node and analyzes manifests statically: it never talks to the cluster.
+  - type: manifest
+    header: /root/webapp-pod.yaml
+    content: |
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: webapp
+        namespace: shop
+      spec:
+        hostNetwork: true
+        containers:
+          - name: web
+            image: nginx:latest
+            securityContext:
+              privileged: true
+            volumeMounts:
+              - name: sock
+                mountPath: /var/run/docker.sock
+        volumes:
+          - name: sock
+            hostPath:
+              path: /var/run/docker.sock
+  - type: question
+    question:
+      questionType: command
+      header: Score the manifest `/root/webapp-pod.yaml` with kubesec.
+      hint: The tool has a subcommand that takes the manifest file.
+      correctAnswerInfo: '`kubesec scan <file>` prints a JSON array with one result per object in the file. The score starts
+        at zero; critical findings subtract 30 points each, passed advisories add one point.'
+      command:
+        executable: kubesec
+        strictness: permissive
+        subcommands:
+        - name: scan
+        positionals:
+        - index: 0
+          value: /root/webapp-pod.yaml
+  - type: context
+    text: |
+      The relevant part of the JSON result:
+  - type: manifest
+    header: kubesec output (shortened)
+    content: |
+      [
+        {
+          "object": "Pod/webapp.shop",
+          "valid": true,
+          "message": "Failed with a score of -90 points",
+          "score": -90,
+          "scoring": {
+            "critical": [
+              { "id": "Privileged", "points": -30,
+                "reason": "Privileged containers can allow almost completely unrestricted host access" },
+              { "id": "DockerSock", "points": -30,
+                "reason": "Mounting the docker.socket leaks information about other containers and can allow container breakout" },
+              { "id": "HostNetwork", "points": -30,
+                "reason": "Sharing the host's network namespace permits processes in the pod to communicate with processes bound to the host's loopback adapter" }
+            ],
+            "advise": [
+              { "id": "ContainersResourcesLimitsMemory", "points": 1, "reason": "Enforcing memory limits prevents DOS via resource exhaustion" },
+              { "id": "ReadOnlyRootFilesystem", "points": 1, "reason": "An immutable root filesystem can prevent malicious binaries being added to PATH" }
+            ]
+          }
+        }
+      ]
+  - type: question
+    question:
+      questionType: single-line
+      header: How many critical findings does kubesec report for this Pod?
+      hint: Count the entries in the critical list.
+      expectedAnswer: '3'
+      cel: answer.trim().lowerAscii() in ["3", "three"]
+  - type: question
+    question:
+      questionType: single-line
+      header: Give the id of the critical finding that is caused by the hostPath volume mounting the container runtime socket.
+      hint: Read the reason texts.
+      correctAnswerInfo: A mounted runtime socket gives full control of the container runtime, i.e. of every container on
+        the node.
+      expectedAnswer: DockerSock
+      cel: answer.trim().lowerAscii() in ["dockersock"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        kubesec output has two lists: `critical` (each one subtracts points and should be fixed) and `advise` (each one *missing* is a
+        suggestion; items you implement add points). A positive score is not a proof of safety, only the absence of known bad patterns.
+    - type: references
+      links:
+      - url: https://kubesec.io/
+        text: kubesec.io
+      - url: https://kubesec.io/basics/
+        text: 'kubesec: scoring basics and checks'
+- title: Script the Score
+  category: kubesec
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      A pipeline step needs only the numeric score of `/root/webapp-pod.yaml`, to decide if it is above the team's threshold of 5.
+  - type: question
+    question:
+      questionType: command
+      header: 'Print only the score of the first result: pipe the kubesec scan of `/root/webapp-pod.yaml` through jq.'
+      hint: The JSON result is an array with one element per object.
+      correctAnswerInfo: '`kubesec scan /root/webapp-pod.yaml | jq ''.[0].score''` prints `-90`. In CI compare it with the
+        threshold and fail the job when it is lower.'
+      command:
+        executable: kubesec
+        strictness: permissive
+        subcommands:
+        - name: scan
+        positionals:
+        - index: 0
+          value: /root/webapp-pod.yaml
+      modifiers:
+      - type: Pipe
+        pipe:
+          command:
+            executable: jq
+            strictness: permissive
+      cel: pipes[0].positionals.exists(p, p.contains('.score'))
+  - type: question
+    question:
+      questionType: single-line
+      header: 'Does a *valid* result (`"valid": true`) mean that the manifest is secure? (yes/no)'
+      hint: Think about what is being validated.
+      correctAnswerInfo: '`valid` only says that kubesec could parse the object and score it. Security is in the score and
+        the critical list.'
+      expectedAnswer: 'no'
+      cel: answer.trim().lowerAscii() in ["no"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Use the JSON output rather than the human message in automation. For several objects in one file (`---` separated) kubesec returns several
+        array elements, so loop or select by `.object`.
+    - type: references
+      links:
+      - url: https://kubesec.io/
+        text: kubesec.io
+- title: Fix What kubesec Found
+  category: kubesec
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Rewrite the Pod so that the three critical findings disappear. In addition, the team wants the container to run as non-root, with a
+      read-only root filesystem and memory limits set, and the image tag must not be `latest`. Keep the Pod name `webapp` in `shop`
+      and the container name `web`; use `nginx:1.27.3` as the image.
+  - type: question
+    question:
+      questionType: manifest
+      header: Write the corrected Pod manifest.
+      hint: Remove the three risky settings, then add what the advisories ask for.
+      correctAnswerInfo: Non-root nginx needs an unprivileged image variant or a writable emptyDir for its cache and PID paths;
+        this exercise focuses on the manifest. In practice test the changed Pod.
+      manifestDefinitionId: pod-v1
+      initialContent: |
+        apiVersion: v1
+        kind: Pod
+        metadata:
+          name: webapp
+          namespace: shop
+        spec:
+          containers:
+            - name: web
+      expectedFields:
+      - path: metadata.name
+        expectedValue: webapp
+      - path: spec.containers.0.name
+        expectedValue: web
+      - path: spec.containers.0.image
+        expectedValue: nginx:1.27.3
+      cel:
+      - name: No host network
+        expression: '!has(manifest.spec.hostNetwork) || manifest.spec.hostNetwork == false'
+        message: The Pod must use its own network namespace
+      - name: Not privileged
+        expression: manifest.spec.containers.all(c, !has(c.securityContext) || !has(c.securityContext.privileged) || c.securityContext.privileged
+          == false)
+        message: Containers must not be privileged
+      - name: No host paths
+        expression: '!has(manifest.spec.volumes) || manifest.spec.volumes.all(v, !has(v.hostPath))'
+        message: The runtime socket must not be mounted
+      - name: Non-root
+        expression: manifest.spec.containers.all(c, (has(c.securityContext) && has(c.securityContext.runAsNonRoot) && c.securityContext.runAsNonRoot
+          == true) || (has(manifest.spec.securityContext) && has(manifest.spec.securityContext.runAsNonRoot) && manifest.spec.securityContext.runAsNonRoot
+          == true))
+        message: Containers must be forced to run as non-root
+      - name: Read-only root
+        expression: manifest.spec.containers.all(c, has(c.securityContext) && has(c.securityContext.readOnlyRootFilesystem)
+          && c.securityContext.readOnlyRootFilesystem == true)
+        message: The root filesystem must be read-only
+      - name: Memory limit
+        expression: manifest.spec.containers.all(c, has(c.resources) && has(c.resources.limits) && 'memory' in c.resources.limits)
+        message: Containers need a memory limit
+  - type: manifest
+    header: One possible result
+    content: |
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: webapp
+        namespace: shop
+      spec:
+        containers:
+          - name: web
+            image: nginx:1.27.3
+            securityContext:
+              runAsNonRoot: true
+              runAsUser: 10001
+              readOnlyRootFilesystem: true
+              allowPrivilegeEscalation: false
+              capabilities:
+                drop: ["ALL"]
+            resources:
+              limits:
+                memory: 128Mi
+  explanation:
+    elements:
+    - type: context
+      text: |
+        The pattern for all of these tools is the same: remove the critical settings (`privileged`, `hostNetwork`, `hostPID`, `hostPath`
+        mounts of sensitive paths, `CAP_SYS_ADMIN`), then apply the securityContext hardening the advisories list. Re-run the scanner to confirm.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/tasks/configure-pod-container/security-context/
+        text: Configure a Security Context for a Pod or Container
+      - url: https://kubesec.io/basics/
+        text: 'kubesec: scoring basics and checks'
+- title: Lint with KubeLinter
+  category: KubeLinter
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The platform team prefers `kube-linter`, which reports named checks with remediation text and exits non-zero when it finds
+      problems, so it can break a build. Lint the same file.
+  - type: question
+    question:
+      questionType: command
+      header: Lint the manifest `/root/webapp-pod.yaml` with kube-linter.
+      hint: The subcommand is the name of what it does to files.
+      correctAnswerInfo: '`kube-linter lint` accepts files, directories and Helm chart directories. A directory is searched
+        recursively.'
+      command:
+        executable: kube-linter
+        strictness: permissive
+        subcommands:
+        - name: lint
+        positionals:
+        - index: 0
+          value: /root/webapp-pod.yaml
+  - type: manifest
+    header: kube-linter output (shortened)
+    content: |
+      /root/webapp-pod.yaml: (object: shop/webapp /v1, Kind=Pod) container "web" is Privileged (check: privileged-container, remediation: Do not run your container as privileged unless it is required.)
+
+      /root/webapp-pod.yaml: (object: shop/webapp /v1, Kind=Pod) host network is configured (check: host-network, remediation: Ensure the host's network namespace is not shared.)
+
+      /root/webapp-pod.yaml: (object: shop/webapp /v1, Kind=Pod) container "web" has image with disallowed tag "latest" (check: latest-tag, remediation: Use a container image with a specific tag other than latest.)
+
+      /root/webapp-pod.yaml: (object: shop/webapp /v1, Kind=Pod) container "web" does not have a read-only root file system (check: no-read-only-root-fs, remediation: Set readOnlyRootFilesystem to true in the container securityContext.)
+
+      Error: found 7 lint errors
+  - type: question
+    question:
+      questionType: single-line
+      header: Which check name reports the use of the host's network namespace?
+      hint: Read the text in brackets.
+      expectedAnswer: host-network
+      cel: answer.trim().lowerAscii() in ["host-network"]
+  - type: question
+    question:
+      questionType: single-line
+      header: What exit status does the command return to the shell when it finds lint errors?
+      hint: Think about CI.
+      correctAnswerInfo: Exit status 1 when any enabled check fails. That makes `kube-linter lint` usable as a pipeline gate
+        without parsing its output.
+      expectedAnswer: non-zero
+      cel: answer.trim().lowerAscii() in ["non-zero", "nonzero", "non zero", "1", "not 0", "not zero"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Every finding has the form `(object: namespace/name /version, Kind=Kind) message (check: <check-name>, remediation: ...)`. The check
+        name is what you use for configuration and exceptions.
+    - type: references
+      links:
+      - url: https://docs.kubelinter.io/
+        text: KubeLinter documentation
+      - url: https://docs.kubelinter.io/#/generated/checks
+        text: 'KubeLinter: built-in checks'
+- title: List and Inspect Checks
+  category: KubeLinter
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      You need to know which checks exist before deciding which to enforce, and what exactly `no-read-only-root-fs` verifies.
+  - type: question
+    question:
+      questionType: command
+      header: List all built-in checks of kube-linter.
+      hint: The checks subcommand has its own subcommands.
+      command:
+        executable: kube-linter
+        strictness: permissive
+        subcommands:
+        - name: checks
+        - name: list
+  - type: question
+    question:
+      questionType: command
+      header: Show the description and parameters of the check `no-read-only-root-fs`.
+      hint: The sibling of list shows details of one.
+      command:
+        executable: kube-linter
+        strictness: permissive
+        subcommands:
+        - name: checks
+        - name: info
+        positionals:
+        - index: 0
+          value: no-read-only-root-fs
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Checks are grouped by what they inspect. The ones that matter for CKS: `privileged-container`, `privilege-escalation-container`,
+        `run-as-non-root`, `no-read-only-root-fs`, `host-network`, `host-pid`, `host-ipc`, `docker-sock`, `sensitive-host-mounts`,
+        `drop-net-raw-capability`, `latest-tag`, `default-service-account`, `unset-cpu-requirements`, `unset-memory-requirements`,
+        `env-var-secret`.
+    - type: references
+      links:
+      - url: https://docs.kubelinter.io/#/generated/checks
+        text: 'KubeLinter: built-in checks'
+- title: Choose the Checks with a Config File
+  category: KubeLinter
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      By default kube-linter runs its default-enabled checks. The security team wants a stricter gate: **only** these checks must run
+      (and nothing else): `privileged-container`, `run-as-non-root`, `no-read-only-root-fs` and `latest-tag`.
+
+      The configuration file is `/root/kube-linter.yaml`.
+  - type: question
+    question:
+      questionType: multiline
+      header: Write the configuration file content.
+      hint: Under the top-level checks key you switch off the default set, then name what to include.
+      correctAnswerInfo: '`addAllBuiltIn: true` would instead enable everything, and `exclude:` removes individual checks
+        from whichever set is active.'
+      expectedAnswer: |
+        checks:
+          doNotAutoAddDefaults: true
+          include:
+            - privileged-container
+            - run-as-non-root
+            - no-read-only-root-fs
+            - latest-tag
+      cel: 'answer.contains(''checks:'') && answer.contains(''doNotAutoAddDefaults: true'') && answer.contains(''include:'')
+        && [''privileged-container'', ''run-as-non-root'', ''no-read-only-root-fs'', ''latest-tag''].all(c, answer.contains(c))
+        && !answer.contains(''addAllBuiltIn'')'
+  - type: question
+    question:
+      questionType: command
+      header: Lint the directory `/srv/manifests` using that configuration file.
+      hint: There is a flag to pass the configuration.
+      command:
+        executable: kube-linter
+        strictness: permissive
+        subcommands:
+        - name: lint
+        positionals:
+        - index: 0
+          value: /srv/manifests
+        flags:
+        - name: config
+          required: true
+          value: /root/kube-linter.yaml
+  explanation:
+    elements:
+    - type: context
+      text: |
+        | Config key (under `checks:`) | Effect |
+        |---|---|
+        | `addAllBuiltIn: true` | enable every built-in check |
+        | `doNotAutoAddDefaults: true` | start from an empty set |
+        | `include: [...]` | add these checks |
+        | `exclude: [...]` | remove these checks |
+    - type: references
+      links:
+      - url: https://docs.kubelinter.io/#/configuring-kubelinter
+        text: 'KubeLinter: configuring checks'
+- title: Suppress a Finding with an Annotation
+  category: KubeLinter
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      A log shipper DaemonSet legitimately reads host files, so the check `sensitive-host-mounts` must not fail for that one object. The
+      exception has to be recorded on the object itself, with a reason, so it is visible in review.
+  - type: question
+    question:
+      questionType: single-line
+      header: What is the annotation key that tells kube-linter to ignore the check `sensitive-host-mounts` for an object?
+        Write it exactly.
+      hint: The key is a domain-style prefix followed by the check name.
+      correctAnswerInfo: The annotation value is the justification, for example "log shipper reads /var/log". The special
+        key `ignore-all.kube-linter.io/...` is not recommended because it hides every check.
+      expectedAnswer: ignore-check.kube-linter.io/sensitive-host-mounts
+      cel: answer.trim() in ["ignore-check.kube-linter.io/sensitive-host-mounts"]
+  - type: question
+    question:
+      questionType: manifest
+      header: Add that annotation, with the reason `reads node logs`, to this DaemonSet.
+      hint: Annotations on the DaemonSet object itself, not the Pod template.
+      manifestDefinitionId: daemonset-v1
+      initialContent: |
+        apiVersion: apps/v1
+        kind: DaemonSet
+        metadata:
+          name: log-shipper
+          namespace: kube-system
+        spec:
+          selector:
+            matchLabels:
+              app: log-shipper
+          template:
+            metadata:
+              labels:
+                app: log-shipper
+            spec:
+              containers:
+                - name: shipper
+                  image: registry.local/ops/shipper:1.4.2
+                  volumeMounts:
+                    - name: varlog
+                      mountPath: /var/log
+                      readOnly: true
+              volumes:
+                - name: varlog
+                  hostPath:
+                    path: /var/log
+      expectedFields:
+      - path: metadata.annotations[ignore-check.kube-linter.io/sensitive-host-mounts]
+        expectedValue: reads node logs
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Exceptions belong in the manifest, next to the code that needs them, so a reviewer sees both. Review exceptions regularly: an
+        annotation never expires on its own.
+    - type: references
+      links:
+      - url: https://docs.kubelinter.io/#/configuring-kubelinter
+        text: 'KubeLinter: configuring checks'
+- title: Fix a Deployment Until It Is Clean
+  category: KubeLinter
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      `kube-linter lint /root/api-deploy.yaml` reports these checks for the Deployment `api` in `shop`:
+
+      - `latest-tag` (image `registry.local/shop/api:latest`)
+      - `run-as-non-root`
+      - `no-read-only-root-fs`
+      - `privilege-escalation-container`
+      - `unset-memory-requirements` and `unset-cpu-requirements`
+      - `drop-net-raw-capability`
+
+      Rewrite the Deployment so none of them fires. Use image tag `2.4` and keep one replica.
+  - type: question
+    question:
+      questionType: manifest
+      header: Write the corrected Deployment.
+      hint: 'Work through the list one by one: image, securityContext fields, capabilities, resources.'
+      correctAnswerInfo: Dropping ALL capabilities also satisfies the NET_RAW check. The linter does not look at whether the
+        application still starts, so test the result.
+      manifestDefinitionId: deployment-v1
+      initialContent: |
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: api
+          namespace: shop
+        spec:
+          replicas: 1
+          selector:
+            matchLabels:
+              app: api
+          template:
+            metadata:
+              labels:
+                app: api
+            spec:
+              containers:
+                - name: api
+                  image: registry.local/shop/api:latest
+      expectedFields:
+      - path: metadata.name
+        expectedValue: api
+      - path: spec.template.spec.containers.0.image
+        expectedValue: registry.local/shop/api:2.4
+      cel:
+      - name: Non-root
+        expression: manifest.spec.template.spec.containers.all(c, (has(c.securityContext) && has(c.securityContext.runAsNonRoot)
+          && c.securityContext.runAsNonRoot == true) || (has(manifest.spec.template.spec.securityContext) && has(manifest.spec.template.spec.securityContext.runAsNonRoot)
+          && manifest.spec.template.spec.securityContext.runAsNonRoot == true))
+        message: Containers must be forced to run as non-root
+      - name: Read-only root
+        expression: manifest.spec.template.spec.containers.all(c, has(c.securityContext) && has(c.securityContext.readOnlyRootFilesystem)
+          && c.securityContext.readOnlyRootFilesystem == true)
+        message: The root filesystem must be read-only
+      - name: No privilege escalation
+        expression: manifest.spec.template.spec.containers.all(c, has(c.securityContext) && has(c.securityContext.allowPrivilegeEscalation)
+          && c.securityContext.allowPrivilegeEscalation == false)
+        message: Privilege escalation must be disabled
+      - name: NET_RAW dropped
+        expression: manifest.spec.template.spec.containers.all(c, has(c.securityContext) && has(c.securityContext.capabilities)
+          && has(c.securityContext.capabilities.drop) && ('NET_RAW' in c.securityContext.capabilities.drop || 'ALL' in c.securityContext.capabilities.drop))
+        message: The raw-socket capability must be dropped
+      - name: Requests set
+        expression: manifest.spec.template.spec.containers.all(c, has(c.resources) && has(c.resources.requests) && 'cpu' in
+          c.resources.requests && 'memory' in c.resources.requests)
+        message: CPU and memory requests are required
+      - name: Limits set
+        expression: manifest.spec.template.spec.containers.all(c, has(c.resources) && has(c.resources.limits) && 'cpu' in
+          c.resources.limits && 'memory' in c.resources.limits)
+        message: CPU and memory limits are required
+  explanation:
+    elements:
+    - type: context
+      text: |
+        In a real review you iterate: lint, fix, lint again. A clean lint run is a floor, not a ceiling: it cannot know what the
+        application needs and it does not see the cluster, for example admission policy or network policy.
+    - type: references
+      links:
+      - url: https://docs.kubelinter.io/#/generated/checks
+        text: 'KubeLinter: built-in checks'
+      - url: https://kubernetes.io/docs/tasks/configure-pod-container/security-context/
+        text: Configure a Security Context for a Pod or Container
+- title: 'Capstone: Review a Directory'
+  category: Capstone
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      `/srv/manifests` holds `frontend.yaml`, `backend.yaml` and `jobs.yaml` from three teams, to be reviewed before merge. The linter output
+      is long, so first get the facts from the directory.
+  - type: question
+    question:
+      questionType: command
+      header: Lint the whole directory `/srv/manifests`.
+      hint: Directories are accepted like files.
+      command:
+        executable: kube-linter
+        strictness: permissive
+        subcommands:
+        - name: lint
+        positionals:
+        - index: 0
+          value: /srv/manifests
+  - type: table
+    style: terminal
+    columns:
+    - FILE
+    - CHECK
+    - OBJECT
+    rows:
+    - - frontend.yaml
+      - latest-tag
+      - Deployment/frontend
+    - - backend.yaml
+      - privileged-container
+      - Deployment/backend
+    - - backend.yaml
+      - docker-sock
+      - Deployment/backend
+    - - jobs.yaml
+      - unset-memory-requirements
+      - CronJob/cleanup
+  - type: question
+    question:
+      questionType: single-line
+      header: Which of the objects in the findings gives its Pods the most direct way to take over the node? Answer with Kind/name.
+      hint: Two of the findings point to the same object, and one of them gives access to the container runtime.
+      expectedAnswer: Deployment/backend
+      cel: answer.trim().lowerAscii() in ["deployment/backend", "backend", "deployment backend", "deployment/backend", "deploy/backend"]
+  - type: question
+    question:
+      questionType: command
+      header: Check the manifest `/srv/manifests/backend.yaml` with kubesec as a second opinion.
+      hint: kubesec takes one file.
+      command:
+        executable: kubesec
+        strictness: permissive
+        subcommands:
+        - name: scan
+        positionals:
+        - index: 0
+          value: /srv/manifests/backend.yaml
+  - type: question
+    question:
+      questionType: single-line
+      header: Which of the two tools you used returns a numeric score per object?
+      hint: One of them returns named pass/fail checks, the other a number.
+      expectedAnswer: kubesec
+      cel: answer.trim().lowerAscii() in ["kubesec"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Use static analysis as an early filter in review and CI: it is fast, needs no cluster and catches the same repeating mistakes.
+        It cannot replace runtime controls (Pod Security Admission, NetworkPolicy, runtime detection) because it only sees what is written in the file.
+    - type: references
+      links:
+      - url: https://kubesec.io/
+        text: kubesec.io
+      - url: https://docs.kubelinter.io/
+        text: KubeLinter documentation

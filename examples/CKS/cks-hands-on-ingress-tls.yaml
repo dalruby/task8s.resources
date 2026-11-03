@@ -1,0 +1,894 @@
+apiVersion: v1alpha1
+name: 'CKS (Hands-On): Ingress with TLS'
+k8sVersion: 1.34.0
+timing:
+  enabled: true
+  limitSeconds: 7200
+introduction:
+  elements:
+  - type: context
+    text: |
+      Hands-on practice with **TLS for Ingress** for the CKS *Cluster Setup* domain: create self-signed certificates with openssl, store them in `kubernetes.io/tls`
+      Secrets, terminate TLS in an Ingress, test with `curl --resolve`, troubleshoot the fake-certificate fallback, redirect HTTP and rotate certificates. There is no multiple choice.
+
+      **Lab environment**
+
+      - You are `root` on the control-plane node of a kubeadm cluster (Kubernetes 1.34, containerd). `kubectl`, `openssl` and `curl` are available. The NGINX ingress controller
+        (IngressClass `nginx`) publishes HTTP on NodePort `30080` and HTTPS on `30443` of node `10.0.0.21`.
+      - Namespaces `shop` and `docs` hold the applications; host names such as `shop.example.com` have no DNS records, so tests use `curl --resolve`.
+
+      **How answers are checked**
+
+      - *Manifests* are validated against the Kubernetes schema and then for what they *mean* (hosts, Secret names, backends). *Commands* are checked structurally (flag order is free);
+        short answers accept common spellings.
+
+      Exam content is under NDA: this is practice for the common patterns, not a prediction.
+  - type: references
+    links:
+    - url: https://kubernetes.io/docs/concepts/services-networking/ingress/#tls
+      text: 'Ingress: TLS'
+    - url: https://kubernetes.io/docs/concepts/configuration/secret/#tls-secrets
+      text: TLS Secrets
+    - url: https://kubernetes.github.io/ingress-nginx/user-guide/tls/
+      text: 'ingress-nginx: TLS/HTTPS'
+    - url: https://curl.se/docs/manpage.html
+      text: curl man page
+    - url: https://training.linuxfoundation.org/certification/certified-kubernetes-security-specialist-cks/
+      text: CKS Domains and Competencies
+manifestDefinitions:
+- id: ingress-v1
+  kind: Ingress
+  apiVersion: networking.k8s.io/v1
+  autoLoad: true
+scenarios:
+- title: A Self-Signed Certificate
+  category: Certificates
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The `shop` application is to be served over HTTPS at `shop.example.com` through the cluster's NGINX ingress controller. No CA is available for the lab,
+      so you will create a **self-signed** certificate valid for one year with a 2048-bit RSA key. The key must not be protected by a passphrase (the controller
+      cannot type one). Write the key to `tls.key` and the certificate to `tls.crt`; the subject is `/CN=shop.example.com/O=shop`.
+  - type: question
+    question:
+      questionType: command
+      header: Create the key and the self-signed certificate with a single openssl command.
+      hint: req with a flag that outputs a certificate instead of a request; other flags choose key size, lifetime, files
+        and subject.
+      correctAnswerInfo: '`-x509` makes `req` output a self-signed certificate. `-nodes` ("no DES") leaves the key unencrypted.
+        Modern clients require the host name in the **subjectAltName**, not just the CN; add `-addext "subjectAltName=DNS:shop.example.com"`
+        for that.'
+      command:
+        executable: openssl
+        strictness: permissive
+        subcommands:
+        - name: req
+        flags:
+        - name: x509
+          singleDash: true
+          required: true
+          boolean: true
+        - name: nodes
+          singleDash: true
+          required: true
+          boolean: true
+        - name: days
+          singleDash: true
+          required: true
+          value: '365'
+        - name: newkey
+          singleDash: true
+          required: true
+          value: rsa:2048
+        - name: keyout
+          singleDash: true
+          required: true
+          value: tls.key
+        - name: out
+          singleDash: true
+          required: true
+          value: tls.crt
+        - name: subj
+          singleDash: true
+          required: true
+          value: /CN=shop.example.com/O=shop
+        - name: addext
+          singleDash: true
+  - type: question
+    question:
+      questionType: command
+      header: 'Check the result: print the subject and the validity dates of `tls.crt`.'
+      hint: Print selected fields and do not output the certificate itself.
+      command:
+        executable: openssl
+        subcommands:
+        - name: x509
+        flags:
+        - name: in
+          singleDash: true
+          required: true
+          value: tls.crt
+        - name: noout
+          singleDash: true
+          required: true
+          boolean: true
+        - name: subject
+          singleDash: true
+          required: true
+          boolean: true
+        - name: dates
+          singleDash: true
+          required: true
+          boolean: true
+  - type: table
+    style: terminal
+    columns:
+    - OUTPUT
+    rows:
+    - - subject=CN = shop.example.com, O = shop
+    - - notBefore=Nov  3 09:12:41 2026 GMT
+    - - notAfter=Nov  3 09:12:41 2027 GMT
+  - type: question
+    question:
+      questionType: single-line
+      header: Does a self-signed certificate have an issuer different from its subject? (yes/no)
+      hint: Who signed it?
+      expectedAnswer: 'no'
+      cel: answer.trim().lowerAscii() in ["no"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Self-signed certificates are fine for tests, but browsers and tools do not trust them unless the certificate itself is added as a trusted CA (or ignored with `curl -k`). In production
+        use a certificate issued by your CA (or the CSR API / cert-manager). Same mechanics, different issuer.
+    - type: references
+      links:
+      - url: https://docs.openssl.org/master/man1/openssl-req/
+        text: openssl-req
+      - url: https://kubernetes.github.io/ingress-nginx/user-guide/tls/
+        text: 'ingress-nginx: TLS/HTTPS'
+- title: Create the TLS Secret
+  category: Certificates
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      An Ingress references its certificate through a Secret in the **same namespace** as the Ingress. The files `tls.crt` and `tls.key` are in the current directory.
+  - type: question
+    question:
+      questionType: command
+      header: Create the Secret `shop-tls` in namespace `shop` from these files with the dedicated subcommand for TLS.
+      hint: There is a Secret subcommand named after the purpose; it takes the files by flags.
+      correctAnswerInfo: The Secret gets the type `kubernetes.io/tls` and exactly two keys, `tls.crt` and `tls.key`. The subcommand
+        validates that key and certificate belong together.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: create
+        - name: secret
+        - name: tls
+        positionals:
+        - index: 0
+          value: shop-tls
+        flags:
+        - name: cert
+          required: true
+          value: tls.crt
+        - name: key
+          required: true
+          value: tls.key
+        - name: namespace
+          short: n
+          required: true
+          value: shop
+  - type: question
+    question:
+      questionType: single-line
+      header: What is the Secret type of a TLS Secret?
+      hint: Namespace-style prefix, then the purpose.
+      expectedAnswer: kubernetes.io/tls
+      cel: answer.trim() in ["kubernetes.io/tls"]
+  - type: question
+    question:
+      questionType: single-line
+      header: Which two data keys must it have?
+      hint: Named after the files.
+      expectedAnswer: tls.crt,tls.key
+      cel: answer.trim().lowerAscii() in ["tls.crt,tls.key", "tls.crt, tls.key", "tls.key, tls.crt", "tls.key,tls.crt", "tls.crt
+        and tls.key", "tls.key and tls.crt"]
+  - type: question
+    question:
+      questionType: command
+      header: 'Verify the certificate stored in the Secret: print its `tls.crt` data with JSONPath, decode it and show its
+        subject. (First command of the pipeline: kubectl get secret.)'
+      hint: Dots in a JSONPath key must be escaped with a backslash. Decode, then let openssl read from standard input.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: get
+        - name: secret
+          aliases:
+          - secrets
+        positionals:
+        - index: 0
+          value: shop-tls
+        flags:
+        - name: namespace
+          short: n
+          required: true
+          value: shop
+        - name: output
+          short: o
+          required: true
+          regex: ^jsonpath.*tls\\\.crt
+      modifiers:
+      - type: Pipe
+        pipe:
+          command:
+            executable: base64
+            strictness: permissive
+            flags:
+            - name: decode
+              short: d
+              required: true
+              boolean: true
+      - type: Pipe
+        pipe:
+          command:
+            executable: openssl
+            subcommands:
+            - name: x509
+            flags:
+            - name: noout
+              singleDash: true
+              required: true
+              boolean: true
+            - name: subject
+              singleDash: true
+              required: true
+              boolean: true
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Never put the private key in a ConfigMap or an Ingress annotation. The TLS Secret is the object that RBAC should protect (see the RBAC and Secrets sets): whoever can read
+        it can impersonate the site.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/concepts/configuration/secret/#tls-secrets
+        text: TLS Secrets
+      - url: https://kubernetes.io/docs/concepts/services-networking/ingress/#tls
+        text: 'Ingress: TLS'
+- title: Write the Ingress with TLS
+  category: Ingress
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The NGINX ingress controller is installed with the IngressClass `nginx`. In namespace `shop`, the Service `shop-web` exposes port `80`.
+      Write an Ingress named `shop` that serves host `shop.example.com`, sends all paths (prefix `/`) to that Service and terminates TLS with the Secret `shop-tls`.
+  - type: question
+    question:
+      questionType: manifest
+      header: Write the Ingress.
+      hint: spec.tls is a list with hosts and a secret name; spec.rules holds the routing.
+      correctAnswerInfo: The host in `tls.hosts` must match the host the client asks for (SNI). The Ingress only references
+        the Secret by name, and it must be in the same namespace.
+      manifestDefinitionId: ingress-v1
+      initialContent: |
+        apiVersion: networking.k8s.io/v1
+        kind: Ingress
+        metadata:
+          name: shop
+          namespace: shop
+        spec:
+      expectedFields:
+      - path: metadata.name
+        expectedValue: shop
+      - path: spec.ingressClassName
+        expectedValue: nginx
+      - path: spec.tls.0.secretName
+        expectedValue: shop-tls
+      - path: spec.tls.0.hosts.0
+        expectedValue: shop.example.com
+      - path: spec.rules.0.host
+        expectedValue: shop.example.com
+      cel:
+      - name: Routes to the service
+        expression: manifest.spec.rules[0].http.paths.exists(p, p.path == '/' && p.pathType == 'Prefix' && p.backend.service.name
+          == 'shop-web' && p.backend.service.port.number == 80)
+        message: The root path must be forwarded to the web Service on port 80
+  - type: question
+    question:
+      questionType: command
+      header: List the Ingress objects in namespace `shop`.
+      hint: Namespaced resource; the namespace flag.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: get
+        - name: ingress
+          aliases:
+          - ingresses
+          - ing
+        flags:
+        - name: namespace
+          short: n
+          required: true
+          value: shop
+  - type: table
+    style: terminal
+    columns:
+    - NAME
+    - CLASS
+    - HOSTS
+    - ADDRESS
+    - PORTS
+    - AGE
+    rows:
+    - - shop
+      - nginx
+      - shop.example.com
+      - 10.0.0.21
+      - 80, 443
+      - 6s
+  - type: question
+    question:
+      questionType: single-line
+      header: Which value in the PORTS column shows that TLS is configured?
+      hint: The Ingress controller adds the TLS port to the list.
+      expectedAnswer: '443'
+      cel: answer.trim().lowerAscii() in ["443"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        `kubectl describe ingress shop -n shop` shows a TLS section `shop-tls terminates shop.example.com` and the backend mapping with endpoints. Without `ingressClassName` (or the legacy
+        annotation) a controller may ignore the Ingress, and without `pathType` the API server rejects it.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/concepts/services-networking/ingress/#tls
+        text: 'Ingress: TLS'
+      - url: https://kubernetes.io/docs/concepts/services-networking/ingress/
+        text: Ingress
+- title: Test with curl --resolve
+  category: Testing
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      `shop.example.com` has no DNS record in the lab. The ingress controller's Service is of type NodePort: HTTPS is published on port `30443`
+      of node `10.0.0.21`. Test the site **without editing `/etc/hosts`**: send the request to the node but present the host name `shop.example.com` (TLS SNI and Host header).
+      The certificate is self-signed.
+  - type: question
+    question:
+      questionType: command
+      header: Fetch `https://shop.example.com:30443/` through the node, ignoring certificate verification.
+      hint: One curl option maps a host and port to an address; another skips verification.
+      correctAnswerInfo: '`--resolve host:port:address` replaces DNS for this request only. The URL, SNI and Host header still
+        use the name, which is what the Ingress rule and certificate match.'
+      command:
+        executable: curl
+        strictness: permissive
+        positionals:
+        - index: 0
+          value: https://shop.example.com:30443/
+        flags:
+        - name: resolve
+          required: true
+          value: shop.example.com:30443:10.0.0.21
+        - name: insecure
+          short: k
+          required: true
+          boolean: true
+  - type: question
+    question:
+      questionType: command
+      header: 'Now verify properly: trust only your own certificate `tls.crt` instead of skipping verification.'
+      hint: A flag that names a CA bundle file; a self-signed certificate is its own CA.
+      command:
+        executable: curl
+        strictness: permissive
+        positionals:
+        - index: 0
+          value: https://shop.example.com:30443/
+        flags:
+        - name: resolve
+          required: true
+          value: shop.example.com:30443:10.0.0.21
+        - name: cacert
+          required: true
+          value: tls.crt
+  - type: question
+    question:
+      questionType: command
+      header: Show the TLS handshake and certificate details with a verbose request (headers only, certificate check skipped).
+      hint: There is a verbose flag.
+      command:
+        executable: curl
+        strictness: permissive
+        positionals:
+        - index: 0
+          value: https://shop.example.com:30443/
+        flags:
+        - name: resolve
+          required: true
+          value: shop.example.com:30443:10.0.0.21
+        - name: verbose
+          short: v
+          required: true
+          boolean: true
+        - name: insecure
+          short: k
+          required: true
+          boolean: true
+  - type: manifest
+    header: Part of the output
+    content: |
+      * Server certificate:
+      *  subject: CN=shop.example.com; O=shop
+      *  start date: Nov  3 09:12:41 2026 GMT
+      *  expire date: Nov  3 09:12:41 2027 GMT
+      *  issuer: CN=shop.example.com; O=shop
+      *  SSL certificate verify result: self-signed certificate (18), continuing anyway.
+  - type: question
+    question:
+      questionType: single-line
+      header: Which line shows that the served certificate is the self-signed one you created rather than a default one? (answer
+        with the field name that equals the subject)
+      hint: A self-signed certificate is its own authority.
+      expectedAnswer: issuer
+      cel: answer.trim().lowerAscii() in ["issuer"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        `curl --resolve` is the standard way to test virtual hosts and TLS in labs and exams. Without `-k` or `--cacert` curl fails with "SSL certificate problem: self-signed certificate".
+        `--connect-to` is the more flexible cousin. `curl -v` prints the certificate, the negotiated TLS version and the response headers.
+    - type: references
+      links:
+      - url: https://curl.se/docs/manpage.html
+        text: curl man page
+      - url: https://kubernetes.github.io/ingress-nginx/user-guide/tls/
+        text: 'ingress-nginx: TLS/HTTPS'
+- title: The Fake Certificate
+  category: Troubleshooting
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The site answers over HTTPS but the certificate subject is `CN=Kubernetes Ingress Controller Fake Certificate`. The Ingress looks correct.
+  - type: question
+    question:
+      questionType: single-line
+      header: What does the controller do when it cannot load the Secret named in `spec.tls`?
+      hint: The title of the scenario says what it serves.
+      expectedAnswer: serves its default fake certificate
+      cel: answer.trim().lowerAscii() in ["serves its default fake certificate", "default certificate", "it serves the default
+        certificate", "default cert", "fake certificate", "serves the fake certificate", "uses the default fake certificate",
+        "serves a default certificate", "fake cert", "default fake certificate", "its default certificate"]
+  - type: question
+    question:
+      questionType: command
+      header: Check that the Secret `shop-tls` exists in the namespace of the Ingress, `shop`.
+      hint: Look in the namespace of the Ingress, not the namespace of the controller.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: get
+        - name: secret
+          aliases:
+          - secrets
+        positionals:
+        - index: 0
+          value: shop-tls
+        flags:
+        - name: namespace
+          short: n
+          required: true
+          value: shop
+  - type: manifest
+    header: Result
+    content: |
+      Error from server (NotFound): secrets "shop-tls" not found
+  - type: context
+    text: |
+      Looking through the namespaces, the Secret was created in `default` by mistake.
+  - type: question
+    question:
+      questionType: single-line
+      header: Can an Ingress in `shop` use a TLS Secret that lives in `default`? (yes/no)
+      hint: Ingress references Secrets by name only, without a namespace.
+      correctAnswerInfo: The standard Ingress API has no namespace field in `tls.secretName`. Some controllers can read cross-namespace
+        Secrets via a controller flag (`--default-ssl-certificate`) but that is a cluster-wide default, not a per-Ingress
+        setting.
+      expectedAnswer: 'no'
+      cel: answer.trim().lowerAscii() in ["no"]
+  - type: question
+    question:
+      questionType: single-line
+      header: 'Name two other common causes of the fake certificate: a Secret of the wrong type, or a certificate whose names
+        do not match the Ingress host. Which Secret type is required? (type string)'
+      hint: Opaque is not enough.
+      expectedAnswer: kubernetes.io/tls
+      cel: answer.trim() in ["kubernetes.io/tls"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Troubleshooting checklist for TLS Ingress: (1) Secret exists in the Ingress namespace, (2) type `kubernetes.io/tls` with both keys, (3) certificate subject/SAN covers the host, (4) `tls.hosts` lists the
+        same host as the rule, (5) controller logs (`kubectl logs -n ingress-nginx deploy/ingress-nginx-controller`) show the error ("secret not found", "unexpected error storing fake SSL Cert").
+    - type: references
+      links:
+      - url: https://kubernetes.github.io/ingress-nginx/user-guide/tls/
+        text: 'ingress-nginx: TLS/HTTPS'
+      - url: https://kubernetes.io/docs/concepts/services-networking/ingress/#tls
+        text: 'Ingress: TLS'
+- title: Redirect HTTP to HTTPS
+  category: Testing
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Clients still use `http://shop.example.com`. When an Ingress has a TLS section, ingress-nginx redirects plain HTTP requests to HTTPS by default. Check this, with the
+      HTTP NodePort `30080` on node `10.0.0.21`.
+  - type: question
+    question:
+      questionType: command
+      header: Request only the response headers of `http://shop.example.com:30080/` through the node, without following redirects.
+      hint: One curl flag fetches the headers only.
+      command:
+        executable: curl
+        strictness: permissive
+        positionals:
+        - index: 0
+          value: http://shop.example.com:30080/
+        flags:
+        - name: resolve
+          required: true
+          value: shop.example.com:30080:10.0.0.21
+        - name: head
+          short: I
+          required: true
+          boolean: true
+  - type: table
+    style: terminal
+    columns:
+    - OUTPUT
+    rows:
+    - - HTTP/1.1 308 Permanent Redirect
+    - - 'Location: https://shop.example.com/'
+    - - 'Server: nginx'
+  - type: question
+    question:
+      questionType: single-line
+      header: Which HTTP status code does ingress-nginx use for this redirect?
+      hint: Read the first line.
+      expectedAnswer: '308'
+      cel: answer.trim().lowerAscii() in ["308"]
+  - type: question
+    question:
+      questionType: single-line
+      header: Which annotation key forces the redirect even for Ingresses without a TLS section (e.g. when TLS is terminated
+        by a load balancer)? Write the full annotation key.
+      hint: The ingress-nginx annotation domain, then a word that says it is forced.
+      expectedAnswer: nginx.ingress.kubernetes.io/force-ssl-redirect
+      cel: answer.trim() in ["nginx.ingress.kubernetes.io/force-ssl-redirect"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        `ssl-redirect` (default true when TLS is configured) and `force-ssl-redirect` are the annotations to know. HSTS headers add a layer on top, so browsers do not even try HTTP.
+    - type: references
+      links:
+      - url: https://kubernetes.github.io/ingress-nginx/user-guide/nginx-configuration/annotations/
+        text: 'ingress-nginx: Annotations'
+- title: Two Hosts, Two Certificates
+  category: Ingress
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Namespace `shop` now serves two sites through one Ingress named `sites`: `shop.example.com` (certificate Secret `shop-tls`, backend Service `shop-web:80`) and
+      `api.example.com` (certificate Secret `api-tls`, backend Service `shop-api:8080`). The controller selects the certificate by the requested host name (SNI).
+  - type: question
+    question:
+      questionType: manifest
+      header: Write the Ingress `sites` in namespace `shop` with the class `nginx`.
+      hint: 'One entry per host in both lists: tls and rules.'
+      manifestDefinitionId: ingress-v1
+      initialContent: |
+        apiVersion: networking.k8s.io/v1
+        kind: Ingress
+        metadata:
+          name: sites
+          namespace: shop
+        spec:
+      expectedFields:
+      - path: metadata.name
+        expectedValue: sites
+      - path: spec.ingressClassName
+        expectedValue: nginx
+      cel:
+      - name: Shop certificate
+        expression: manifest.spec.tls.exists(t, t.secretName == 'shop-tls' && 'shop.example.com' in t.hosts)
+        message: shop.example.com needs its own certificate Secret
+      - name: API certificate
+        expression: manifest.spec.tls.exists(t, t.secretName == 'api-tls' && 'api.example.com' in t.hosts)
+        message: api.example.com needs its own certificate Secret
+      - name: Shop route
+        expression: manifest.spec.rules.exists(r, r.host == 'shop.example.com' && r.http.paths.exists(p, p.backend.service.name
+          == 'shop-web' && p.backend.service.port.number == 80))
+        message: shop.example.com must go to the web Service
+      - name: API route
+        expression: manifest.spec.rules.exists(r, r.host == 'api.example.com' && r.http.paths.exists(p, p.backend.service.name
+          == 'shop-api' && p.backend.service.port.number == 8080))
+        message: api.example.com must go to the API Service
+  - type: question
+    question:
+      questionType: single-line
+      header: Which TLS extension lets a single IP and port serve different certificates depending on the host name asked
+        for? (acronym)
+      hint: Server Name ...
+      expectedAnswer: SNI
+      cel: answer.trim().lowerAscii() in ["sni", "server name indication"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Each `tls` entry binds a list of hosts to one Secret. A wildcard certificate (`*.example.com`) in one entry can serve many hosts. Hosts that are in `rules` but not covered by any `tls`
+        entry fall back to the default certificate and trigger certificate-name errors in clients.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/concepts/services-networking/ingress/#tls
+        text: 'Ingress: TLS'
+- title: Rotate the Certificate
+  category: Certificates
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      A renewed certificate and key replaced `tls.crt` and `tls.key` in the working directory. The existing Secret `shop-tls` in `shop` has to be updated in place; the Ingress stays untouched.
+  - type: question
+    question:
+      questionType: command
+      header: 'Update the Secret without deleting it: render a Secret `shop-tls` from the files as YAML on the client (no
+        creation yet) and pipe it into apply. Namespace `shop`.'
+      hint: A client-side dry run prints the object; the apply command reads standard input.
+      correctAnswerInfo: The ingress controller watches the Secret and reloads the certificate without a restart.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: create
+        - name: secret
+        - name: tls
+        positionals:
+        - index: 0
+          value: shop-tls
+        flags:
+        - name: cert
+          required: true
+          value: tls.crt
+        - name: key
+          required: true
+          value: tls.key
+        - name: namespace
+          short: n
+          required: true
+          value: shop
+        - name: dry-run
+          required: true
+          value: client
+        - name: output
+          short: o
+          required: true
+          value: yaml
+      modifiers:
+      - type: Pipe
+        pipe:
+          command:
+            executable: kubectl
+            subcommands:
+            - name: apply
+            flags:
+            - name: filename
+              short: f
+              required: true
+              value: '-'
+  - type: question
+    question:
+      questionType: command
+      header: 'Check the new expiry date that clients see: show the certificate dates in the Secret by decoding `tls.crt`.
+        Use jsonpath, base64 decode and openssl x509 for the dates.'
+      hint: The same three-stage pipeline as the verification before, with a different openssl output option.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: get
+        - name: secret
+          aliases:
+          - secrets
+        positionals:
+        - index: 0
+          value: shop-tls
+        flags:
+        - name: namespace
+          short: n
+          required: true
+          value: shop
+        - name: output
+          short: o
+          required: true
+          regex: ^jsonpath.*tls\\\.crt
+      modifiers:
+      - type: Pipe
+        pipe:
+          command:
+            executable: base64
+            strictness: permissive
+            flags:
+            - name: decode
+              short: d
+              required: true
+              boolean: true
+      - type: Pipe
+        pipe:
+          command:
+            executable: openssl
+            subcommands:
+            - name: x509
+            flags:
+            - name: noout
+              singleDash: true
+              required: true
+              boolean: true
+            - name: enddate
+              singleDash: true
+              required: true
+              boolean: true
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Automate renewal (cert-manager with an issuer, or the CSR API for a private CA) and alert on expiry: an expired certificate takes the whole site down just as surely as an outage.
+        Watch for Secrets of type `kubernetes.io/tls` with `notAfter` in the next 30 days.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/concepts/configuration/secret/#tls-secrets
+        text: TLS Secrets
+- title: 'Capstone: HTTPS for a New Service'
+  category: Capstone
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      A new application `docs` runs in namespace `docs` (Deployment and Service `docs-web` on port `8080`). Publish it at `https://docs.example.com` through the
+      `nginx` IngressClass with a self-signed certificate valid for 30 days.
+  - type: question
+    question:
+      questionType: command
+      header: Create the key `docs.key` and self-signed certificate `docs.crt` for CN `docs.example.com`, valid 30 days, 2048-bit
+        RSA, unencrypted key.
+      hint: The same command as in the first scenario.
+      command:
+        executable: openssl
+        strictness: permissive
+        subcommands:
+        - name: req
+        flags:
+        - name: x509
+          singleDash: true
+          required: true
+          boolean: true
+        - name: nodes
+          singleDash: true
+          required: true
+          boolean: true
+        - name: days
+          singleDash: true
+          required: true
+          value: '30'
+        - name: newkey
+          singleDash: true
+          required: true
+          value: rsa:2048
+        - name: keyout
+          singleDash: true
+          required: true
+          value: docs.key
+        - name: out
+          singleDash: true
+          required: true
+          value: docs.crt
+        - name: subj
+          singleDash: true
+          required: true
+          value: /CN=docs.example.com
+        - name: addext
+          singleDash: true
+  - type: question
+    question:
+      questionType: command
+      header: Create the TLS Secret `docs-tls` in namespace `docs`.
+      hint: The TLS subcommand.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: create
+        - name: secret
+        - name: tls
+        positionals:
+        - index: 0
+          value: docs-tls
+        flags:
+        - name: cert
+          required: true
+          value: docs.crt
+        - name: key
+          required: true
+          value: docs.key
+        - name: namespace
+          short: n
+          required: true
+          value: docs
+  - type: question
+    question:
+      questionType: manifest
+      header: Write the Ingress `docs` in namespace `docs`.
+      hint: The same structure as the first Ingress.
+      manifestDefinitionId: ingress-v1
+      initialContent: |
+        apiVersion: networking.k8s.io/v1
+        kind: Ingress
+        metadata:
+          name: docs
+          namespace: docs
+        spec:
+      expectedFields:
+      - path: metadata.name
+        expectedValue: docs
+      - path: spec.ingressClassName
+        expectedValue: nginx
+      - path: spec.tls.0.secretName
+        expectedValue: docs-tls
+      - path: spec.tls.0.hosts.0
+        expectedValue: docs.example.com
+      - path: spec.rules.0.host
+        expectedValue: docs.example.com
+      cel:
+      - name: Backend
+        expression: manifest.spec.rules[0].http.paths.exists(p, p.backend.service.name == 'docs-web' && p.backend.service.port.number
+          == 8080 && p.path == '/' && p.pathType == 'Prefix')
+        message: The root path must go to docs-web on 8080
+  - type: question
+    question:
+      questionType: command
+      header: Test through node `10.0.0.21` (HTTPS NodePort 30443), trusting your certificate and mapping the host with a
+        resolve option.
+      hint: Resolve plus cacert.
+      command:
+        executable: curl
+        strictness: permissive
+        positionals:
+        - index: 0
+          value: https://docs.example.com:30443/
+        flags:
+        - name: resolve
+          required: true
+          value: docs.example.com:30443:10.0.0.21
+        - name: cacert
+          required: true
+          value: docs.crt
+  explanation:
+    elements:
+    - type: context
+      text: |
+        The whole TLS-Ingress workflow: **certificate → Secret → Ingress → test**. In the exam, the only things that change are names, namespaces and the controller; failures are almost always a
+        wrong namespace for the Secret, a wrong Secret type or a host mismatch.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/concepts/services-networking/ingress/#tls
+        text: 'Ingress: TLS'
+      - url: https://kubernetes.github.io/ingress-nginx/user-guide/tls/
+        text: 'ingress-nginx: TLS/HTTPS'

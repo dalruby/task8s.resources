@@ -1,0 +1,816 @@
+apiVersion: v1alpha1
+name: 'CKS (Hands-On): CIS Benchmarks with kube-bench'
+k8sVersion: 1.34.0
+timing:
+  enabled: true
+  limitSeconds: 7200
+introduction:
+  elements:
+  - type: context
+    text: |
+      Hands-on practice with **CIS Benchmark auditing using kube-bench** for the CKS *Cluster Setup* domain: run kube-bench against the control plane and
+      worker nodes, read the report and its remediations, and fix API server, controller manager, scheduler, etcd, kubelet and file-permission findings on a kubeadm cluster.
+      There is no multiple choice.
+
+      **Lab environment**
+
+      - You are `root` on the control-plane node `cp1` of a kubeadm cluster (Kubernetes 1.34, containerd); one scenario happens on `worker-1`. `kube-bench` is installed
+        with the benchmark matching the cluster version. Static Pod manifests are in `/etc/kubernetes/manifests`.
+      - Check ids and wording follow the CIS Kubernetes Benchmark; the exact numbering depends on the benchmark version, and the scenarios state the ids to use.
+
+      **How answers are checked**
+
+      - *Commands* are checked structurally (flag order is free); *configuration fragments* are checked for the required settings; short answers accept common spellings.
+
+      Exam content is under NDA: this is practice for the common patterns, not a prediction.
+  - type: references
+    links:
+    - url: https://github.com/aquasecurity/kube-bench
+      text: kube-bench
+    - url: https://aquasecurity.github.io/kube-bench/latest/running/
+      text: 'kube-bench: Running'
+    - url: https://www.cisecurity.org/benchmark/kubernetes
+      text: CIS Kubernetes Benchmark
+    - url: https://training.linuxfoundation.org/certification/certified-kubernetes-security-specialist-cks/
+      text: CKS Domains and Competencies
+manifestDefinitions: []
+scenarios:
+- title: Run kube-bench on the Control Plane
+  category: Running kube-bench
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The company must show that its kubeadm cluster follows the **CIS Kubernetes Benchmark**. `kube-bench` automates the benchmark's
+      checks by inspecting the processes, their arguments, configuration files and file permissions of the node it runs on. You are on the control-plane node.
+      Its checks are divided into *targets* by component.
+  - type: question
+    question:
+      questionType: command
+      header: Run kube-bench for the control-plane checks (the target for the master node components).
+      hint: 'run is the subcommand; a flag selects which group of checks. Check the node role in the CIS benchmark: "master"
+        for the control plane.'
+      correctAnswerInfo: Without `--targets`, kube-bench autodetects the node role and runs the matching targets. In current
+        releases `master` and `controlplane` (API server, controller manager, scheduler configuration) are separate targets;
+        `master` has the API server, controller manager, scheduler and the file permission checks.
+      command:
+        executable: kube-bench
+        strictness: permissive
+        subcommands:
+        - name: run
+        flags:
+        - name: targets
+          required: true
+          value: master
+  - type: question
+    question:
+      questionType: single-line
+      header: Name the target that checks the kubelet and the worker-node configuration (kubelet config file, its permissions
+        and arguments).
+      hint: Kubelets run on every one of these.
+      expectedAnswer: node
+      cel: answer.trim().lowerAscii() in ["node"]
+  - type: question
+    question:
+      questionType: single-line
+      header: Name the target that checks the etcd database settings.
+      hint: The component name.
+      expectedAnswer: etcd
+      cel: answer.trim().lowerAscii() in ["etcd"]
+  - type: question
+    question:
+      questionType: single-line
+      header: Which target contains the policy checks such as RBAC use, Pod Security, NetworkPolicy and Secrets management
+        (section 5 of the benchmark)?
+      hint: These are about policies configured in the cluster, not about processes.
+      expectedAnswer: policies
+      cel: answer.trim().lowerAscii() in ["policies"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        | Target | Benchmark section | Examples |
+        |---|---|---|
+        | `master` | 1 (control plane components) | API server flags, file permissions of manifests and PKI |
+        | `etcd` | 2 | TLS and client authentication of etcd |
+        | `controlplane` | 3 | authentication and audit logging |
+        | `node` | 4 | kubelet flags and `config.yaml` |
+        | `policies` | 5 | RBAC, Pod Security, network policies, secrets |
+    - type: references
+      links:
+      - url: https://aquasecurity.github.io/kube-bench/latest/running/
+        text: 'kube-bench: Running'
+      - url: https://www.cisecurity.org/benchmark/kubernetes
+        text: CIS Kubernetes Benchmark
+- title: Read the Report
+  category: Running kube-bench
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      This is an extract of the report:
+  - type: manifest
+    header: kube-bench output (shortened)
+    content: |
+      [INFO] 1 Control Plane Security Configuration
+      [INFO] 1.1 Control Plane Node Configuration Files
+      [PASS] 1.1.1 Ensure that the API server pod specification file permissions are set to 600 or more restrictive (Automated)
+      [FAIL] 1.1.12 Ensure that the etcd data directory ownership is set to etcd:etcd (Automated)
+      [INFO] 1.2 API Server
+      [FAIL] 1.2.1 Ensure that the --anonymous-auth argument is set to false (Manual)
+      [PASS] 1.2.2 Ensure that the --token-auth-file parameter is not set (Automated)
+      [FAIL] 1.2.15 Ensure that the --profiling argument is set to false (Automated)
+      [FAIL] 1.2.17 Ensure that the --audit-log-path argument is set (Automated)
+      [WARN] 1.2.29 Ensure that the API Server only makes use of Strong Cryptographic Ciphers (Manual)
+
+      == Remediations master ==
+      1.1.12 On the etcd server node, get the etcd data directory, passed as an argument --data-dir,
+      from the command 'ps -ef | grep etcd'.
+      Run the below command (based on the etcd data directory found above):
+      chown etcd:etcd /var/lib/etcd
+
+      1.2.15 Edit the API server pod specification file /etc/kubernetes/manifests/kube-apiserver.yaml
+      on the control plane node and set the below parameter.
+      --profiling=false
+
+      == Summary master ==
+      41 checks PASS
+      5 checks FAIL
+      9 checks WARN
+      0 checks INFO
+  - type: question
+    question:
+      questionType: single-line
+      header: Which check id reports that anonymous requests to the API server are allowed?
+      hint: The text mentions --anonymous-auth.
+      expectedAnswer: 1.2.1
+      cel: answer.trim().lowerAscii() in ["1.2.1"]
+  - type: question
+    question:
+      questionType: single-line
+      header: What does a [WARN] result mean? (one short sentence)
+      hint: Compare with the (Automated) and (Manual) tags.
+      correctAnswerInfo: WARN means kube-bench could not decide automatically; a person has to verify the item (or it could
+        not be evaluated for your setup).
+      expectedAnswer: manual check
+      cel: answer.trim().lowerAscii() in ["manual check", "needs manual verification", "manual", "must be checked manually",
+        "manual verification", "cannot be checked automatically", "check manually", "not automated", "needs to be checked
+        manually", "manual review"]
+  - type: question
+    question:
+      questionType: single-line
+      header: In which file must the missing API server parameters be added on a kubeadm control plane node?
+      hint: The report names it in the remediation text.
+      expectedAnswer: /etc/kubernetes/manifests/kube-apiserver.yaml
+      cel: answer.trim() in ["/etc/kubernetes/manifests/kube-apiserver.yaml"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Only `[FAIL]` and `[WARN]` need work. The *Remediations* section tells you exactly what to do for each, which is often enough in the exam. Some failures
+        are not appropriate for every cluster (a kubeadm default may intentionally differ); the exam asks you to fix specific ids.
+    - type: references
+      links:
+      - url: https://github.com/aquasecurity/kube-bench
+        text: kube-bench
+      - url: https://www.cisecurity.org/benchmark/kubernetes
+        text: CIS Kubernetes Benchmark
+- title: Run a Single Check and Get Machine Output
+  category: Running kube-bench
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The full run takes a minute and prints more than 100 lines. You are fixing check 1.2.1 and want to re-run exactly that check, many times.
+  - type: question
+    question:
+      questionType: command
+      header: Run only the master check `1.2.1`.
+      hint: There is a flag that takes a check id (or a comma-separated list).
+      command:
+        executable: kube-bench
+        strictness: permissive
+        subcommands:
+        - name: run
+        flags:
+        - name: targets
+          required: true
+          value: master
+        - name: check
+          required: true
+          value: 1.2.1
+  - type: question
+    question:
+      questionType: command
+      header: 'Show only the failed lines of the master targets: run the master checks and pipe the output through grep for
+        the text FAIL.'
+      hint: A plain filter after a pipe.
+      command:
+        executable: kube-bench
+        strictness: permissive
+        subcommands:
+        - name: run
+        flags:
+        - name: targets
+          required: true
+          value: master
+      modifiers:
+      - type: Pipe
+        pipe:
+          command:
+            executable: grep
+            positionals:
+            - index: 0
+              value: FAIL
+  - type: question
+    question:
+      questionType: command
+      header: Another team wants the results in JSON. Run the master checks with JSON output.
+      hint: A boolean flag selects the output format.
+      command:
+        executable: kube-bench
+        strictness: permissive
+        subcommands:
+        - name: run
+        flags:
+        - name: targets
+          required: true
+          value: master
+        - name: json
+          required: true
+          boolean: true
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Useful run flags: `--targets`, `--check`, `--group` (e.g. `1.2`), `--skip`, `--json`, `--junit`, `--outputfile`, `--benchmark` (e.g. `cis-1.9`),
+        `--version` (Kubernetes version). In an exam the nodes and benchmark are pre-selected; you mostly use `--targets` and `--check`.
+    - type: references
+      links:
+      - url: https://aquasecurity.github.io/kube-bench/latest/running/
+        text: 'kube-bench: Running'
+- title: API Server Findings
+  category: Fixing Control Plane Findings
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Three API server checks fail: `1.2.1` (--anonymous-auth=false), `1.2.15` (--profiling=false) and `1.2.17` (--audit-log-path set). The
+      audit log path should be `/var/log/kubernetes/audit/audit.log`. (Rotation settings and the audit policy are covered in the audit logging set; here
+      only the failing checks matter.)
+  - type: question
+    question:
+      questionType: multiline
+      header: Write the lines to add to the `command:` list of the kube-apiserver container in the static Pod manifest (one
+        list item per line, in the YAML list style).
+      hint: Each remediation names a flag and a value. Arguments are written as `- --flag=value`.
+      correctAnswerInfo: 'A flag already present must be edited, not duplicated: a duplicated flag is parsed by the last occurrence,
+        but it makes the manifest confusing. Remember the volume and mount for the audit log directory, or the API server
+        will not start.'
+      expectedAnswer: |
+        - --anonymous-auth=false
+        - --profiling=false
+        - --audit-log-path=/var/log/kubernetes/audit/audit.log
+      cel: answer.contains('--anonymous-auth=false') && answer.contains('--profiling=false') && answer.contains('--audit-log-path=/var/log/kubernetes/audit/audit.log')
+  - type: question
+    question:
+      questionType: single-line
+      header: After you save the static Pod manifest, how do you apply the change?
+      hint: Static Pods are watched by an agent on the node.
+      expectedAnswer: wait for the kubelet
+      cel: answer.trim().lowerAscii() in ["wait for the kubelet", "the kubelet restarts it", "kubelet", "kubelet restarts
+        the pod", "it restarts automatically", "automatic", "nothing", "wait", "automatically", "the kubelet recreates the
+        pod", "wait for kubelet", "it is restarted by the kubelet"]
+  - type: question
+    question:
+      questionType: command
+      header: 'Check that the running API server has the new flag: list the static Pod''s YAML and filter for anonymous. Show
+        the Pod `kube-apiserver-cp1` in `kube-system` as YAML and pipe to grep for `anonymous`.'
+      hint: The mirror Pod object reflects the manifest.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: get
+        - name: pod
+          aliases:
+          - pods
+          - po
+        positionals:
+        - index: 0
+          value: kube-apiserver-cp1
+        flags:
+        - name: namespace
+          short: n
+          required: true
+          value: kube-system
+        - name: output
+          short: o
+          required: true
+          value: yaml
+      modifiers:
+      - type: Pipe
+        pipe:
+          command:
+            executable: grep
+            positionals:
+            - index: 0
+              value: anonymous
+  - type: table
+    style: terminal
+    columns:
+    - OUTPUT
+    rows:
+    - - '    - --anonymous-auth=false'
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Common API server findings and fixes: `--anonymous-auth=false`, `--profiling=false`, `--authorization-mode=Node,RBAC` (no AlwaysAllow), `--enable-admission-plugins=...NodeRestriction`,
+        `--audit-log-path/maxage/maxbackup/maxsize`, `--service-account-lookup=true`, `--encryption-provider-config`, `--kubelet-certificate-authority`. A flag that is already
+        present must be modified, not added a second time.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/reference/command-line-tools-reference/kube-apiserver/
+        text: kube-apiserver reference
+      - url: https://github.com/aquasecurity/kube-bench
+        text: kube-bench
+- title: Controller Manager and Scheduler
+  category: Fixing Control Plane Findings
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Remaining master findings: kube-controller-manager `1.3.2` (profiling must be off), `1.3.3` (use a separate ServiceAccount credential per controller), `1.3.7` (bind
+      to the loopback address) and kube-scheduler `1.4.1` (profiling off), `1.4.2` (bind to the loopback address).
+  - type: question
+    question:
+      questionType: multiline
+      header: Write the flags for the kube-controller-manager manifest (one `- --flag=value` per line).
+      hint: Three flags. One of them gives every controller its own ServiceAccount.
+      expectedAnswer: |
+        - --profiling=false
+        - --use-service-account-credentials=true
+        - --bind-address=127.0.0.1
+      cel: answer.contains('--profiling=false') && answer.contains('--use-service-account-credentials=true') && answer.contains('--bind-address=127.0.0.1')
+  - type: question
+    question:
+      questionType: multiline
+      header: Write the flags for the kube-scheduler manifest.
+      hint: The same two ideas as in the controller manager.
+      expectedAnswer: |
+        - --profiling=false
+        - --bind-address=127.0.0.1
+      cel: answer.contains('--profiling=false') && answer.contains('--bind-address=127.0.0.1')
+  - type: question
+    question:
+      questionType: single-line
+      header: In which directory are the static Pod manifests of these components on a kubeadm control plane?
+      hint: The kubelet's staticPodPath.
+      expectedAnswer: /etc/kubernetes/manifests
+      cel: answer.trim() in ["/etc/kubernetes/manifests", "/etc/kubernetes/manifests/"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Profiling endpoints expose runtime details (`/debug/pprof`) and add a denial-of-service surface; binding to 127.0.0.1 keeps health and metrics
+        endpoints off the network. Both are low-risk changes that kube-bench expects.
+    - type: references
+      links:
+      - url: https://github.com/aquasecurity/kube-bench
+        text: kube-bench
+- title: File Permissions and Ownership
+  category: Fixing Control Plane Findings
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Remediation text for the failing file checks:
+
+      - `1.1.1`: the API server manifest must be mode `600` or more restrictive and owned by `root:root` (1.1.2).
+      - `1.1.12`: the etcd data directory `/var/lib/etcd` must be owned by `etcd:etcd`.
+      - `1.1.11`: the etcd data directory must be mode `700` or more restrictive.
+  - type: question
+    question:
+      questionType: command
+      header: Set the mode of `/etc/kubernetes/manifests/kube-apiserver.yaml` to 600.
+      hint: Numeric mode first, then the file.
+      command:
+        executable: chmod
+        positionals:
+        - index: 0
+          value: '600'
+        - index: 1
+          value: /etc/kubernetes/manifests/kube-apiserver.yaml
+  - type: question
+    question:
+      questionType: command
+      header: Set the owner and group of `/etc/kubernetes/manifests/kube-apiserver.yaml` to root.
+      hint: user:group notation.
+      command:
+        executable: chown
+        positionals:
+        - index: 0
+          value: root:root
+        - index: 1
+          value: /etc/kubernetes/manifests/kube-apiserver.yaml
+  - type: question
+    question:
+      questionType: command
+      header: Make the etcd data directory `/var/lib/etcd` owned by user and group `etcd`.
+      hint: Same tool as the previous one.
+      command:
+        executable: chown
+        positionals:
+        - index: 0
+          value: etcd:etcd
+        - index: 1
+          value: /var/lib/etcd
+  - type: question
+    question:
+      questionType: command
+      header: Set the mode of `/var/lib/etcd` to 700.
+      hint: Same tool as the mode change for the manifest.
+      command:
+        executable: chmod
+        positionals:
+        - index: 0
+          value: '700'
+        - index: 1
+          value: /var/lib/etcd
+  - type: question
+    question:
+      questionType: command
+      header: 'Check the mode of the file with stat: print only the octal permissions of `/etc/kubernetes/manifests/kube-apiserver.yaml`.'
+      hint: stat has a format flag; the format letter for access rights in octal is a lowercase letter.
+      correctAnswerInfo: '`stat -c %a file` prints `600`; `%U:%G` prints owner and group.'
+      command:
+        executable: stat
+        positionals:
+        - index: 0
+          value: /etc/kubernetes/manifests/kube-apiserver.yaml
+        flags:
+        - name: format
+          short: c
+          required: true
+          value: '%a'
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Typical file targets: manifests in `/etc/kubernetes/manifests` (600, root), the admin kubeconfig (600), PKI certs (644 or tighter) and keys (600) in
+        `/etc/kubernetes/pki`, kubelet `config.yaml` (600), etcd data directory (700, `etcd:etcd`). Do not blindly `chmod -R`: some files must stay readable by other users (the kubelet, other Pods via hostPath).
+    - type: references
+      links:
+      - url: https://github.com/aquasecurity/kube-bench
+        text: kube-bench
+      - url: https://www.cisecurity.org/benchmark/kubernetes
+        text: CIS Kubernetes Benchmark
+- title: etcd Findings
+  category: Fixing Control Plane Findings
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The `etcd` target reports `2.2` (client certificate authentication) and `2.3` (no self-signed auto TLS for client connections) as FAIL. The etcd static Pod
+      manifest is `/etc/kubernetes/manifests/etcd.yaml`.
+  - type: question
+    question:
+      questionType: multiline
+      header: Write the two flags that fix those findings (one `- --flag=value` per line).
+      hint: Authentication of clients with certificates must be on; automatically generated self-signed certificates off.
+      correctAnswerInfo: The peer equivalents (between etcd members) are `--peer-client-cert-auth=true` and `--peer-auto-tls=false`
+        (checks 2.5 and 2.6).
+      expectedAnswer: |
+        - --client-cert-auth=true
+        - --auto-tls=false
+      cel: answer.contains('--client-cert-auth=true') && answer.contains('--auto-tls=false')
+  - type: question
+    question:
+      questionType: single-line
+      header: Which flag sets the CA file that etcd uses to verify client certificates? (long flag name with the two leading
+        dashes)
+      hint: Trusted, CA, file.
+      expectedAnswer: --trusted-ca-file
+      cel: answer.trim().lowerAscii() in ["--trusted-ca-file", "trusted-ca-file"]
+  - type: question
+    question:
+      questionType: single-line
+      header: Which other component is the main client of etcd and is configured with `--etcd-cafile`, `--etcd-certfile` and
+        `--etcd-keyfile`?
+      hint: Only one component should talk to etcd.
+      expectedAnswer: kube-apiserver
+      cel: answer.trim().lowerAscii() in ["kube-apiserver", "apiserver", "api server", "the api server", "kube apiserver"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        etcd stores all cluster state including Secrets, so its protection is client-certificate authentication, a dedicated CA (kubeadm uses `/etc/kubernetes/pki/etcd/ca.crt`), and a firewall that
+        allows only the API server to reach port 2379.
+    - type: references
+      links:
+      - url: https://etcd.io/docs/latest/op-guide/security/
+        text: 'etcd: Security model'
+      - url: https://github.com/aquasecurity/kube-bench
+        text: kube-bench
+- title: Kubelet Findings on the Worker
+  category: Fixing Node Findings
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      You are on `worker-1` and run the node checks:
+  - type: question
+    question:
+      questionType: command
+      header: Run the kube-bench checks for the node target.
+      hint: Target name for kubelet checks.
+      command:
+        executable: kube-bench
+        strictness: permissive
+        subcommands:
+        - name: run
+        flags:
+        - name: targets
+          required: true
+          value: node
+  - type: manifest
+    header: Output (shortened)
+    content: |
+      [FAIL] 4.2.1 Ensure that the --anonymous-auth argument is set to false (Automated)
+      [FAIL] 4.2.2 Ensure that the --authorization-mode argument is not set to AlwaysAllow (Automated)
+      [FAIL] 4.2.4 Verify that the --read-only-port argument is set to 0 (Manual)
+      [FAIL] 4.2.12 Verify that the RotateKubeletServerCertificate argument is set to true (Manual)
+
+      == Remediations node ==
+      4.2.1 If using a Kubelet config file, edit the file to set `authentication: anonymous: enabled` to false.
+            If using executable arguments, edit the kubelet service file /lib/systemd/system/kubelet.service.d/10-kubeadm.conf ...
+  - type: question
+    question:
+      questionType: single-line
+      header: Where is the kubelet configuration file on a kubeadm node?
+      hint: Under the kubelet state directory.
+      expectedAnswer: /var/lib/kubelet/config.yaml
+      cel: answer.trim() in ["/var/lib/kubelet/config.yaml"]
+  - type: question
+    question:
+      questionType: multiline
+      header: 'Write the KubeletConfiguration fragments that fix 4.2.1, 4.2.2 and 4.2.4: anonymous authentication off, authorization
+        mode Webhook, read-only port disabled (add only the needed fields, YAML).'
+      hint: authentication.anonymous.enabled, authorization.mode and readOnlyPort are top-level fields of the file.
+      correctAnswerInfo: 'kubeadm clusters already set anonymous false and Webhook by default in recent versions; the exercise
+        state is a mis-configured node. `readOnlyPort: 0` disables the unauthenticated 10255 port.'
+      expectedAnswer: |
+        authentication:
+          anonymous:
+            enabled: false
+        authorization:
+          mode: Webhook
+        readOnlyPort: 0
+      cel: 'answer.matches(''enabled: *false'') && answer.contains(''anonymous:'') && answer.matches(''mode: *Webhook'') &&
+        answer.matches(''readOnlyPort: *0'') && answer.contains(''authentication:'') && answer.contains(''authorization:'')'
+  - type: question
+    question:
+      questionType: command
+      header: Restart the kubelet to apply the configuration.
+      hint: A systemd service.
+      command:
+        executable: systemctl
+        subcommands:
+        - name: restart
+        positionals:
+        - index: 0
+          value: kubelet
+  - type: question
+    question:
+      questionType: command
+      header: Re-run only check 4.2.1 on the node.
+      hint: Same flags as before.
+      command:
+        executable: kube-bench
+        strictness: permissive
+        subcommands:
+        - name: run
+        flags:
+        - name: targets
+          required: true
+          value: node
+        - name: check
+          required: true
+          value: 4.2.1
+  explanation:
+    elements:
+    - type: context
+      text: |
+        The kubelet reads its config file at start, so after editing: `systemctl restart kubelet` (and `systemctl daemon-reload` only if you changed a unit
+        file). Verify with `systemctl status kubelet` and by re-running the check. The kubelet authentication details are the subject of the host and API hardening set.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/reference/config-api/kubelet-config.v1beta1/
+        text: Kubelet Configuration (v1beta1)
+      - url: https://kubernetes.io/docs/reference/command-line-tools-reference/kubelet-authentication-authorization/
+        text: Kubelet authentication / authorization
+- title: Run kube-bench as a Job
+  category: Running kube-bench
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      On managed or locked-down nodes you cannot install the binary. The project ships a Job manifest (`job.yaml`) that runs kube-bench in a Pod with the
+      host's process namespace and the host's configuration directories mounted. You applied it earlier as Job `kube-bench` in the `default` namespace.
+  - type: question
+    question:
+      questionType: single-line
+      header: 'Why does the Pod need `hostPID: true` for the control-plane checks? (answer in a few words)'
+      hint: kube-bench reads the command line of kube-apiserver, kubelet and etcd.
+      expectedAnswer: to see node processes
+      cel: answer.trim().lowerAscii() in ["to see node processes", "see host processes", "to inspect processes", "to read
+        process arguments", "process arguments", "see the node processes", "host processes", "to see the process arguments",
+        "to see api server arguments", "inspect host processes", "processes", "to see processes"]
+  - type: question
+    question:
+      questionType: command
+      header: Read the report from the Job `kube-bench`.
+      hint: kubectl logs accepts a Job as the target.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: logs
+        positionals:
+        - index: 0
+          value: job/kube-bench
+  - type: question
+    question:
+      questionType: single-line
+      header: A Job-based run reports a different node than the one you wanted. Which Pod field decides on which node the
+        check runs?
+      hint: Scheduling constraints.
+      expectedAnswer: nodeName
+      cel: answer.trim().lowerAscii() in ["nodename", "nodeselector", "node selector", "node name", "affinity", "nodename
+        or nodeselector"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        The Job approach needs privileged-looking settings (hostPID, hostPath mounts of `/etc/kubernetes`, `/var/lib/kubelet`, `/etc/systemd`). That is exactly why you
+        delete the Job after the audit. Remember that Pod Security `restricted` would refuse it.
+    - type: references
+      links:
+      - url: https://aquasecurity.github.io/kube-bench/latest/running/
+        text: 'kube-bench: Running'
+- title: 'The Manual Checks: Section 5'
+  category: Policies
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The `policies` target lists almost only `[WARN]`: the benchmark cannot judge your RBAC or network policy choices automatically.
+  - type: manifest
+    header: Extract
+    content: |
+      [WARN] 5.1.1 Ensure that the cluster-admin role is only used where required (Manual)
+      [WARN] 5.1.2 Minimize access to secrets (Manual)
+      [WARN] 5.1.6 Ensure that Service Account Tokens are only mounted where necessary (Manual)
+      [WARN] 5.2.2 Minimize the admission of privileged containers (Manual)
+      [WARN] 5.3.2 Ensure that all Namespaces have Network Policies defined (Manual)
+      [WARN] 5.4.1 Prefer using secrets as files over secrets as environment variables (Manual)
+  - type: question
+    question:
+      questionType: command
+      header: For 5.1.1, list the ClusterRoleBindings in wide format to find who is bound to `cluster-admin`.
+      hint: Wide output has a role column and the subjects.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: get
+        - name: clusterrolebindings
+          aliases:
+          - clusterrolebinding
+        flags:
+        - name: output
+          short: o
+          required: true
+          value: wide
+  - type: question
+    question:
+      questionType: command
+      header: For 5.3.2, list all NetworkPolicies of all namespaces to see which namespaces have none.
+      hint: One flag makes a namespaced query cluster-wide.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: get
+        - name: networkpolicies
+          aliases:
+          - networkpolicy
+          - netpol
+        flags:
+        - name: all-namespaces
+          short: A
+          required: true
+          boolean: true
+  - type: question
+    question:
+      questionType: single-line
+      header: Which scenario set topic covers 5.2.x (privileged containers, host namespaces, capabilities) by enforcing the
+        baseline or restricted standard on namespaces?
+      hint: Built into the API server since 1.25.
+      expectedAnswer: Pod Security Admission
+      cel: answer.trim().lowerAscii() in ["pod security admission", "psa", "pod security standards", "pod security", "pod
+        security admission (psa)"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Section 5 is where the benchmark meets the rest of the CKS curriculum: RBAC, ServiceAccounts, Secrets, Pod Security, NetworkPolicy, image policy. Passing the
+        automated sections 1-4 does not make a cluster secure; section 5 is where most real gaps are.
+    - type: references
+      links:
+      - url: https://www.cisecurity.org/benchmark/kubernetes
+        text: CIS Kubernetes Benchmark
+      - url: https://github.com/aquasecurity/kube-bench
+        text: kube-bench
+- title: 'Capstone: From Report to Green'
+  category: Capstone
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Run the master checks, fix what fails and verify. The previous run reported failures for `1.1.12` (etcd data dir ownership) and
+      `1.2.15` (API server profiling). Do it in order.
+  - type: question
+    question:
+      questionType: command
+      header: Run the master checks and show only the lines that contain FAIL.
+      hint: Run, pipe, filter.
+      command:
+        executable: kube-bench
+        strictness: permissive
+        subcommands:
+        - name: run
+        flags:
+        - name: targets
+          required: true
+          value: master
+      modifiers:
+      - type: Pipe
+        pipe:
+          command:
+            executable: grep
+            positionals:
+            - index: 0
+              value: FAIL
+  - type: table
+    style: terminal
+    columns:
+    - OUTPUT
+    rows:
+    - - '[FAIL] 1.1.12 Ensure that the etcd data directory ownership is set to etcd:etcd (Automated)'
+    - - '[FAIL] 1.2.15 Ensure that the --profiling argument is set to false (Automated)'
+  - type: question
+    question:
+      questionType: command
+      header: 'Fix 1.1.12: change the owner of `/var/lib/etcd` to etcd:etcd.'
+      hint: See the remediation text in the report.
+      command:
+        executable: chown
+        positionals:
+        - index: 0
+          value: etcd:etcd
+        - index: 1
+          value: /var/lib/etcd
+  - type: question
+    question:
+      questionType: single-line
+      header: 'Fix 1.2.15: which exact argument do you add to the kube-apiserver manifest?'
+      hint: From the check title.
+      expectedAnswer: --profiling=false
+      cel: answer.trim() in ["--profiling=false", "- --profiling=false"]
+  - type: question
+    question:
+      questionType: command
+      header: 'Verify both fixes: run just those two checks again.'
+      hint: The check flag accepts a comma-separated list.
+      command:
+        executable: kube-bench
+        strictness: permissive
+        subcommands:
+        - name: run
+        flags:
+        - name: targets
+          required: true
+          value: master
+        - name: check
+          required: true
+          value: 1.1.12,1.2.15
+  explanation:
+    elements:
+    - type: context
+      text: |
+        The cycle is always **run → read → fix → re-run**. In the exam the report is a means: find the check ids you are asked to fix, apply the remediation, and make sure the
+        component came back healthy (API server up, kubelet Ready) before you move on.
+    - type: references
+      links:
+      - url: https://github.com/aquasecurity/kube-bench
+        text: kube-bench
+      - url: https://www.cisecurity.org/benchmark/kubernetes
+        text: CIS Kubernetes Benchmark

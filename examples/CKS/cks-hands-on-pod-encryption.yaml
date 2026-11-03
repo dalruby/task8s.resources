@@ -1,0 +1,1180 @@
+apiVersion: v1alpha1
+name: 'CKS (Hands-On): Pod-to-Pod Encryption (Cilium and Istio)'
+k8sVersion: 1.34.0
+timing:
+  enabled: true
+  limitSeconds: 7200
+introduction:
+  elements:
+  - type: context
+    text: |
+      Hands-on practice with **Pod-to-Pod encryption** for the CKS *Minimize Microservice Vulnerabilities* domain: enable and verify Cilium
+      transparent encryption (WireGuard, IPsec), require Cilium mutual authentication in a policy, join namespaces to an Istio mesh and require mTLS
+      with `PeerAuthentication`, test enforcement and authorize by workload identity. There is no multiple choice.
+
+      **Lab environment**
+
+      - You are `root` on the control-plane node of a kubeadm cluster (Kubernetes 1.34, containerd). `kubectl` and `helm` use the admin credentials. Cilium is the CNI
+        (Helm release `cilium` in `kube-system`); Istio is installed with `istiod` in `istio-system`.
+      - Namespaces `shop`, `payments` and `legacy` exist; each scenario states what runs in them.
+
+      **How answers are checked**
+
+      - *Manifests* for Istio and Cilium custom resources are checked for their shape and for what they *mean* (mode, selector, principals). *Commands* are
+        checked structurally (flag order is free, `--set` values may come in any order); short answers accept common spellings.
+
+      Exam content is under NDA: this is practice for the common patterns, not a prediction.
+  - type: references
+    links:
+    - url: https://docs.cilium.io/en/stable/security/network/encryption-wireguard/
+      text: 'Cilium: WireGuard Transparent Encryption'
+    - url: https://docs.cilium.io/en/stable/network/servicemesh/mutual-authentication/mutual-authentication/
+      text: 'Cilium: Mutual Authentication'
+    - url: https://istio.io/latest/docs/reference/config/security/peer_authentication/
+      text: 'Istio: PeerAuthentication'
+    - url: https://istio.io/latest/docs/concepts/security/#mutual-tls-authentication
+      text: 'Istio: Mutual TLS authentication'
+    - url: https://training.linuxfoundation.org/certification/certified-kubernetes-security-specialist-cks/
+      text: CKS Domains and Competencies
+manifestDefinitions:
+- id: peerauth-v1
+  kind: PeerAuthentication
+  apiVersion: security.istio.io/v1
+  schema:
+    type: object
+    required:
+    - apiVersion
+    - kind
+    - metadata
+    properties:
+      apiVersion:
+        enum:
+        - security.istio.io/v1
+      kind:
+        enum:
+        - PeerAuthentication
+      metadata:
+        type: object
+      spec:
+        type: object
+- id: authzpolicy-v1
+  kind: AuthorizationPolicy
+  apiVersion: security.istio.io/v1
+  schema:
+    type: object
+    required:
+    - apiVersion
+    - kind
+    - metadata
+    properties:
+      apiVersion:
+        enum:
+        - security.istio.io/v1
+      kind:
+        enum:
+        - AuthorizationPolicy
+      metadata:
+        type: object
+      spec:
+        type: object
+- id: cnp-v2
+  kind: CiliumNetworkPolicy
+  apiVersion: cilium.io/v2
+  schema:
+    type: object
+    required:
+    - apiVersion
+    - kind
+    - metadata
+    - spec
+    additionalProperties: false
+    properties:
+      apiVersion:
+        type: string
+      kind:
+        type: string
+      metadata:
+        type: object
+      spec:
+        type: object
+        additionalProperties: false
+        properties:
+          description:
+            type: string
+          endpointSelector:
+            type: object
+            additionalProperties: false
+            properties:
+              matchLabels:
+                type: object
+                additionalProperties:
+                  type: string
+              matchExpressions:
+                type: array
+                items:
+                  type: object
+          enableDefaultDeny:
+            type: object
+            additionalProperties: false
+            properties:
+              ingress:
+                type: boolean
+              egress:
+                type: boolean
+          ingress:
+            type: array
+            items:
+              type: object
+              additionalProperties: false
+              properties:
+                description:
+                  type: string
+                toPorts:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: false
+                    properties:
+                      ports:
+                        type: array
+                        items:
+                          type: object
+                          additionalProperties: false
+                          required:
+                          - port
+                          properties:
+                            port:
+                              type: string
+                            endPort:
+                              type: integer
+                            protocol:
+                              type: string
+                              enum:
+                              - TCP
+                              - UDP
+                              - SCTP
+                              - ANY
+                      rules:
+                        type: object
+                fromEndpoints:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: false
+                    properties:
+                      matchLabels:
+                        type: object
+                        additionalProperties:
+                          type: string
+                      matchExpressions:
+                        type: array
+                        items:
+                          type: object
+                fromEntities:
+                  type: array
+                  items:
+                    type: string
+                    enum:
+                    - all
+                    - world
+                    - cluster
+                    - host
+                    - remote-node
+                    - kube-apiserver
+                    - ingress
+                    - init
+                    - health
+                    - unmanaged
+                fromCIDR:
+                  type: array
+                  items:
+                    type: string
+                authentication: &id001
+                  type: object
+                  additionalProperties: false
+                  properties:
+                    mode:
+                      type: string
+                      enum:
+                      - disabled
+                      - required
+                      - test-always-fail
+          ingressDeny:
+            type: array
+            items:
+              type: object
+              additionalProperties: false
+              properties:
+                description:
+                  type: string
+                toPorts:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: false
+                    properties:
+                      ports:
+                        type: array
+                        items:
+                          type: object
+                          additionalProperties: false
+                          required:
+                          - port
+                          properties:
+                            port:
+                              type: string
+                            endPort:
+                              type: integer
+                            protocol:
+                              type: string
+                              enum:
+                              - TCP
+                              - UDP
+                              - SCTP
+                              - ANY
+                      rules:
+                        type: object
+                fromEndpoints:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: false
+                    properties:
+                      matchLabels:
+                        type: object
+                        additionalProperties:
+                          type: string
+                      matchExpressions:
+                        type: array
+                        items:
+                          type: object
+                fromEntities:
+                  type: array
+                  items:
+                    type: string
+                    enum:
+                    - all
+                    - world
+                    - cluster
+                    - host
+                    - remote-node
+                    - kube-apiserver
+                    - ingress
+                    - init
+                    - health
+                    - unmanaged
+                fromCIDR:
+                  type: array
+                  items:
+                    type: string
+          egress:
+            type: array
+            items:
+              type: object
+              additionalProperties: false
+              properties:
+                description:
+                  type: string
+                toPorts:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: false
+                    properties:
+                      ports:
+                        type: array
+                        items:
+                          type: object
+                          additionalProperties: false
+                          required:
+                          - port
+                          properties:
+                            port:
+                              type: string
+                            endPort:
+                              type: integer
+                            protocol:
+                              type: string
+                              enum:
+                              - TCP
+                              - UDP
+                              - SCTP
+                              - ANY
+                      rules:
+                        type: object
+                toEndpoints:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: false
+                    properties:
+                      matchLabels:
+                        type: object
+                        additionalProperties:
+                          type: string
+                      matchExpressions:
+                        type: array
+                        items:
+                          type: object
+                toEntities:
+                  type: array
+                  items:
+                    type: string
+                    enum:
+                    - all
+                    - world
+                    - cluster
+                    - host
+                    - remote-node
+                    - kube-apiserver
+                    - ingress
+                    - init
+                    - health
+                    - unmanaged
+                toCIDR:
+                  type: array
+                  items:
+                    type: string
+                toFQDNs:
+                  type: array
+                  items:
+                    type: object
+                authentication: *id001
+          egressDeny:
+            type: array
+            items:
+              type: object
+              additionalProperties: false
+              properties:
+                description:
+                  type: string
+                toPorts:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: false
+                    properties:
+                      ports:
+                        type: array
+                        items:
+                          type: object
+                          additionalProperties: false
+                          required:
+                          - port
+                          properties:
+                            port:
+                              type: string
+                            endPort:
+                              type: integer
+                            protocol:
+                              type: string
+                              enum:
+                              - TCP
+                              - UDP
+                              - SCTP
+                              - ANY
+                      rules:
+                        type: object
+                toEndpoints:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: false
+                    properties:
+                      matchLabels:
+                        type: object
+                        additionalProperties:
+                          type: string
+                      matchExpressions:
+                        type: array
+                        items:
+                          type: object
+                toEntities:
+                  type: array
+                  items:
+                    type: string
+                    enum:
+                    - all
+                    - world
+                    - cluster
+                    - host
+                    - remote-node
+                    - kube-apiserver
+                    - ingress
+                    - init
+                    - health
+                    - unmanaged
+                toCIDR:
+                  type: array
+                  items:
+                    type: string
+                toFQDNs:
+                  type: array
+                  items:
+                    type: object
+scenarios:
+- title: Pod Traffic Is Plain by Default
+  category: Why Encrypt
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Kubernetes does not encrypt Pod-to-Pod traffic. Packets between Pods on different nodes travel over the node network (directly or in an
+      overlay such as VXLAN) exactly as the application sent them. The `payments` Pods send card tokens to the `ledger` Pods over plain HTTP, and
+      the security review points out that a compromised node, a mirrored switch port or a malicious Pod with `NET_RAW` could read that traffic.
+  - type: question
+    question:
+      questionType: single-line
+      header: Which kind of protection must you add so that the traffic itself, not just access to it, is unreadable on the
+        wire? (one word)
+      hint: NetworkPolicies decide who may talk; they do not change what packets look like.
+      expectedAnswer: encryption
+      cel: answer.trim().lowerAscii() in ["encryption", "encrypt", "tls", "mtls", "encrypting", "transport encryption"]
+  - type: question
+    question:
+      questionType: single-line
+      header: Does Cilium transparent encryption require changes in the application or its Pods? (yes/no)
+      hint: '"Transparent" says it.'
+      expectedAnswer: 'no'
+      cel: answer.trim().lowerAscii() in ["no"]
+  - type: question
+    question:
+      questionType: single-line
+      header: A service mesh adds mTLS with a proxy container next to every Pod. Is that proxy container called a sidecar?
+        (yes/no)
+      hint: Think of the motorbike.
+      expectedAnswer: 'yes'
+      cel: answer.trim().lowerAscii() in ["yes"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        | Approach | Where | Identity | Needs app change |
+        |---|---|---|---|
+        | Cilium WireGuard / IPsec | node-to-node tunnels, below the Pod | nodes | no |
+        | Cilium mutual authentication | SPIFFE identity checked before allowing traffic | workloads | no |
+        | Istio mTLS (sidecar or ambient) | proxy-to-proxy TLS | workloads (SPIFFE certificates) | no |
+
+        Transparent node-level encryption protects against network sniffing; mesh mTLS additionally authenticates **which workload** is talking.
+    - type: references
+      links:
+      - url: https://docs.cilium.io/en/stable/security/network/encryption-wireguard/
+        text: 'Cilium: WireGuard Transparent Encryption'
+      - url: https://istio.io/latest/docs/concepts/security/#mutual-tls-authentication
+        text: 'Istio: Mutual TLS authentication'
+- title: Enable WireGuard Encryption in Cilium
+  category: Cilium Transparent Encryption
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The cluster uses Cilium as CNI, installed with Helm as release `cilium` in `kube-system` from the repository `cilium/cilium`. The kernels
+      of all nodes support WireGuard. Turn on transparent encryption of Pod traffic with the WireGuard type, keeping all previously set values.
+  - type: question
+    question:
+      questionType: command
+      header: Upgrade the Helm release `cilium` to enable encryption with WireGuard, reusing the existing values.
+      hint: Two values are set on the command line; the keys start with `encryption.`
+      correctAnswerInfo: Without `--reuse-values` Helm would reset every other custom value to its chart default and could
+        break the CNI.
+      command:
+        executable: helm
+        subcommands:
+        - name: upgrade
+        positionals:
+        - index: 0
+          value: cilium
+        - index: 1
+          value: cilium/cilium
+        flags:
+        - name: namespace
+          short: n
+          required: true
+          value: kube-system
+        - name: reuse-values
+          required: true
+          boolean: true
+        - name: set
+          required: true
+          repeatable: true
+      cel: flags.set.size() == 2 && 'encryption.enabled=true' in flags.set && 'encryption.type=wireguard' in flags.set
+  - type: question
+    question:
+      questionType: command
+      header: The agents read the setting at startup. Restart the Cilium DaemonSet in `kube-system`.
+      hint: There is a rollout subcommand that recreates the Pods of a workload.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: rollout
+        - name: restart
+        positionals:
+        - index: 0
+          value: daemonset/cilium
+        flags:
+        - name: namespace
+          short: n
+          required: true
+          value: kube-system
+      cel: positionals[0] in ['daemonset/cilium', 'ds/cilium', 'daemonsets/cilium', 'daemonset.apps/cilium']
+  - type: question
+    question:
+      questionType: single-line
+      header: Which UDP port must be open between the nodes for the WireGuard tunnels (default)?
+      hint: Specific to Cilium; documented on the WireGuard page.
+      expectedAnswer: '51871'
+      cel: answer.trim().lowerAscii() in ["51871"]
+  - type: question
+    question:
+      questionType: single-line
+      header: Which minimum Linux kernel (or module) does WireGuard require? (give the version number)
+      hint: It was merged into mainline in this release.
+      expectedAnswer: '5.6'
+      cel: answer.trim().lowerAscii() in ["5.6", "5.6+", "linux 5.6"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        WireGuard encrypts traffic **between nodes** (Pod-to-Pod on different nodes, including node-to-Pod traffic to remote Pods). Traffic
+        between Pods on the *same* node never leaves the host. Settings apply per cluster, not per namespace.
+    - type: references
+      links:
+      - url: https://docs.cilium.io/en/stable/security/network/encryption-wireguard/
+        text: 'Cilium: WireGuard Transparent Encryption'
+- title: Verify Cilium Encryption
+  category: Cilium Transparent Encryption
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      After the restart, prove that encryption is active. The Cilium agent has a status command; run it in one of the agent Pods in `kube-system`
+      (any Pod of the DaemonSet works, for example through the DaemonSet reference).
+  - type: question
+    question:
+      questionType: command
+      header: Show the status of the agent by running `cilium-dbg status` inside the Cilium DaemonSet in `kube-system`.
+      hint: kubectl exec accepts a DaemonSet reference as target; the agent command follows the double dash.
+      correctAnswerInfo: Older Cilium images ship the command as `cilium status`; newer ones as `cilium-dbg status`.
+      command:
+        executable: kubectl
+        strictness: permissive
+        subcommands:
+        - name: exec
+        flags:
+        - name: namespace
+          short: n
+          required: true
+          value: kube-system
+      cel: answer.contains('cilium-dbg status') || answer.contains('cilium status')
+  - type: manifest
+    header: Output (shortened)
+    content: |
+      KVStore:                 Disabled
+      Kubernetes:              Ok         1.34 (v1.34.0) [linux/amd64]
+      Cilium:                  Ok   1.17.2 (v1.17.2-...)
+      IPAM:                    IPv4: 4/254 allocated from 10.0.1.0/24
+      Encryption:              Wireguard       [NodeEncryption: Disabled, cilium_wg0 (Pubkey: 8tFT..., Port: 51871, Peers: 2)]
+      Cluster health:          3/3 reachable
+  - type: question
+    question:
+      questionType: single-line
+      header: Which line proves that encryption is active? Answer with the field name at the start of that line.
+      hint: Not about health or IPAM.
+      expectedAnswer: Encryption
+      cel: answer.trim().lowerAscii() in ["encryption"]
+  - type: question
+    question:
+      questionType: single-line
+      header: How many other nodes does this node have WireGuard tunnels to?
+      hint: Read the "Peers" value.
+      expectedAnswer: '2'
+      cel: answer.trim().lowerAscii() in ["2"]
+  - type: question
+    question:
+      questionType: command
+      header: You also want to see the configuration. Print the ConfigMap `cilium-config` of `kube-system` as YAML.
+      hint: Cilium keeps its agent settings in a ConfigMap; Helm values end up there.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: get
+        - name: configmap
+          aliases:
+          - configmaps
+          - cm
+        positionals:
+        - index: 0
+          value: cilium-config
+        flags:
+        - name: namespace
+          short: n
+          required: true
+          value: kube-system
+        - name: output
+          short: o
+          required: true
+          value: yaml
+  explanation:
+    elements:
+    - type: context
+      text: |
+        `NodeEncryption: Disabled` means that traffic originating from the nodes themselves (not Pods) is not encrypted by default. In the ConfigMap the
+        settings are `enable-wireguard: "true"` and, for IPsec, `enable-ipsec: "true"`. Always verify by output of the agent or by a packet capture
+        on the wire (`tcpdump -i <uplink> udp port 51871` shows only WireGuard UDP).
+    - type: references
+      links:
+      - url: https://docs.cilium.io/en/stable/security/network/encryption-wireguard/
+        text: 'Cilium: WireGuard Transparent Encryption'
+- title: WireGuard or IPsec?
+  category: Cilium Transparent Encryption
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      A second cluster runs an older kernel without WireGuard support and a compliance rule that asks for FIPS-validated cryptography built on the kernel's xfrm
+      framework. The same Cilium encryption feature supports this second type.
+  - type: question
+    question:
+      questionType: single-line
+      header: Which value of `encryption.type` selects that second type in the Helm values?
+      hint: The name is the protocol.
+      expectedAnswer: ipsec
+      cel: answer.trim().lowerAscii() in ["ipsec"]
+  - type: question
+    question:
+      questionType: single-line
+      header: IPsec keys are not generated by Cilium. In which Kubernetes object type (and namespace `kube-system`) must the
+        pre-shared key material be stored under the name `cilium-ipsec-keys`?
+      hint: Credentials.
+      correctAnswerInfo: The Secret has one key, `keys`, with the format `<spi>+ <aead algorithm> <hex key> <icv length>`;
+        for rotation a new SPI number is used.
+      expectedAnswer: Secret
+      cel: answer.trim().lowerAscii() in ["secret"]
+  - type: question
+    question:
+      questionType: command
+      header: Create the empty Secret `cilium-ipsec-keys` in `kube-system` with the literal `keys=3+ rfc4106(gcm(aes)) 0123456789abcdef0123456789abcdef01234567
+        128`.
+      hint: A generic Secret created from a literal.
+      correctAnswerInfo: In real use generate the hexadecimal key from `/dev/urandom`; a key that appears in a shell history
+        or an exam solution file is compromised.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: create
+        - name: secret
+        - name: generic
+        positionals:
+        - index: 0
+          value: cilium-ipsec-keys
+        flags:
+        - name: namespace
+          short: n
+          required: true
+          value: kube-system
+        - name: from-literal
+          required: true
+          value: keys=3+ rfc4106(gcm(aes)) 0123456789abcdef0123456789abcdef01234567 128
+  explanation:
+    elements:
+    - type: context
+      text: |
+        | | WireGuard | IPsec |
+        |---|---|---|
+        | kernel | 5.6+ (or module) | any with xfrm |
+        | key management | automatic (per-node keys, exchanged via CiliumNode objects) | manual Secret, rotation by SPI |
+        | performance | generally better | depends on hardware offload |
+        | compliance | not FIPS-validated | can be |
+    - type: references
+      links:
+      - url: https://docs.cilium.io/en/stable/security/network/encryption-ipsec/
+        text: 'Cilium: IPsec Transparent Encryption'
+      - url: https://docs.cilium.io/en/stable/security/network/encryption-wireguard/
+        text: 'Cilium: WireGuard Transparent Encryption'
+- title: Cilium Mutual Authentication
+  category: Cilium Mutual Authentication
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Encrypted tunnels protect the wire, but any Pod on a node may still *try* to reach `ledger`. With Cilium **mutual authentication**,
+      traffic that a policy marks as requiring authentication is allowed only after both workloads proved their identity with
+      SPIFFE certificates (issued by SPIRE). Transport keys are then bound to that handshake.
+  - type: question
+    question:
+      questionType: single-line
+      header: Which open standard defines workload identities as URIs carried in X.509 certificates (SVIDs) and is used by
+        Cilium and Istio?
+      hint: Secure Production Identity Framework For Everyone.
+      expectedAnswer: SPIFFE
+      cel: answer.trim().lowerAscii() in ["spiffe", "spiffe/spire", "spire"]
+  - type: question
+    question:
+      questionType: manifest
+      header: 'Write the CiliumNetworkPolicy `ledger-mutual` in namespace `payments`: it selects the Pods `app=ledger` and
+        allows ingress from `app=payments-api` Pods only if mutual authentication is **required**.'
+      hint: The rule that allows traffic gets an extra `authentication` block with a `mode`.
+      correctAnswerInfo: This only works when Cilium was installed with `authentication.mutual.spire.enabled=true` (and the
+        SPIRE server). The feature is beta in current releases.
+      manifestDefinitionId: cnp-v2
+      initialContent: |
+        apiVersion: cilium.io/v2
+        kind: CiliumNetworkPolicy
+        metadata:
+          name: ledger-mutual
+          namespace: payments
+        spec:
+      expectedFields:
+      - path: metadata.name
+        expectedValue: ledger-mutual
+      - path: spec.endpointSelector.matchLabels.app
+        expectedValue: ledger
+      cel:
+      - name: Peer selected
+        expression: manifest.spec.ingress.exists(r, r.fromEndpoints.exists(e, e.matchLabels.app == 'payments-api'))
+        message: Ingress must come from the payments API Pods
+      - name: Authentication required
+        expression: manifest.spec.ingress.exists(r, has(r.authentication) && r.authentication.mode == 'required')
+        message: The ingress rule must demand mutual authentication
+  - type: question
+    question:
+      questionType: single-line
+      header: Does a mutual-authentication policy replace the need to write ordinary allow rules? (yes/no)
+      hint: It adds a condition to a rule; it does not select peers by itself.
+      expectedAnswer: 'no'
+      cel: answer.trim().lowerAscii() in ["no"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Cilium mutual authentication = identity (SPIFFE/SPIRE) + policy-driven handshake; WireGuard/IPsec = confidentiality of the transport. You can,
+        and for strong isolation should, combine them with default-deny network policies.
+    - type: references
+      links:
+      - url: https://docs.cilium.io/en/stable/network/servicemesh/mutual-authentication/mutual-authentication/
+        text: 'Cilium: Mutual Authentication'
+- title: 'Istio: Put the Namespace in the Mesh'
+  category: Istio mTLS
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Istio is installed and its control plane (`istiod`) runs in `istio-system`. Workloads join the mesh when a sidecar proxy (Envoy) is injected into
+      their Pods. The namespace `shop` has Deployments running without sidecars.
+  - type: question
+    question:
+      questionType: command
+      header: Enable automatic sidecar injection for namespace `shop`.
+      hint: The injection webhook looks for a label on the namespace.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: label
+        - name: namespace
+          aliases:
+          - namespaces
+          - ns
+        positionals:
+        - index: 0
+          value: shop
+        - index: 1
+          value: istio-injection=enabled
+        flags:
+        - name: overwrite
+          boolean: true
+  - type: question
+    question:
+      questionType: command
+      header: Existing Pods are not changed by the label. Restart all Deployments in `shop` so that they are recreated with
+        sidecars.
+      hint: A rollout restart of the resource type, in the namespace.
+      command:
+        executable: kubectl
+        strictness: permissive
+        subcommands:
+        - name: rollout
+        - name: restart
+        - name: deployment
+          aliases:
+          - deployments
+          - deploy
+        flags:
+        - name: namespace
+          short: n
+          required: true
+          value: shop
+  - type: table
+    style: terminal
+    columns:
+    - NAME
+    - READY
+    - STATUS
+    - RESTARTS
+    - AGE
+    rows:
+    - - frontend-6c8d5b7f9d-4kq2z
+      - 2/2
+      - Running
+      - '0'
+      - 30s
+    - - payments-7d9f6c5b84-9vj8m
+      - 2/2
+      - Running
+      - '0'
+      - 28s
+  - type: question
+    question:
+      questionType: single-line
+      header: Why does READY now show 2/2 instead of 1/1?
+      hint: What did the webhook add to each Pod?
+      expectedAnswer: sidecar
+      cel: answer.trim().lowerAscii() in ["sidecar", "istio-proxy", "envoy", "the sidecar", "a sidecar container", "the istio
+        sidecar", "proxy", "sidecar proxy", "second container", "an extra container", "istio proxy", "sidecar container"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Injection happens at Pod **creation**. The default Istio injection label is `istio-injection=enabled`; revision-based installs use `istio.io/rev=<revision>`
+        instead. In *ambient mode* (no sidecars) the namespace gets `istio.io/dataplane-mode=ambient`.
+    - type: references
+      links:
+      - url: https://istio.io/latest/docs/setup/additional-setup/sidecar-injection/
+        text: 'Istio: Installing the Sidecar'
+- title: 'Istio: Require mTLS'
+  category: Istio mTLS
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      By default Istio uses mTLS between sidecars automatically when both sides have one, but still **accepts plaintext** from clients without a sidecar
+      (mode `PERMISSIVE`). The security team wants all traffic into the `shop` namespace to require mTLS. A `PeerAuthentication` with the name `default`
+      in a namespace applies to every workload in it.
+  - type: question
+    question:
+      questionType: manifest
+      header: Write the PeerAuthentication that requires mTLS for all workloads of the namespace `shop`.
+      hint: The mode lives under spec.mtls. One of PERMISSIVE, STRICT, DISABLE.
+      correctAnswerInfo: STRICT rejects any connection that is not mTLS. A workload without sidecar can no longer call these
+        services; plan the rollout (start with PERMISSIVE and monitor).
+      manifestDefinitionId: peerauth-v1
+      initialContent: |
+        apiVersion: security.istio.io/v1
+        kind: PeerAuthentication
+        metadata:
+          name: default
+          namespace: shop
+        spec:
+      expectedFields:
+      - path: metadata.name
+        expectedValue: default
+      - path: metadata.namespace
+        expectedValue: shop
+      - path: spec.mtls.mode
+        expectedValue: STRICT
+      cel:
+      - name: No selector
+        expression: '!has(manifest.spec.selector)'
+        message: A namespace-wide policy has no workload selector
+  - type: question
+    question:
+      questionType: single-line
+      header: A PeerAuthentication named `default` placed in which namespace applies to the whole mesh (root namespace)?
+      hint: Where the control plane lives.
+      expectedAnswer: istio-system
+      cel: answer.trim().lowerAscii() in ["istio-system"]
+  - type: question
+    question:
+      questionType: single-line
+      header: Which mode accepts both mTLS and plaintext?
+      hint: Not STRICT, not DISABLE.
+      expectedAnswer: PERMISSIVE
+      cel: answer.trim().lowerAscii() in ["permissive"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Policy precedence: **workload-specific** (with `selector`) overrides **namespace-wide**, which overrides **mesh-wide**. Port-level exceptions use
+        `portLevelMtls`. Mesh-wide STRICT with a namespace-level PERMISSIVE exception is a common migration pattern.
+    - type: references
+      links:
+      - url: https://istio.io/latest/docs/reference/config/security/peer_authentication/
+        text: 'Istio: PeerAuthentication'
+- title: 'Istio: A Workload Exception'
+  category: Istio mTLS
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Namespace `shop` is `STRICT`. The workload `legacy-importer` (label `app=legacy-importer`) is called by an old batch system outside the mesh,
+      which cannot do mTLS yet. Only this workload may accept plaintext for now.
+  - type: question
+    question:
+      questionType: manifest
+      header: Write the PeerAuthentication `legacy-importer` in `shop` that makes this one workload `PERMISSIVE`.
+      hint: The selector narrows the policy to Pods with a label.
+      manifestDefinitionId: peerauth-v1
+      initialContent: |
+        apiVersion: security.istio.io/v1
+        kind: PeerAuthentication
+        metadata:
+          name: legacy-importer
+          namespace: shop
+        spec:
+      expectedFields:
+      - path: spec.selector.matchLabels.app
+        expectedValue: legacy-importer
+      - path: spec.mtls.mode
+        expectedValue: PERMISSIVE
+  - type: question
+    question:
+      questionType: single-line
+      header: Which of the two policies applies to this workload?
+      hint: The most specific policy applies.
+      expectedAnswer: workload-level
+      cel: answer.trim().lowerAscii() in ["workload-level", "workload", "the workload", "workload level", "permissive", "workload-specific",
+        "the workload-level one", "workload specific"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Every exception is a hole. Record why it exists and when it ends, and prefer fixing the client (e.g. by routing it through an ingress gateway
+        that speaks mTLS) over leaving PERMISSIVE in place.
+    - type: references
+      links:
+      - url: https://istio.io/latest/docs/reference/config/security/peer_authentication/
+        text: 'Istio: PeerAuthentication'
+- title: Test the Enforcement
+  category: Istio mTLS
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      After applying STRICT, verify with a client that has **no** sidecar. Namespace `legacy` is not injected and has the Pod `curl-test` with curl available.
+      The target is the Service `payments` on port `8080` in namespace `shop`.
+  - type: question
+    question:
+      questionType: command
+      header: Request `/health` of that Service from Pod `curl-test` in namespace `legacy` using curl in silent mode.
+      hint: Use the cross-namespace Service DNS name and the right port; the command to execute follows the double dash.
+      command:
+        executable: kubectl
+        strictness: permissive
+        subcommands:
+        - name: exec
+        positionals:
+        - index: 0
+          value: curl-test
+        flags:
+        - name: namespace
+          short: n
+          required: true
+          value: legacy
+      cel: answer.contains('curl') && answer.contains('payments.shop') && answer.contains(':8080/health')
+  - type: manifest
+    header: Result
+    content: |
+      curl: (56) Recv failure: Connection reset by peer
+      command terminated with exit code 56
+  - type: question
+    question:
+      questionType: single-line
+      header: Why was the plaintext request refused?
+      hint: The destination sidecar only accepts one kind of connection now.
+      expectedAnswer: strict mtls
+      cel: answer.trim().lowerAscii() in ["strict mtls", "mtls", "mtls required", "strict", "peerauthentication", "the sidecar
+        requires mtls", "sidecar requires mtls", "because of strict mtls", "peer authentication", "requires mtls", "strict
+        mode", "strict mtls mode"]
+  - type: question
+    question:
+      questionType: single-line
+      header: From a Pod in a namespace WITH sidecar injection, the same request would succeed. What do both sidecars present
+        to each other to prove the identity of their workloads in mTLS?
+      hint: mTLS means both sides present something.
+      expectedAnswer: certificates
+      cel: answer.trim().lowerAscii() in ["certificates", "certificate", "x509 certificates", "x.509 certificates", "x509
+        certs", "certs", "spiffe certificates", "client and server certificates", "tls certificates", "workload certificates",
+        "spiffe identities", "identities"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        A negative test from outside the mesh is the quickest proof that STRICT works. Positive tests from inside the mesh prove you did not break the legitimate callers. The sidecar
+        metrics (`istio_requests_total` with `connection_security_policy`) and `istioctl x describe pod` also show which mode applies.
+    - type: references
+      links:
+      - url: https://istio.io/latest/docs/concepts/security/#mutual-tls-authentication
+        text: 'Istio: Mutual TLS authentication'
+- title: 'Istio: Identity-Based Authorization'
+  category: Istio mTLS
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      mTLS gives every request a verified workload identity of the form `cluster.local/ns/<namespace>/sa/<serviceaccount>`. Use it: only the
+      ServiceAccount `frontend` of namespace `shop` may call the `payments` workload (`app=payments`) in `shop`; all other callers are denied.
+  - type: question
+    question:
+      questionType: manifest
+      header: Write the AuthorizationPolicy `payments-from-frontend` in namespace `shop` (action ALLOW is the default).
+      hint: Rules have a from/source section with a list of principals.
+      correctAnswerInfo: 'As soon as one ALLOW policy applies to a workload, requests that match no ALLOW rule are denied.
+        Principals only work together with mTLS: without it, no identity is available.'
+      manifestDefinitionId: authzpolicy-v1
+      initialContent: |
+        apiVersion: security.istio.io/v1
+        kind: AuthorizationPolicy
+        metadata:
+          name: payments-from-frontend
+          namespace: shop
+        spec:
+      expectedFields:
+      - path: spec.selector.matchLabels.app
+        expectedValue: payments
+      cel:
+      - name: Principal
+        expression: manifest.spec.rules.exists(r, r.from.exists(f, 'cluster.local/ns/shop/sa/frontend' in f.source.principals))
+        message: Only the frontend identity may be allowed
+  - type: question
+    question:
+      questionType: single-line
+      header: Which Kubernetes object does the identity in `principals` derive from?
+      hint: The identity string contains `/sa/`.
+      expectedAnswer: ServiceAccount
+      cel: answer.trim().lowerAscii() in ["serviceaccount", "service account", "serviceaccount", "sa"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        This is the link to the RBAC set: ServiceAccounts are workload identities not only for the Kubernetes API but also, through SPIFFE
+        certificates, for the mesh. Dedicated ServiceAccounts per workload are a prerequisite for useful identity-based policy.
+    - type: references
+      links:
+      - url: https://istio.io/latest/docs/reference/config/security/authorization-policy/
+        text: 'Istio: AuthorizationPolicy'
+- title: 'Capstone: Encrypt and Authenticate the Payments Namespace'
+  category: Capstone
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Namespace `payments` must be inside the mesh with mutual TLS required. Do it step by step, then check what exists in the cluster.
+  - type: question
+    question:
+      questionType: command
+      header: Enable sidecar injection for namespace `payments`.
+      hint: The injection label.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: label
+        - name: namespace
+          aliases:
+          - namespaces
+          - ns
+        positionals:
+        - index: 0
+          value: payments
+        - index: 1
+          value: istio-injection=enabled
+        flags:
+        - name: overwrite
+          boolean: true
+  - type: question
+    question:
+      questionType: command
+      header: Recreate the Pods of all Deployments in `payments` so they get the sidecar.
+      hint: Rollout restart.
+      command:
+        executable: kubectl
+        strictness: permissive
+        subcommands:
+        - name: rollout
+        - name: restart
+        - name: deployment
+          aliases:
+          - deployments
+          - deploy
+        flags:
+        - name: namespace
+          short: n
+          required: true
+          value: payments
+  - type: question
+    question:
+      questionType: manifest
+      header: Write the policy that requires mTLS for the whole namespace.
+      hint: One field below spec.mtls.
+      manifestDefinitionId: peerauth-v1
+      initialContent: |
+        apiVersion: security.istio.io/v1
+        kind: PeerAuthentication
+        metadata:
+          name: default
+          namespace: payments
+        spec:
+      expectedFields:
+      - path: metadata.namespace
+        expectedValue: payments
+      - path: spec.mtls.mode
+        expectedValue: STRICT
+  - type: question
+    question:
+      questionType: command
+      header: List the PeerAuthentication objects in all namespaces to review the effective policies.
+      hint: A custom resource, listed like any other.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: get
+        - name: peerauthentication
+          aliases:
+          - peerauthentications
+          - pa
+        flags:
+        - name: all-namespaces
+          short: A
+          required: true
+          boolean: true
+  - type: table
+    style: terminal
+    columns:
+    - NAMESPACE
+    - NAME
+    - MODE
+    - AGE
+    rows:
+    - - istio-system
+      - default
+      - PERMISSIVE
+      - 40d
+    - - payments
+      - default
+      - STRICT
+      - 5s
+    - - shop
+      - default
+      - STRICT
+      - 2d
+    - - shop
+      - legacy-importer
+      - PERMISSIVE
+      - 1d
+  - type: question
+    question:
+      questionType: single-line
+      header: Which workload-level object in this list is an exception to the strict namespace setting? Answer with its name.
+      hint: Look for the PERMISSIVE row in a STRICT namespace.
+      expectedAnswer: legacy-importer
+      cel: answer.trim().lowerAscii() in ["legacy-importer"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Both ideas together: encryption (WireGuard/IPsec or mesh mTLS) protects the wire, identity (SPIFFE, ServiceAccount) lets policy say *who* may talk, and NetworkPolicies
+        or AuthorizationPolicies decide *whether* they may. In the exam you are most likely to meet Cilium encryption verification and Istio `PeerAuthentication`.
+    - type: references
+      links:
+      - url: https://istio.io/latest/docs/reference/config/security/peer_authentication/
+        text: 'Istio: PeerAuthentication'
+      - url: https://docs.cilium.io/en/stable/security/network/encryption-wireguard/
+        text: 'Cilium: WireGuard Transparent Encryption'

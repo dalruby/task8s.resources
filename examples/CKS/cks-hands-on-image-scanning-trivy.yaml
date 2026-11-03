@@ -1,0 +1,943 @@
+apiVersion: v1alpha1
+name: 'CKS (Hands-On): Image Scanning with Trivy'
+k8sVersion: 1.34.0
+timing:
+  enabled: true
+  limitSeconds: 7200
+introduction:
+  elements:
+  - type: context
+    text: |
+      Hands-on practice with **Trivy**, the image scanner used in the CKS *Supply Chain Security* domain: find which images in a cluster
+      carry known vulnerabilities, narrow reports down to what matters, produce evidence and fix or remove the affected workloads.
+      There is no multiple choice.
+
+      **Lab environment**
+
+      - You are `root` on the control-plane node of a kubeadm cluster (Kubernetes 1.34). `kubectl` uses the admin credentials and
+        `trivy` is installed with a vulnerability database. Namespaces such as `shop`, `payments` and `finance` have running workloads.
+      - Scan outputs shown in the scenarios are **illustrative**: CVE ids, versions and counts are for practice and are not a
+        statement about real images.
+
+      **How answers are checked**
+
+      - *Commands* are checked structurally: flags may come in any order and long and short forms are accepted. Image names and paths are
+        checked exactly as written in the task.
+      - *Short answers* accept common spellings.
+
+      Exam content is under NDA: this is practice for the common patterns, not a prediction.
+  - type: references
+    links:
+    - url: https://trivy.dev/latest/docs/target/container_image/
+      text: 'Trivy: Container Image scanning'
+    - url: https://trivy.dev/latest/docs/configuration/filtering/
+      text: 'Trivy: Filtering (severity, unfixed, ignore files)'
+    - url: https://trivy.dev/latest/docs/configuration/reporting/
+      text: 'Trivy: Reporting (formats and output)'
+    - url: https://training.linuxfoundation.org/certification/certified-kubernetes-security-specialist-cks/
+      text: CKS Domains and Competencies
+manifestDefinitions: []
+scenarios:
+- title: Scan an Image
+  category: Scanning Images
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      A developer asks whether the image `nginx:1.25.0`, used by the `web` Deployment in the `shop` namespace, is safe to keep running.
+      `trivy` is installed on the control-plane node and its vulnerability database was downloaded earlier.
+  - type: question
+    question:
+      questionType: command
+      header: Scan the image `nginx:1.25.0` for known vulnerabilities.
+      hint: Trivy has one subcommand per kind of target. This target is an image in a registry.
+      correctAnswerInfo: '`trivy image <name>` pulls the image layers (without running the image), detects the OS and the
+        language packages inside, and matches them against its vulnerability database.'
+      command:
+        executable: trivy
+        strictness: permissive
+        subcommands:
+        - name: image
+        positionals:
+        - index: 0
+          value: nginx:1.25.0
+  - type: context
+    text: |
+      The report starts with a summary and then lists one row per finding:
+  - type: table
+    style: terminal
+    columns:
+    - Library
+    - Vulnerability
+    - Severity
+    - Status
+    - Installed Version
+    - Fixed Version
+    - Title
+    rows:
+    - - libssl3
+      - CVE-2023-5363
+      - HIGH
+      - fixed
+      - 3.0.11-1~deb12u1
+      - 3.0.11-1~deb12u2
+      - 'openssl: incorrect cipher key and IV length processing'
+    - - libc6
+      - CVE-2023-4911
+      - HIGH
+      - fixed
+      - 2.36-9+deb12u1
+      - 2.36-9+deb12u3
+      - 'glibc: buffer overflow in ld.so'
+    - - libaom3
+      - CVE-2023-6879
+      - CRITICAL
+      - affected
+      - 3.6.0-1
+      - ''
+      - 'aom: heap-buffer-overflow'
+    - - zlib1g
+      - CVE-2023-45853
+      - CRITICAL
+      - will_not_fix
+      - 1:1.2.13.dfsg-1
+      - ''
+      - 'zlib: integer overflow in MiniZip'
+  - type: question
+    question:
+      questionType: single-line
+      header: Which column of the report tells you the package version that contains the repair?
+      hint: Compare what is installed with what you should move to.
+      correctAnswerInfo: A row with an empty Fixed Version means the distribution has not published a repair (status `affected`
+        or `will_not_fix`). Rebuilding the image will not make those findings go away.
+      expectedAnswer: Fixed Version
+      cel: answer.trim().lowerAscii() in ["fixed version", "fixed version", "fixedversion"]
+  - type: question
+    question:
+      questionType: single-line
+      header: Which severity level in the report is the most serious?
+      hint: Trivy uses five levels, including UNKNOWN.
+      correctAnswerInfo: The levels are UNKNOWN, LOW, MEDIUM, HIGH and CRITICAL, taken from the vulnerability source (distribution
+        advisory or NVD CVSS score).
+      expectedAnswer: CRITICAL
+      cel: answer.trim().lowerAscii() in ["critical", "critical"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        - `trivy image` scans the *layers* of an image. It does not need to run the image or have a container runtime daemon for registry images.
+        - Each finding shows the package, the CVE id, a severity, the installed version and (if any) the fixed version.
+        - `Status` matters: `fixed` means an upgrade exists, `affected` means the distribution has not fixed it yet, and `will_not_fix` means it will never be fixed in this release.
+    - type: references
+      links:
+      - url: https://trivy.dev/latest/docs/target/container_image/
+        text: 'Trivy: Container Image scanning'
+- title: Filter by Severity
+  category: Scanning Images
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The full report for `nginx:1.25.0` has hundreds of rows, mostly LOW and MEDIUM. The security team only wants to see what
+      blocks a release: findings with severity **HIGH or CRITICAL**.
+  - type: question
+    question:
+      questionType: command
+      header: Scan `nginx:1.25.0` and show only HIGH and CRITICAL findings.
+      hint: The filter is a flag on the scan; values are comma-separated and written in capital letters.
+      correctAnswerInfo: '`--severity HIGH,CRITICAL` (or `-s`) hides every finding with another severity. The order of the
+        values does not matter.'
+      command:
+        executable: trivy
+        strictness: permissive
+        subcommands:
+        - name: image
+        positionals:
+        - index: 0
+          value: nginx:1.25.0
+        flags:
+        - name: severity
+          short: s
+          required: true
+      cel: has(flags.severity) && flags.severity.split(',').size() == 2 && ["HIGH", "CRITICAL"].all(s, s in flags.severity.split(','))
+  - type: question
+    question:
+      questionType: command
+      header: Now show only CRITICAL findings for `alpine:3.15.0`.
+      hint: Same flag, a single value.
+      command:
+        executable: trivy
+        strictness: permissive
+        subcommands:
+        - name: image
+        positionals:
+        - index: 0
+          value: alpine:3.15.0
+        flags:
+        - name: severity
+          short: s
+          required: true
+          value: CRITICAL
+  - type: context
+    text: |
+      A colleague runs `trivy image --severity high nginx:1.25.0` and gets an error about an invalid severity.
+  - type: question
+    question:
+      questionType: single-line
+      header: What must change about the value so that Trivy accepts it?
+      hint: Compare how the levels are printed in the report.
+      correctAnswerInfo: 'Severity names are matched in upper case: UNKNOWN, LOW, MEDIUM, HIGH, CRITICAL.'
+      expectedAnswer: uppercase
+      cel: answer.trim().lowerAscii() in ["uppercase", "upper case", "capital letters", "capitals", "upper-case", "use uppercase",
+        "capital", "caps"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        `--severity` is a **display filter**. It does not make the image any safer and it does not change which vulnerabilities exist,
+        only which ones are reported (and counted for `--exit-code`, see a later scenario).
+
+        For the exam, remember the two shapes that appear in nearly every Trivy task: `trivy image <image>` and the same command with
+        `--severity HIGH,CRITICAL`.
+    - type: references
+      links:
+      - url: https://trivy.dev/latest/docs/configuration/filtering/
+        text: 'Trivy: Filtering (severity, unfixed, ignore files)'
+      - url: https://trivy.dev/latest/docs/references/configuration/cli/trivy_image/
+        text: trivy image command reference
+- title: Unfixed Vulnerabilities
+  category: Scanning Images
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      After filtering, the report for `python:3.9-slim` still shows 14 CRITICAL findings, but 11 of them have an empty
+      **Fixed Version** column. The team can only act on what has a fix.
+  - type: question
+    question:
+      questionType: command
+      header: Scan `python:3.9-slim` for CRITICAL findings and hide the ones that have no fix available yet.
+      hint: There is a dedicated boolean flag with "unfixed" in its name.
+      correctAnswerInfo: '`--ignore-unfixed` removes findings whose Fixed Version is empty. Only repairable issues remain,
+        so the remaining list is the real to-do list.'
+      command:
+        executable: trivy
+        strictness: permissive
+        subcommands:
+        - name: image
+        positionals:
+        - index: 0
+          value: python:3.9-slim
+        flags:
+        - name: severity
+          short: s
+          required: true
+          value: CRITICAL
+        - name: ignore-unfixed
+          required: true
+          boolean: true
+  - type: question
+    question:
+      questionType: single-line
+      header: Is a finding that is hidden by this flag gone from the image? (yes/no)
+      hint: The flag changes the report, not the image.
+      correctAnswerInfo: The vulnerable package is still in the image. Hiding unfixed findings is a triage choice; revisit
+        it when new base image versions appear.
+      expectedAnswer: 'no'
+      cel: answer.trim().lowerAscii() in ["no"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Reasons a finding has no fixed version: the upstream project has not released a patch, the distribution decided not to backport
+        it (`will_not_fix`), or the package is end-of-life. Typical remedies are switching to a newer or different base image
+        (for example a slim or distroless variant that does not contain the package at all) rather than upgrading a package.
+    - type: references
+      links:
+      - url: https://trivy.dev/latest/docs/configuration/filtering/
+        text: 'Trivy: Filtering (severity, unfixed, ignore files)'
+- title: Failing a Build on Vulnerabilities
+  category: Scanning Images
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      A CI job runs the scan, but it always reports success because Trivy exits with status `0` even when it finds
+      vulnerabilities. The pipeline should fail whenever the image contains a **CRITICAL** finding.
+  - type: question
+    question:
+      questionType: command
+      header: Scan `registry.local/shop/api:2.4` so that the command exits with status 1 if a CRITICAL vulnerability is found.
+      hint: 'Two flags work together: one selects what counts, the other sets the status returned when something is found.'
+      correctAnswerInfo: '`--exit-code 1` makes Trivy return 1 when at least one finding survives the filters (severity, ignore-unfixed,
+        ignore files). Without a severity filter any finding, even LOW, would fail the build.'
+      command:
+        executable: trivy
+        strictness: permissive
+        subcommands:
+        - name: image
+        positionals:
+        - index: 0
+          value: registry.local/shop/api:2.4
+        flags:
+        - name: severity
+          short: s
+          required: true
+          value: CRITICAL
+        - name: exit-code
+          required: true
+          value: '1'
+  - type: question
+    question:
+      questionType: single-line
+      header: What exit code does Trivy return by default when it finds vulnerabilities?
+      hint: Think about why the pipeline never failed.
+      correctAnswerInfo: The default exit code is 0 unless `--exit-code` is set. Trivy returns a non-zero code on its own
+        errors (for example, the image could not be pulled).
+      expectedAnswer: '0'
+      cel: answer.trim().lowerAscii() in ["0"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        The usual CI gate is `trivy image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 <image>`: the build fails only for
+        serious, fixable problems. Because `--exit-code` counts only the findings that remain after filtering, the filter flags and the
+        exit code must be used together.
+    - type: references
+      links:
+      - url: https://trivy.dev/latest/docs/configuration/filtering/
+        text: 'Trivy: Filtering (severity, unfixed, ignore files)'
+      - url: https://trivy.dev/latest/docs/references/configuration/cli/trivy_image/
+        text: trivy image command reference
+- title: Output Formats and Report Files
+  category: Reports and Evidence
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Auditors want the scan result of `nginx:1.25.0` as machine-readable JSON, stored in `/root/nginx-scan.json`, instead of the
+      table printed on the terminal.
+  - type: question
+    question:
+      questionType: command
+      header: Scan `nginx:1.25.0` and write the report in JSON format to `/root/nginx-scan.json` using Trivy's own options
+        (no shell redirect).
+      hint: 'Two flags: one for the format of the report and one for the destination file.'
+      correctAnswerInfo: '`--format` also accepts `table` (default), `sarif`, `cyclonedx`, `spdx-json`, `template` and others.
+        `--output` (or `-o`) writes to a file instead of stdout.'
+      command:
+        executable: trivy
+        strictness: permissive
+        subcommands:
+        - name: image
+        positionals:
+        - index: 0
+          value: nginx:1.25.0
+        flags:
+        - name: format
+          short: f
+          required: true
+          value: json
+        - name: output
+          short: o
+          required: true
+          value: /root/nginx-scan.json
+  - type: question
+    question:
+      questionType: command
+      header: 'Count how many vulnerability records there are in total: run `jq` on the file to print the length of the `Vulnerabilities`
+        array of the first result.'
+      hint: jq takes a filter first and a file second. The first element of Results holds the OS package findings.
+      correctAnswerInfo: In JSON reports the findings are under `.Results[]`, one entry per target (the OS layer, a language
+        lockfile, ...), each with its own `Vulnerabilities` array. A target without findings has no such key.
+      command:
+        executable: jq
+        strictness: permissive
+      cel: answer.contains('.Results[0].Vulnerabilities') && answer.contains('length') && answer.contains('/root/nginx-scan.json')
+  - type: question
+    question:
+      questionType: command
+      header: 'Print the CVE id and the severity of every vulnerability in all results as one line each: use jq with the `-r`
+        flag and a string built from `VulnerabilityID` and `Severity` joined by a space.'
+      hint: Iterate over Results, then over Vulnerabilities, then build the string.
+      correctAnswerInfo: 'One valid answer: jq -r ''.Results[].Vulnerabilities[]? | .VulnerabilityID + " " + .Severity'' /root/nginx-scan.json'
+      command:
+        executable: jq
+        strictness: permissive
+        flags:
+        - name: raw-output
+          short: r
+          required: true
+          boolean: true
+      cel: answer.contains('.Results[]') && answer.contains('.Vulnerabilities[]') && answer.contains('.VulnerabilityID') &&
+        answer.contains('.Severity') && answer.contains('/root/nginx-scan.json')
+  explanation:
+    elements:
+    - type: context
+      text: |
+        JSON is the format to use when another tool reads the result; the table is for people. SARIF can be uploaded to code-scanning
+        dashboards, and `cyclonedx` / `spdx-json` produce an SBOM (a separate scenario set). The `?` after `[]` in jq avoids errors for
+        results without a `Vulnerabilities` key.
+    - type: references
+      links:
+      - url: https://trivy.dev/latest/docs/configuration/reporting/
+        text: 'Trivy: Reporting (formats and output)'
+- title: Which Images Are Running?
+  category: Finding Vulnerable Workloads
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Before scanning, you need a list of what actually runs. The cluster has dozens of Pods in many namespaces and there is no
+      inventory. Collect the image of every container of every Pod in **all namespaces** with one command.
+  - type: question
+    question:
+      questionType: command
+      header: List the images of all containers of all Pods in all namespaces using JSONPath output.
+      hint: JSONPath has a recursive descent operator that finds a field wherever it is.
+      correctAnswerInfo: '`-o jsonpath=''{.items[*].spec.containers[*].image}''` is the explicit form; `{..image}` is the
+        shortcut that finds every `image` field (init containers and ephemeral containers included only if they set one).'
+      command:
+        executable: kubectl
+        subcommands:
+        - name: get
+        - name: pods
+          aliases:
+          - pod
+          - po
+        flags:
+        - name: all-namespaces
+          short: A
+          required: true
+          boolean: true
+        - name: output
+          short: o
+          required: true
+          regex: ^jsonpath.*image
+  - type: table
+    style: terminal
+    columns:
+    - IMAGES
+    rows:
+    - - nginx:1.25.0 redis:6.2 registry.local/shop/api:2.4 python:3.9-slim busybox:1.28 k8s.gcr.io/pause:3.9 ...
+  - type: context
+    text: |
+      That is one long line and contains duplicates. Next, find which Pods run `python:3.9-slim`. Pods in the `payments` namespace
+      are named after their Deployments.
+  - type: question
+    question:
+      questionType: command
+      header: List the Pods of namespace `payments` as one line per Pod, showing the Pod name and the images of its containers
+        as custom columns.
+      hint: There is an output format where you define the column titles and the field paths yourself.
+      correctAnswerInfo: 'Example: `kubectl get pods -n payments -o custom-columns=NAME:.metadata.name,IMAGES:.spec.containers[*].image`.'
+      command:
+        executable: kubectl
+        subcommands:
+        - name: get
+        - name: pods
+          aliases:
+          - pod
+          - po
+        flags:
+        - name: namespace
+          short: n
+          required: true
+          value: payments
+        - name: output
+          short: o
+          required: true
+          regex: ^custom-columns=.*image
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Practical ways to get an image inventory:
+
+        - `kubectl get pods -A -o jsonpath='{..image}' | tr ' ' '\n' | sort -u` (unique list of images)
+        - `-o custom-columns=NAME:.metadata.name,IMAGES:.spec.containers[*].image` (which Pod runs what)
+        - `kubectl get deploy,sts,ds,cronjob -A -o wide` shows the images of the main workload types
+
+        Remember `initContainers` have their own list; images there are scanned the same way.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/reference/kubectl/jsonpath/
+        text: JSONPath Support
+      - url: https://kubernetes.io/docs/tasks/access-application-cluster/list-all-running-container-images/
+        text: List All Container Images Running in a Cluster
+- title: Remove the Vulnerable Workload
+  category: Finding Vulnerable Workloads
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Namespace `payments` runs three Pods. You scanned each image with `trivy image --severity CRITICAL --ignore-unfixed` and
+      collected the number of findings:
+  - type: table
+    style: terminal
+    columns:
+    - POD
+    - IMAGE
+    - CRITICAL (fixable)
+    rows:
+    - - ledger
+      - registry.local/payments/ledger:3.1
+      - '0'
+    - - gateway
+      - nginx:1.19.0
+      - '4'
+    - - batch-export
+      - python:3.8-slim
+      - '2'
+  - type: context
+    text: |
+      Policy: Pods whose image has fixable CRITICAL vulnerabilities must not run. The Pods are not managed by a controller.
+  - type: question
+    question:
+      questionType: single-line
+      header: Which Pods violate the policy? Answer with their names, separated by a comma.
+      hint: Look at the last column and count the rows that are not 0.
+      correctAnswerInfo: Both `gateway` and `batch-export` have fixable CRITICAL findings; `ledger` is clean.
+      expectedAnswer: gateway,batch-export
+      cel: answer.trim().lowerAscii() in ["gateway,batch-export", "gateway, batch-export", "batch-export,gateway", "batch-export,
+        gateway", "gateway and batch-export", "batch-export and gateway"]
+  - type: question
+    question:
+      questionType: command
+      header: Delete the Pod `gateway` in namespace `payments`.
+      hint: Pods have no controller here, so nothing will recreate them.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: delete
+        - name: pod
+          aliases:
+          - pods
+          - po
+        positionals:
+        - index: 0
+          value: gateway
+        flags:
+        - name: namespace
+          short: n
+          required: true
+          value: payments
+  - type: question
+    question:
+      questionType: command
+      header: Delete the Pod `batch-export` in namespace `payments` as well.
+      hint: Same shape as the previous deletion.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: delete
+        - name: pod
+          aliases:
+          - pods
+          - po
+        positionals:
+        - index: 0
+          value: batch-export
+        flags:
+        - name: namespace
+          short: n
+          required: true
+          value: payments
+  explanation:
+    elements:
+    - type: context
+      text: |
+        If the Pods had been managed by a Deployment, deleting the Pod would only cause a new Pod with the same bad image. You must
+        change the image in the controller (`kubectl set image`) or scale it to zero. In the exam, read the task text carefully for
+        "delete" versus "update" and for which severity levels and fix status count.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/reference/kubectl/generated/kubectl_delete/
+        text: kubectl delete
+- title: Scan an Image from a Tarball
+  category: Scanning Images
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The build server has no registry access from the scanner node. An engineer exported the image with `docker save` to
+      `/opt/images/app.tar` and asked you to scan that file, not a pulled image.
+  - type: question
+    question:
+      questionType: command
+      header: Scan the image archive `/opt/images/app.tar`.
+      hint: Trivy can read an image from a file instead of a name; look for a flag named after that.
+      correctAnswerInfo: '`--input` accepts an image archive in Docker or OCI layout (`docker save`, `skopeo copy ... oci-archive:`).
+        It does not need registry access.'
+      command:
+        executable: trivy
+        strictness: permissive
+        subcommands:
+        - name: image
+        flags:
+        - name: input
+          required: true
+          value: /opt/images/app.tar
+  - type: question
+    question:
+      questionType: single-line
+      header: Trivy tries to refresh its vulnerability database before each scan, which fails on a node without internet access.
+        Which boolean flag makes it use the database already on disk?
+      hint: The flag name says what is skipped.
+      correctAnswerInfo: '`--skip-db-update` uses the existing local database. For fully offline use, also add `--offline-scan`
+        (no API calls for package metadata) and make sure the database was copied to the cache directory (`--cache-dir`).'
+      expectedAnswer: --skip-db-update
+      cel: answer.trim().lowerAscii() in ["--skip-db-update", "skip-db-update", "--skip-db-update", "--skip-update"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Air-gapped scanning needs two pieces: the image as a file (`--input`) and a vulnerability database that was downloaded elsewhere
+        and copied to the node. The exam environment normally has the database prepared; if a scan seems to hang, check whether Trivy is
+        attempting a download.
+    - type: references
+      links:
+      - url: https://trivy.dev/latest/docs/target/container_image/
+        text: 'Trivy: Container Image scanning'
+- title: 'Scanners: Vulnerabilities, Secrets, Misconfiguration'
+  category: Scanning Beyond Packages
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Trivy can look for more than vulnerable packages. A review asks whether the image `registry.local/shop/api:2.4` contains
+      **hard-coded secrets** (tokens, private keys), in addition to vulnerabilities.
+  - type: question
+    question:
+      questionType: command
+      header: Scan the image for both vulnerabilities and secrets.
+      hint: There is a flag that selects which kinds of checks run; the names of the checks are short words.
+      correctAnswerInfo: '`--scanners vuln,secret` (also `misconfig` and `license`). Since Trivy 0.4x the default for `image`
+        is `vuln,secret`.'
+      command:
+        executable: trivy
+        strictness: permissive
+        subcommands:
+        - name: image
+        positionals:
+        - index: 0
+          value: registry.local/shop/api:2.4
+        flags:
+        - name: scanners
+          required: true
+          regex: vuln
+      cel: flags.scanners.split(',').size() == 2 && 'vuln' in flags.scanners.split(',') && 'secret' in flags.scanners.split(',')
+  - type: context
+    text: |
+      A second request: the repository `/srv/deploy` holds Kubernetes manifests and a Dockerfile. The team wants to know about
+      misconfigurations (for example, containers that run as root) in those files without building anything.
+  - type: question
+    question:
+      questionType: command
+      header: Scan the directory `/srv/deploy` for misconfigurations of infrastructure files.
+      hint: One subcommand scans IaC and configuration files such as Dockerfiles, Kubernetes YAML, Terraform.
+      correctAnswerInfo: '`trivy config <dir>` checks the files against built-in policies (formerly "misconfig"). `trivy fs
+        <dir>` scans a project for vulnerable dependencies (and can add `--scanners misconfig`).'
+      command:
+        executable: trivy
+        strictness: permissive
+        subcommands:
+        - name: config
+        positionals:
+        - index: 0
+          value: /srv/deploy
+  - type: question
+    question:
+      questionType: single-line
+      header: Which Trivy subcommand scans a local directory for vulnerable dependencies in lockfiles (without any image)?
+      hint: Short for the type of target.
+      expectedAnswer: fs
+      cel: answer.trim().lowerAscii() in ["fs", "trivy fs", "filesystem"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        | Target | Command |
+        |---|---|
+        | Image in registry/daemon | `trivy image <name>` |
+        | Image archive | `trivy image --input file.tar` |
+        | Project directory | `trivy fs <dir>` |
+        | Kubernetes/Docker/Terraform files | `trivy config <dir>` |
+        | Git repository | `trivy repo <url>` |
+
+        `--scanners` accepts `vuln`, `secret`, `misconfig` and `license`.
+    - type: references
+      links:
+      - url: https://trivy.dev/latest/docs/scanner/vulnerability/
+        text: 'Trivy: Vulnerability scanning'
+      - url: https://trivy.dev/latest/docs/scanner/secret/
+        text: 'Trivy: Secret scanning'
+- title: Ignoring Accepted Risks
+  category: Reports and Evidence
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      After review, the team accepted the risk of `CVE-2023-45853` (the vulnerable MiniZip code path is never called by the
+      application) and wants it to stop breaking the build. A file in the current directory is picked up automatically by Trivy.
+  - type: question
+    question:
+      questionType: single-line
+      header: What is the name of that ignore file?
+      hint: It is a dot file named after the tool.
+      correctAnswerInfo: Trivy reads `.trivyignore` from the current directory by default. Another path can be passed with
+        `--ignorefile`.
+      expectedAnswer: .trivyignore
+      cel: answer.trim().lowerAscii() in [".trivyignore", "trivyignore"]
+  - type: question
+    question:
+      questionType: multiline
+      header: 'Write the content of the file so that `CVE-2023-45853` is ignored, with a comment line above it that says `accepted:
+        minizip not used`.'
+      hint: One identifier per line; lines starting with a hash character are comments.
+      correctAnswerInfo: 'Ignored findings are skipped completely: they do not show in the report and do not affect `--exit-code`.
+        In YAML form (`.trivyignore.yaml`) you can add an expiry date and a statement.'
+      expectedAnswer: |
+        # accepted: minizip not used
+        CVE-2023-45853
+      cel: answer.split('\n').exists(l, l.trim() == 'CVE-2023-45853') && answer.split('\n').exists(l, l.trim().startsWith('#')
+        && l.contains('accepted'))
+  - type: question
+    question:
+      questionType: single-line
+      header: Which flag selects an ignore file stored somewhere else than the current directory?
+      hint: A flag named after the file.
+      expectedAnswer: --ignorefile
+      cel: answer.trim().lowerAscii() in ["--ignorefile", "ignorefile"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        An ignore list is a record of accepted risk, so keep a reason and ideally an expiry next to every entry. Ignoring by CVE id
+        applies to every package; the YAML format can scope the exception by package path.
+    - type: references
+      links:
+      - url: https://trivy.dev/latest/docs/configuration/filtering/
+        text: 'Trivy: Filtering (severity, unfixed, ignore files)'
+- title: Reading a Report to Choose the Fix
+  category: Fixing the Image
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The `web` Deployment in `shop` runs `nginx:1.19.0`. A scan with `--severity CRITICAL` shows nine findings. Searching the
+      registry you find these candidate tags, with the number of fixable CRITICAL findings from a scan of each:
+  - type: table
+    style: terminal
+    columns:
+    - IMAGE
+    - CRITICAL (fixable)
+    - CRITICAL (unfixed)
+    rows:
+    - - nginx:1.19.0
+      - '9'
+      - '2'
+    - - nginx:1.21.6
+      - '3'
+      - '1'
+    - - nginx:1.27.3
+      - '0'
+      - '0'
+    - - nginx:1.27.3-alpine
+      - '0'
+      - '0'
+  - type: question
+    question:
+      questionType: single-line
+      header: The application needs the Debian-based variant (it uses `apt` in an init script). Which tag do you roll out?
+      hint: Pick the newest variant that satisfies the OS requirement and has no CRITICAL findings.
+      expectedAnswer: nginx:1.27.3
+      cel: answer.trim().lowerAscii() in ["nginx:1.27.3", "1.27.3"]
+  - type: question
+    question:
+      questionType: command
+      header: Change the image of container `nginx` in Deployment `web` (namespace `shop`) to that tag.
+      hint: The resource is given as type/name, followed by container=image.
+      correctAnswerInfo: '`kubectl set image deployment/web nginx=nginx:1.27.3 -n shop` updates the Pod template, which starts
+        a rolling update.'
+      command:
+        executable: kubectl
+        strictness: permissive
+        subcommands:
+        - name: set
+        - name: image
+        flags:
+        - name: namespace
+          short: n
+          required: true
+          value: shop
+      cel: positionals.exists(p, p in ['deployment/web', 'deploy/web', 'deployments/web']) && positionals.exists(p, p == 'nginx=nginx:1.27.3')
+  - type: question
+    question:
+      questionType: command
+      header: Wait until the rollout of Deployment `web` in `shop` finishes.
+      hint: kubectl rollout has a subcommand that watches progress.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: rollout
+        - name: status
+        positionals:
+        - index: 0
+          value: deployment/web
+        flags:
+        - name: namespace
+          short: n
+          required: true
+          value: shop
+      cel: positionals[0] in ['deployment/web', 'deploy/web', 'deployments/web']
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Fix order of preference: (1) newer patch version of the same tag line, (2) a minimal variant (`-slim`, `-alpine`, distroless) that
+        no longer contains the vulnerable package, (3) rebuild the image so the package manager pulls current packages. After any
+        change, **scan again**: a repaired package can be replaced by a different finding. Pinning tags (and digests) keeps a verified image from
+        silently changing.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/reference/kubectl/generated/kubectl_set/kubectl_set_image/
+        text: kubectl set image
+- title: 'Capstone: Audit and Remediate a Namespace'
+  category: Capstone
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Namespace `finance` has three Deployments. Management wants, by the end of the shift:
+
+      1. a list of the images in use,
+      2. a JSON report of the image with the CRITICAL finding stored at `/root/report.json`,
+      3. the offending Deployment fixed, and
+      4. the CI check for that image to fail on CRITICAL findings.
+
+      Start with the inventory: show the images of all containers of Deployments in the `finance` namespace together with the
+      Deployment names, one row per Deployment.
+  - type: question
+    question:
+      questionType: command
+      header: List the Deployments of namespace `finance` with their names and container images as custom columns.
+      hint: A custom output format.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: get
+        - name: deployments
+          aliases:
+          - deployment
+          - deploy
+        flags:
+        - name: namespace
+          short: n
+          required: true
+          value: finance
+        - name: output
+          short: o
+          required: true
+          regex: ^custom-columns=.*image
+  - type: table
+    style: terminal
+    columns:
+    - NAME
+    - IMAGES
+    rows:
+    - - ledger
+      - registry.local/finance/ledger:5.2
+    - - reports
+      - python:3.8-slim
+    - - exporter
+      - registry.local/finance/exporter:1.0
+  - type: context
+    text: |
+      The base image of `ledger` and `exporter` was scanned last week and is clean. `reports` uses a public image. Produce the
+      JSON report of its CRITICAL findings (only those with a fix) at `/root/report.json`.
+  - type: question
+    question:
+      questionType: command
+      header: Scan `python:3.8-slim` for fixable CRITICAL findings and save the JSON report in `/root/report.json`.
+      hint: Combine severity, unfixed, format and output.
+      command:
+        executable: trivy
+        strictness: permissive
+        subcommands:
+        - name: image
+        positionals:
+        - index: 0
+          value: python:3.8-slim
+        flags:
+        - name: severity
+          short: s
+          required: true
+          value: CRITICAL
+        - name: ignore-unfixed
+          required: true
+          boolean: true
+        - name: format
+          short: f
+          required: true
+          value: json
+        - name: output
+          short: o
+          required: true
+          value: /root/report.json
+  - type: question
+    question:
+      questionType: command
+      header: The report lists fixable findings. The patched image is `python:3.12-slim`. Update container `reports` of Deployment
+        `reports` in `finance`.
+      hint: type/name followed by container=image.
+      command:
+        executable: kubectl
+        strictness: permissive
+        subcommands:
+        - name: set
+        - name: image
+        flags:
+        - name: namespace
+          short: n
+          required: true
+          value: finance
+      cel: positionals.exists(p, p in ['deployment/reports', 'deploy/reports', 'deployments/reports']) && positionals.exists(p,
+        p == 'reports=python:3.12-slim')
+  - type: question
+    question:
+      questionType: command
+      header: 'Finally, give the pipeline its gate: scan `python:3.12-slim` for CRITICAL findings (fixable only) and fail
+        with exit code 1 when any exist.'
+      hint: Think about the earlier scenario about builds that always succeed.
+      command:
+        executable: trivy
+        strictness: permissive
+        subcommands:
+        - name: image
+        positionals:
+        - index: 0
+          value: python:3.12-slim
+        flags:
+        - name: severity
+          short: s
+          required: true
+          value: CRITICAL
+        - name: ignore-unfixed
+          required: true
+          boolean: true
+        - name: exit-code
+          required: true
+          value: '1'
+  explanation:
+    elements:
+    - type: context
+      text: |
+        You combined three skills: inventory (`kubectl get -o custom-columns`), evidence (`--format json --output`) and enforcement
+        (`--exit-code`). In the exam, expect the same order: find, scan, fix or delete, verify.
+    - type: references
+      links:
+      - url: https://trivy.dev/latest/docs/configuration/filtering/
+        text: 'Trivy: Filtering (severity, unfixed, ignore files)'
+      - url: https://trivy.dev/latest/docs/configuration/reporting/
+        text: 'Trivy: Reporting (formats and output)'

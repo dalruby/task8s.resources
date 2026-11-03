@@ -1,0 +1,681 @@
+apiVersion: v1alpha1
+name: 'CKS (Hands-On): SBOMs with Trivy and bom'
+k8sVersion: 1.34.0
+timing:
+  enabled: true
+  limitSeconds: 7200
+introduction:
+  elements:
+  - type: context
+    text: |
+      Hands-on practice with **Software Bills of Materials** for the CKS *Supply Chain Security* domain: generate SBOMs for container
+      images with `trivy` and `bom`, read SPDX and CycloneDX documents, search many SBOMs for one package and scan a stored SBOM for
+      vulnerabilities. There is no multiple choice.
+
+      **Lab environment**
+
+      - You are `root` on the control-plane node of a kubeadm cluster (Kubernetes 1.34). `kubectl`, `trivy`, `bom`, `jq` and `grep`
+        are installed; images can be pulled from the lab registry.
+      - Scenario files such as `/root/api.spdx` are described in the scenario text. Versions and package names are illustrative.
+
+      **How answers are checked**
+
+      - *Commands* are checked structurally (flag order is free, long and short forms accepted); for pipelines through `jq` the
+        important parts of the filter are checked.
+      - *Short answers* accept common spellings.
+
+      Exam content is under NDA: this is practice for the common patterns, not a prediction.
+  - type: references
+    links:
+    - url: https://trivy.dev/latest/docs/supply-chain/sbom/
+      text: 'Trivy: SBOM (generate and scan)'
+    - url: https://github.com/kubernetes-sigs/bom
+      text: kubernetes-sigs/bom
+    - url: https://spdx.dev/use/specifications/
+      text: SPDX Specifications
+    - url: https://cyclonedx.org/specification/overview/
+      text: CycloneDX Specification Overview
+manifestDefinitions: []
+scenarios:
+- title: What an SBOM Contains
+  category: SBOM Basics
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      When a new vulnerability in a popular library is announced, the first question from management is "do we run it, and where?".
+      Teams that kept a machine-readable inventory of the packages inside each image can answer in minutes; the others scan
+      everything again.
+  - type: question
+    question:
+      questionType: single-line
+      header: What does the acronym SBOM stand for?
+      hint: It is borrowed from manufacturing, where a list names every part of a product.
+      expectedAnswer: Software Bill of Materials
+      cel: answer.trim().lowerAscii() in ["software bill of materials", "software bill of material"]
+  - type: question
+    question:
+      questionType: single-line
+      header: Name one of the two widely used SBOM formats that Trivy can write (the one with "Package Data Exchange" in its
+        name).
+      hint: The other is CycloneDX.
+      correctAnswerInfo: SPDX (Software Package Data Exchange) is a Linux Foundation / ISO standard, available as tag-value,
+        JSON and other encodings. CycloneDX (OWASP) is a JSON/XML format aimed at security use cases.
+      expectedAnswer: SPDX
+      cel: answer.trim().lowerAscii() in ["spdx", "spdx-json", "spdx json"]
+  - type: question
+    question:
+      questionType: single-line
+      header: Is an SBOM a vulnerability report? (yes/no)
+      hint: It lists components, not their problems.
+      correctAnswerInfo: An SBOM only lists components and their versions. You match it against a vulnerability database to
+        get findings, which can be done again at any time without the image.
+      expectedAnswer: 'no'
+      cel: answer.trim().lowerAscii() in ["no"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        An SBOM answers "what is inside this artifact?". Vulnerability reports answer "what is wrong with it today?". Because the
+        vulnerability database changes daily and the image does not, scanning a stored SBOM tomorrow gives new results without needing
+        the image. The exam tasks ask you to *generate* an SBOM, *read* one, or *scan* one.
+    - type: references
+      links:
+      - url: https://spdx.dev/use/specifications/
+        text: SPDX Specifications
+      - url: https://cyclonedx.org/specification/overview/
+        text: CycloneDX Specification Overview
+- title: Generate an SBOM with Trivy
+  category: Generating SBOMs
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Compliance asks for an SPDX SBOM of the image `registry.local/shop/api:2.4`, in JSON encoding, stored as
+      `/root/api.spdx.json`.
+  - type: question
+    question:
+      questionType: command
+      header: Scan the image and write an SPDX JSON report to `/root/api.spdx.json`.
+      hint: An SBOM is just one of the output formats of the scan command.
+      correctAnswerInfo: '`--format spdx-json` writes the SBOM, `--format spdx` writes SPDX tag-value. The same scan can also
+        report vulnerabilities in other formats.'
+      command:
+        executable: trivy
+        strictness: permissive
+        subcommands:
+        - name: image
+        positionals:
+        - index: 0
+          value: registry.local/shop/api:2.4
+        flags:
+        - name: format
+          short: f
+          required: true
+          value: spdx-json
+        - name: output
+          short: o
+          required: true
+          value: /root/api.spdx.json
+  - type: context
+    text: |
+      A second consumer, a dependency dashboard, only understands CycloneDX. Write that to `/root/api.cdx.json`.
+  - type: question
+    question:
+      questionType: command
+      header: Write the SBOM of the same image in CycloneDX format to `/root/api.cdx.json`.
+      hint: Only the format name changes.
+      command:
+        executable: trivy
+        strictness: permissive
+        subcommands:
+        - name: image
+        positionals:
+        - index: 0
+          value: registry.local/shop/api:2.4
+        flags:
+        - name: format
+          short: f
+          required: true
+          value: cyclonedx
+        - name: output
+          short: o
+          required: true
+          value: /root/api.cdx.json
+  explanation:
+    elements:
+    - type: context
+      text: |
+        | Format | Trivy `--format` value |
+        |---|---|
+        | SPDX tag-value | `spdx` |
+        | SPDX JSON | `spdx-json` |
+        | CycloneDX JSON | `cyclonedx` |
+
+        An SBOM includes OS packages and application libraries Trivy can detect (language lockfiles, Go binaries and so on).
+    - type: references
+      links:
+      - url: https://trivy.dev/latest/docs/supply-chain/sbom/
+        text: 'Trivy: SBOM (generate and scan)'
+- title: Generate an SBOM with bom
+  category: Generating SBOMs
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The Kubernetes project's own `bom` tool is installed on the node. It produces SPDX documents and, unlike Trivy, it is built
+      for SBOMs only. Create an SBOM of the public image `nginx:1.27.3` and store it as `/root/nginx.spdx`.
+  - type: question
+    question:
+      questionType: command
+      header: Generate the SBOM for image `nginx:1.27.3` and write it to `/root/nginx.spdx`.
+      hint: bom has a generate subcommand that takes the source type as a flag. Check bom generate --help.
+      correctAnswerInfo: '`bom generate` can also take `--dirs` (a source directory), `--file`, `--archive` (image tarball)
+        and `--name`. The default output format is SPDX tag-value.'
+      command:
+        executable: bom
+        strictness: permissive
+        subcommands:
+        - name: generate
+        flags:
+        - name: image
+          required: true
+          value: nginx:1.27.3
+        - name: output
+          short: o
+          required: true
+          value: /root/nginx.spdx
+  - type: question
+    question:
+      questionType: command
+      header: Generate the same SBOM in JSON format instead, written to `/root/nginx.spdx.json`.
+      hint: There is a flag for the document encoding; the default is tag-value.
+      command:
+        executable: bom
+        strictness: permissive
+        subcommands:
+        - name: generate
+        flags:
+        - name: image
+          required: true
+          value: nginx:1.27.3
+        - name: format
+          required: true
+          value: json
+        - name: output
+          short: o
+          required: true
+          value: /root/nginx.spdx.json
+  - type: question
+    question:
+      questionType: command
+      header: Display the SBOM `/root/nginx.spdx` as a tree of its packages and files.
+      hint: bom document has subcommands to look into an existing document.
+      correctAnswerInfo: '`bom document outline <file>` prints the document hierarchy. `bom document query` can search it.'
+      command:
+        executable: bom
+        subcommands:
+        - name: document
+        - name: outline
+        positionals:
+        - index: 0
+          value: /root/nginx.spdx
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Both tools produce valid SPDX. Pick the one that is installed and documented for the task. The two commands you should be
+        able to type from memory are `bom generate --image <image> --output <file>` and `trivy image --format spdx-json --output <file> <image>`.
+    - type: references
+      links:
+      - url: https://github.com/kubernetes-sigs/bom
+        text: kubernetes-sigs/bom
+      - url: https://trivy.dev/latest/docs/supply-chain/sbom/
+        text: 'Trivy: SBOM (generate and scan)'
+- title: Reading an SPDX Document
+  category: Reading SBOMs
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      This is the beginning of `/root/api.spdx` (SPDX tag-value):
+  - type: manifest
+    header: /root/api.spdx (excerpt)
+    content: |
+      SPDXVersion: SPDX-2.3
+      DataLicense: CC0-1.0
+      SPDXID: SPDXRef-DOCUMENT
+      DocumentName: registry.local/shop/api:2.4
+      Creator: Tool: trivy-0.58.0
+
+      PackageName: openssl
+      SPDXID: SPDXRef-Package-1f9c
+      PackageVersion: 3.0.11-1~deb12u1
+      ExternalRef: PACKAGE-MANAGER purl pkg:deb/debian/openssl@3.0.11-1~deb12u1?distro=debian-12
+
+      PackageName: libc6
+      SPDXID: SPDXRef-Package-8a02
+      PackageVersion: 2.36-9+deb12u3
+      ExternalRef: PACKAGE-MANAGER purl pkg:deb/debian/libc6@2.36-9+deb12u3?distro=debian-12
+
+      PackageName: github.com/gin-gonic/gin
+      SPDXID: SPDXRef-Package-c771
+      PackageVersion: v1.9.0
+      ExternalRef: PACKAGE-MANAGER purl pkg:golang/github.com/gin-gonic/gin@v1.9.0
+  - type: question
+    question:
+      questionType: single-line
+      header: Which version of the package `openssl` does the image contain? Give the version exactly as written.
+      hint: Look at the PackageVersion line below the name.
+      expectedAnswer: 3.0.11-1~deb12u1
+      cel: answer.trim() in ["3.0.11-1~deb12u1"]
+  - type: question
+    question:
+      questionType: single-line
+      header: Which package ecosystem does the `gin` library belong to, according to its package URL (the part after `pkg:`)?
+      hint: 'A purl starts with pkg: followed by a type.'
+      correctAnswerInfo: 'A package URL (purl) has the form `pkg:<type>/<namespace>/<name>@<version>?<qualifiers>`. The type
+        is the ecosystem: `deb`, `apk`, `rpm`, `golang`, `maven`, `npm`, `pypi`, ...'
+      expectedAnswer: golang
+      cel: answer.trim().lowerAscii() in ["golang"]
+  - type: question
+    question:
+      questionType: command
+      header: 'Count how many packages the file lists: count the lines that start with `PackageName:` using grep.'
+      hint: grep can count matching lines by itself.
+      correctAnswerInfo: '`grep -c` counts lines, not occurrences. In tag-value SPDX every package has exactly one `PackageName`
+        line, so the count equals the number of packages.'
+      command:
+        executable: grep
+        positionals:
+        - index: 0
+          value: '^PackageName:'
+        - index: 1
+          value: /root/api.spdx
+        flags:
+        - name: count
+          short: c
+          required: true
+          boolean: true
+  explanation:
+    elements:
+    - type: context
+      text: |
+        The fields you will use most: `PackageName`, `PackageVersion`, the `ExternalRef ... purl` line (a machine-readable identity) and
+        `PackageLicenseDeclared`. In the JSON encoding the same data lives under `packages[]` with `name`, `versionInfo` and
+        `externalRefs[]`. A purl with `deb`/`apk`/`rpm` is an OS package; `golang`, `npm`, `pypi`, `maven` mark application libraries.
+    - type: references
+      links:
+      - url: https://spdx.dev/use/specifications/
+        text: SPDX Specifications
+- title: Reading a CycloneDX Document
+  category: Reading SBOMs
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      `/root/api.cdx.json` is the CycloneDX version of the SBOM. Components live in the top-level `components` array; each has `name`,
+      `version` and `purl`.
+  - type: question
+    question:
+      questionType: command
+      header: With jq, print the `version` of the component named `openssl` from `/root/api.cdx.json`. Use raw output.
+      hint: Iterate the array, select by name, then print the version.
+      correctAnswerInfo: 'For example: jq -r ''.components[] | select(.name == "openssl") | .version'' /root/api.cdx.json'
+      command:
+        executable: jq
+        strictness: permissive
+        flags:
+        - name: raw-output
+          short: r
+          required: true
+          boolean: true
+      cel: answer.contains('components') && answer.contains('openssl') && answer.contains('.version') && answer.contains('/root/api.cdx.json')
+        && answer.contains('select')
+  - type: question
+    question:
+      questionType: command
+      header: Print the number of components in the file.
+      hint: jq has a function for the size of an array.
+      command:
+        executable: jq
+        strictness: permissive
+      cel: answer.contains('.components') && answer.contains('length') && answer.contains('/root/api.cdx.json')
+  explanation:
+    elements:
+    - type: context
+      text: |
+        `jq` is available in the exam environment and is the quickest way through JSON SBOMs. Typical queries:
+        list names (`.components[].name`), find one by name (`select(.name == "x")`), or list purls (`.components[].purl`).
+    - type: references
+      links:
+      - url: https://cyclonedx.org/specification/overview/
+        text: CycloneDX Specification Overview
+- title: Which SBOMs Contain the Library?
+  category: Reading SBOMs
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      A critical flaw in `log4j-core` is announced. The directory `/root/sboms` holds one SPDX JSON SBOM per production image:
+      `billing.json`, `catalog.json`, `inventory.json`, `search.json`.
+  - type: question
+    question:
+      questionType: command
+      header: List only the names of the SBOM files in `/root/sboms` that mention `log4j-core`.
+      hint: grep has an option that prints file names instead of matching lines.
+      command:
+        executable: grep
+        strictness: permissive
+        positionals:
+        - index: 0
+          value: log4j-core
+        - index: 1
+          value: /root/sboms/*.json
+        flags:
+        - name: files-with-matches
+          short: l
+          required: true
+          boolean: true
+  - type: table
+    style: terminal
+    columns:
+    - OUTPUT
+    rows:
+    - - /root/sboms/billing.json
+    - - /root/sboms/search.json
+  - type: question
+    question:
+      questionType: single-line
+      header: Which two services must be patched? Answer with their names separated by a comma.
+      hint: Match the file names to the services.
+      expectedAnswer: billing,search
+      cel: answer.trim().lowerAscii() in ["billing,search", "billing, search", "search,billing", "search, billing", "billing
+        and search", "search and billing"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        That is the real value of storing an SBOM per build: a `grep -l` (or a query in a dependency dashboard) turns an emergency into
+        a lookup. Remember that a package missing from the SBOM may still exist if the SBOM was generated with limited scanners; SBOM
+        quality is decided by what the generator can detect.
+    - type: references
+      links:
+      - url: https://trivy.dev/latest/docs/supply-chain/sbom/
+        text: 'Trivy: SBOM (generate and scan)'
+- title: Scan an SBOM for Vulnerabilities
+  category: Scanning SBOMs
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      It is three weeks later. The image of `api:2.4` is no longer on the node, but `/root/api.cdx.json` is still stored.
+      Management wants to know if new CRITICAL vulnerabilities were published for anything in it.
+  - type: question
+    question:
+      questionType: command
+      header: Scan the SBOM file `/root/api.cdx.json` for CRITICAL vulnerabilities.
+      hint: There is a Trivy subcommand for exactly this kind of target.
+      correctAnswerInfo: '`trivy sbom <file>` reads CycloneDX and SPDX (JSON) files and matches the packages against the current
+        database. No image pull is needed.'
+      command:
+        executable: trivy
+        strictness: permissive
+        subcommands:
+        - name: sbom
+        positionals:
+        - index: 0
+          value: /root/api.cdx.json
+        flags:
+        - name: severity
+          short: s
+          required: true
+          value: CRITICAL
+  - type: question
+    question:
+      questionType: single-line
+      header: Which advantage does scanning the stored SBOM have over rescanning the image from the registry? (give one reason
+        in a few words)
+      hint: Think about what is available on the node and about what the file represents.
+      expectedAnswer: no image needed
+      cel: answer.trim().lowerAscii() in ["no image needed", "no pull", "faster", "image not needed", "no registry access",
+        "does not need the image", "no need for the image", "works offline", "point in time", "reproducible"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        `trivy sbom` is the bridge between inventory and vulnerability management: generate once at build time, rescan the stored
+        document whenever the database changes. The results describe the build as it was shipped, not what a mutable tag points to today.
+    - type: references
+      links:
+      - url: https://trivy.dev/latest/docs/supply-chain/sbom/
+        text: 'Trivy: SBOM (generate and scan)'
+- title: SBOMs for Archives and Directories
+  category: Generating SBOMs
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Two more sources need an SBOM. The release team built an image archive `/opt/images/app.tar` on a machine without
+      registry access, and a Go project lives in `/srv/app-src` (source only, no image yet).
+  - type: question
+    question:
+      questionType: command
+      header: With Trivy, write a CycloneDX SBOM of the image archive `/opt/images/app.tar` to `/root/app.cdx.json`.
+      hint: The archive is read with a dedicated input flag instead of an image name.
+      command:
+        executable: trivy
+        strictness: permissive
+        subcommands:
+        - name: image
+        flags:
+        - name: input
+          required: true
+          value: /opt/images/app.tar
+        - name: format
+          short: f
+          required: true
+          value: cyclonedx
+        - name: output
+          short: o
+          required: true
+          value: /root/app.cdx.json
+  - type: question
+    question:
+      questionType: command
+      header: With Trivy, write a CycloneDX SBOM of the source directory `/srv/app-src` to `/root/src.cdx.json`.
+      hint: A directory is a filesystem target.
+      correctAnswerInfo: For a source directory the SBOM contains the dependencies declared in lockfiles (go.sum, package-lock.json,
+        requirements.txt, ...). It cannot see OS packages that only exist after the image is built.
+      command:
+        executable: trivy
+        strictness: permissive
+        subcommands:
+        - name: fs
+        positionals:
+        - index: 0
+          value: /srv/app-src
+        flags:
+        - name: format
+          short: f
+          required: true
+          value: cyclonedx
+        - name: output
+          short: o
+          required: true
+          value: /root/src.cdx.json
+  - type: question
+    question:
+      questionType: single-line
+      header: From which kind of artifact must you generate the SBOM if it should also list the operating system packages
+        of the base layer?
+      hint: Think about what a base image adds that source code does not contain.
+      expectedAnswer: image
+      cel: answer.trim().lowerAscii() in ["image", "container image", "the image", "a built image", "built image", "the built
+        image", "docker image"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Generate the SBOM from the artifact you ship (the image), because that is what runs. Source-level SBOMs are still useful early in
+        the pipeline, but they miss the operating system layer and anything copied in at build time.
+    - type: references
+      links:
+      - url: https://trivy.dev/latest/docs/supply-chain/sbom/
+        text: 'Trivy: SBOM (generate and scan)'
+- title: What Changed Between Two Builds?
+  category: Reading SBOMs
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      `/root/api-2.3.txt` and `/root/api-2.4.txt` contain the sorted `name@version` lines of the SBOMs of two releases. Security wants
+      a list of the differences between them.
+  - type: question
+    question:
+      questionType: command
+      header: Compare the two files line by line and show the differences.
+      hint: The classic comparison tool for text files; unified output is optional.
+      command:
+        executable: diff
+        strictness: permissive
+        positionals:
+        - index: 0
+          value: /root/api-2.3.txt
+        - index: 1
+          value: /root/api-2.4.txt
+  - type: table
+    style: terminal
+    columns:
+    - DIFF
+    rows:
+    - - < libc6@2.36-9+deb12u1
+    - - '> libc6@2.36-9+deb12u3'
+    - - '> github.com/gin-gonic/gin@v1.9.1'
+    - - < github.com/gin-gonic/gin@v1.9.0
+  - type: question
+    question:
+      questionType: single-line
+      header: Which lines belong to the older release, those starting with "<" or those starting with ">"?
+      hint: The first file named on the command line is the left side.
+      expectedAnswer: <
+      cel: answer.trim().lowerAscii() in ["<", "less than", "<", "the < lines", "lines starting with <"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Diffing SBOMs shows supply chain drift: unexpected new packages, version changes that were not planned or downgrades.
+        Teams automate this check in CI and review any new dependency before release.
+    - type: references
+      links:
+      - url: https://spdx.dev/use/specifications/
+        text: SPDX Specifications
+- title: 'Capstone: From Pod to Decision'
+  category: Capstone
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The Pod `report-gen` in namespace `finance` uses the image `registry.local/finance/report:1.3`. A tip from the security team says
+      that this image may contain `openssl` older than `3.0.12`.
+
+      First, find out which image the Pod runs, directly from the cluster, printing only the image string.
+  - type: question
+    question:
+      questionType: command
+      header: Print only the image of the first container of Pod `report-gen` in namespace `finance` using JSONPath.
+      hint: The image is a field of the first element of the containers list.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: get
+        - name: pods
+          aliases:
+          - pod
+          - po
+        positionals:
+        - index: 0
+          value: report-gen
+        flags:
+        - name: namespace
+          short: n
+          required: true
+          value: finance
+        - name: output
+          short: o
+          required: true
+          regex: ^jsonpath.*containers.*image
+  - type: question
+    question:
+      questionType: command
+      header: Create an SPDX JSON SBOM of `registry.local/finance/report:1.3` in `/root/report.spdx.json` using Trivy.
+      hint: Format spdx-json plus an output file.
+      command:
+        executable: trivy
+        strictness: permissive
+        subcommands:
+        - name: image
+        positionals:
+        - index: 0
+          value: registry.local/finance/report:1.3
+        flags:
+        - name: format
+          short: f
+          required: true
+          value: spdx-json
+        - name: output
+          short: o
+          required: true
+          value: /root/report.spdx.json
+  - type: question
+    question:
+      questionType: command
+      header: Search the SBOM for the openssl package and show the matching `PackageName` line and the two lines after it.
+      hint: grep has a context option for lines following the match. The JSON encoding writes the name as a quoted value.
+      command:
+        executable: grep
+        strictness: permissive
+        flags:
+        - name: after-context
+          short: A
+          required: true
+          value: '2'
+      cel: answer.contains('/root/report.spdx.json') && answer.lowerAscii().contains('openssl')
+  - type: context
+    text: |
+      The match shows `"versionInfo": "3.0.11-1~deb12u1"`. That is older than the fixed release, so the Pod has to go: it is not
+      managed by a controller.
+  - type: question
+    question:
+      questionType: command
+      header: Delete Pod `report-gen` in namespace `finance`.
+      hint: No controller will recreate it.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: delete
+        - name: pod
+          aliases:
+          - pods
+          - po
+        positionals:
+        - index: 0
+          value: report-gen
+        flags:
+        - name: namespace
+          short: n
+          required: true
+          value: finance
+  explanation:
+    elements:
+    - type: context
+      text: |
+        The chain you practiced is exactly the supply-chain workflow: identify the artifact (cluster), inventory it (SBOM), decide
+        (compare versions or scan), and act (remove or upgrade). Always read the task for what is allowed: sometimes the right action is
+        to update the image in the Deployment and not to delete anything.
+    - type: references
+      links:
+      - url: https://trivy.dev/latest/docs/supply-chain/sbom/
+        text: 'Trivy: SBOM (generate and scan)'
+      - url: https://github.com/kubernetes-sigs/bom
+        text: kubernetes-sigs/bom

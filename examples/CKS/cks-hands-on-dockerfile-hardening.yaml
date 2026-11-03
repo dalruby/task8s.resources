@@ -1,0 +1,692 @@
+apiVersion: v1alpha1
+name: 'CKS (Hands-On): Image Footprint and Dockerfile Hardening'
+k8sVersion: 1.34.0
+timing:
+  enabled: true
+  limitSeconds: 7200
+introduction:
+  elements:
+  - type: context
+    text: |
+      Hands-on practice with **image footprint and Dockerfile hardening** for the CKS *Supply Chain Security* domain: choose minimal
+      and pinned base images, build multi-stage images that run as a non-root user, avoid secrets and package-manager leftovers, and
+      verify the result. You write real Dockerfiles; there is no multiple choice.
+
+      **Lab environment**
+
+      - You are `root` on a build node with `docker`, `kubectl` and `trivy`. Source directories such as `/srv/api` hold the code to
+        package; the Dockerfiles in the scenarios show their current state.
+      - Image sizes and digests in the scenarios are illustrative.
+
+      **How answers are checked**
+
+      - *Dockerfiles* are parsed into stages and instructions. Spelling of the same instruction does not matter (`CMD ["a","b"]` and
+        `CMD a b` are the same arguments), comments and ordering of unrelated instructions do not matter, and the checks say what is
+        *functionally required*.
+      - *Commands* are checked structurally; short answers accept common spellings.
+
+      Exam content is under NDA: this is practice for the common patterns, not a prediction.
+  - type: references
+    links:
+    - url: https://docs.docker.com/build/building/best-practices/
+      text: 'Docker: Building best practices'
+    - url: https://docs.docker.com/build/building/multi-stage/
+      text: 'Docker: Multi-stage builds'
+    - url: https://github.com/GoogleContainerTools/distroless
+      text: Distroless images
+    - url: https://training.linuxfoundation.org/certification/certified-kubernetes-security-specialist-cks/
+      text: CKS Domains and Competencies
+manifestDefinitions: []
+scenarios:
+- title: Why Footprint Matters
+  category: Base Images
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      A security review of the container images in use compares the base images that teams start from. Everything in an image is code
+      that can contain a vulnerability and a tool an attacker can use after a break-in: shells, package managers, `curl`, compilers.
+
+      These are the sizes and contents of the candidates for a statically linked Go service:
+  - type: table
+    style: terminal
+    columns:
+    - BASE IMAGE
+    - SIZE
+    - SHELL
+    - PACKAGE MANAGER
+    rows:
+    - - ubuntu:24.04
+      - 78 MB
+      - 'yes'
+      - apt
+    - - debian:12-slim
+      - 75 MB
+      - 'yes'
+      - apt
+    - - alpine:3.20
+      - 8 MB
+      - 'yes'
+      - apk
+    - - gcr.io/distroless/static-debian12
+      - 2 MB
+      - 'no'
+      - none
+    - - scratch
+      - 0 MB
+      - 'no'
+      - none
+  - type: question
+    question:
+      questionType: single-line
+      header: Which family of base images from the list ships no shell and no package manager but still contains CA certificates
+        and timezone data?
+      hint: Maintained by Google, named after the idea that there is no distribution inside.
+      correctAnswerInfo: 'Distroless images contain only the application runtime and its dependencies. `scratch` is empty:
+        even CA certificates must be copied in.'
+      expectedAnswer: distroless
+      cel: answer.trim().lowerAscii() in ["distroless", "gcr.io/distroless/static-debian12", "distroless/static", "distroless
+        static"]
+  - type: question
+    question:
+      questionType: single-line
+      header: When an attacker gets code execution inside a container built on distroless, which common first step is made
+        harder? (one word)
+      hint: Think of what you would type after `kubectl exec`.
+      expectedAnswer: shell
+      cel: answer.trim().lowerAscii() in ["shell", "a shell", "sh", "bash", "shells", "spawning a shell", "exec shell", "running
+        a shell"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        A smaller image has fewer packages to patch, a smaller scan report and fewer tools for post-exploitation. The trade-off:
+        debugging is harder, so use ephemeral debug containers (`kubectl debug`) rather than keeping a shell in production images.
+    - type: references
+      links:
+      - url: https://github.com/GoogleContainerTools/distroless
+        text: Distroless images
+      - url: https://docs.docker.com/build/building/best-practices/
+        text: 'Docker: Building best practices'
+- title: Pin the Base Image Tag
+  category: Base Images
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      This Dockerfile builds an internal tool. Last month an unreviewed change to the base image broke the build and nobody could say
+      which version had been tested.
+  - type: question
+    question:
+      questionType: dockerfile
+      header: Fix the Dockerfile so the base image is pinned to the exact release `22.04`.
+      hint: A tag names a version; one tag is special and always moves.
+      correctAnswerInfo: '`latest` is only a default tag name that publishers move. Pin a version tag (best: pin the digest
+        too, next scenario).'
+      initialContent: |
+        FROM ubuntu:latest
+        RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+        COPY tool /usr/local/bin/tool
+        ENTRYPOINT ["/usr/local/bin/tool"]
+      expected:
+      - from:
+          image: ubuntu
+          tag: '22.04'
+  - type: question
+    question:
+      questionType: single-line
+      header: 'A Dockerfile starts with `FROM ubuntu`. Which tag does Docker use? '
+      hint: What happens when a reference has no tag?
+      expectedAnswer: latest
+      cel: answer.trim().lowerAscii() in ["latest"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Pinning gives reproducible builds and makes scan results meaningful: the version you scanned is the version you run. A tag
+        can still be re-pushed by the registry owner; pinning the **digest** removes that remaining risk.
+    - type: references
+      links:
+      - url: https://docs.docker.com/build/building/best-practices/
+        text: 'Docker: Building best practices'
+      - url: https://docs.docker.com/reference/dockerfile/
+        text: Dockerfile reference
+- title: Pin by Digest
+  category: Base Images
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      A running Pod `api-5d8c7b9f4-xk2jq` in namespace `shop` was verified by a scan last week. You must make sure the Dockerfile and
+      the deployment use **exactly** that image content. The cluster knows the content digest of the image each container started from.
+  - type: question
+    question:
+      questionType: command
+      header: Print the image ID (including its digest) of the first container of Pod `api-5d8c7b9f4-xk2jq` in namespace `shop`
+        with JSONPath.
+      hint: The digest is reported in the Pod status, not in the spec.
+      correctAnswerInfo: '`status.containerStatuses[].imageID` looks like `docker.io/library/nginx@sha256:...`. It tells what
+        is *really* running even if the spec uses a mutable tag.'
+      command:
+        executable: kubectl
+        subcommands:
+        - name: get
+        - name: pods
+          aliases:
+          - pod
+          - po
+        positionals:
+        - index: 0
+          value: api-5d8c7b9f4-xk2jq
+        flags:
+        - name: namespace
+          short: n
+          required: true
+          value: shop
+        - name: output
+          short: o
+          required: true
+          regex: ^jsonpath.*containerStatuses.*imageID
+  - type: question
+    question:
+      questionType: dockerfile
+      header: The output was `docker.io/library/nginx@sha256:4c0fdaa8b6341bfdeca5f18f7837462c80cff90527ee35ef185571e1c327beac`.
+        Pin the base image of this Dockerfile to that digest (keep the `1.27.3` tag for readability).
+      hint: A digest is written after an at sign instead of a colon.
+      correctAnswerInfo: When both tag and digest are present, the digest wins; the tag stays as documentation. Tools such
+        as Renovate and Dependabot can update both together.
+      initialContent: |
+        FROM nginx:1.27.3
+        COPY site/ /usr/share/nginx/html/
+      expected:
+      - from:
+          image: nginx
+          digest: true
+      cel:
+      - name: Digest matches
+        expression: dockerfile.stages[0].from.digest.contains('4c0fdaa8b6341bfdeca5f18f7837462c80cff90527ee35ef185571e1c327beac')
+        message: The pinned digest must be the one reported by the cluster
+  - type: question
+    question:
+      questionType: single-line
+      header: Which prefix does a content digest start with in an image reference (the hash algorithm)?
+      hint: Look at the output above.
+      expectedAnswer: sha256
+      cel: answer.trim().lowerAscii() in ["sha256", "@sha256", "sha256:"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        | Reference | Mutable? |
+        |---|---|
+        | `nginx` | yes (resolves to `latest`) |
+        | `nginx:1.27.3` | yes (a maintainer can re-push the tag) |
+        | `nginx@sha256:...` | **no** (content addressed) |
+
+        A policy that requires digests (Admission scenario set) is the enforcement side of the same idea.
+    - type: references
+      links:
+      - url: https://docs.docker.com/build/building/best-practices/
+        text: 'Docker: Building best practices'
+      - url: https://kubernetes.io/docs/concepts/containers/images/#image-names
+        text: 'Kubernetes: Image names'
+- title: Do Not Run as Root
+  category: Dockerfile Hardening
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      A Python web service Dockerfile has no `USER` instruction, so the process runs as UID 0 inside the container. A Kubernetes
+      `runAsNonRoot: true` setting would then refuse to start the Pod.
+  - type: question
+    question:
+      questionType: dockerfile
+      header: Add what is needed so the container runs as the unprivileged user with numeric ID `10001`.
+      hint: One instruction near the end; an ID works even if the user does not exist in /etc/passwd.
+      correctAnswerInfo: 'With `runAsNonRoot: true` Kubernetes can only check a *numeric* user: a name such as `appuser` cannot
+        be verified and the Pod fails with "non-numeric user".'
+      initialContent: |
+        FROM python:3.12-slim
+        WORKDIR /app
+        COPY requirements.txt .
+        RUN pip install --no-cache-dir -r requirements.txt
+        COPY . .
+        CMD ["python", "app.py"]
+      expected:
+      - from:
+          image: python
+          tag: 3.12-slim
+        instructions:
+        - instruction: USER
+          args:
+          - '10001'
+      cel:
+      - &id001
+        name: Final stage runs as non-root
+        expression: dockerfile.stages[dockerfile.stages.size() - 1].instructions.exists(i, i.name == 'USER' && size(i.args)
+          > 0 && !(i.args[0].split(':')[0] in ['root', '0']))
+        message: The image must not run as root by default
+      - name: Numeric user
+        expression: dockerfile.stages[0].instructions.exists(i, i.name == 'USER' && i.args[0].matches('^[0-9]+(:[0-9]+)?$'))
+        message: Use a numeric ID so Kubernetes can verify it is not zero
+  - type: question
+    question:
+      questionType: single-line
+      header: Which securityContext field on the Kubernetes side refuses to start a container whose image runs as root?
+      hint: Boolean field in the (container) securityContext.
+      expectedAnswer: runAsNonRoot
+      cel: answer.trim().lowerAscii() in ["runasnonroot"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Put `USER` after steps that need root (installing packages) and before `CMD`/`ENTRYPOINT`. Remember file ownership:
+        `COPY --chown=10001:10001` gives the user access to the files it must write. Kubernetes can also force a user with
+        `securityContext.runAsUser`, but a correct image makes the secure choice the default.
+    - type: references
+      links:
+      - url: https://docs.docker.com/build/building/best-practices/
+        text: 'Docker: Building best practices'
+      - url: https://kubernetes.io/docs/tasks/configure-pod-container/security-context/
+        text: Configure a Security Context
+- title: Multi-Stage Build
+  category: Dockerfile Hardening
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      This Dockerfile ships the whole Go toolchain, the source code and the module cache in the production image.
+  - type: manifest
+    header: Current Dockerfile
+    content: |
+      FROM golang:1.22
+      WORKDIR /src
+      COPY . .
+      RUN go build -o /app ./cmd/server
+      CMD ["/app"]
+  - type: question
+    question:
+      questionType: dockerfile
+      header: 'Rewrite it as a two-stage build: a stage named `build` that compiles with the `golang:1.22` image, and a final
+        stage that contains only the compiled binary `/app` copied from the first stage.'
+      hint: Name a stage with the AS keyword and copy from it with a flag on COPY.
+      correctAnswerInfo: Only the files copied with `COPY --from=build` end up in the final image. Everything else in the
+        first stage, including the compiler, is discarded.
+      initialContent: |
+        FROM golang:1.22
+        WORKDIR /src
+        COPY . .
+        RUN go build -o /app ./cmd/server
+        CMD ["/app"]
+      expected:
+      - stage: build
+        from:
+          image: golang
+          tag: '1.22'
+        instructions:
+        - instruction: RUN
+          contains: go build
+      - instructions:
+        - instruction: COPY
+          flags:
+            from: build
+      cel:
+      - name: Final stage has no toolchain
+        expression: dockerfile.stages.size() == 2 && dockerfile.stages[1].from.image != 'golang'
+        message: The runtime stage must not start from the build image
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Multi-stage builds separate *build-time* from *run-time* content. Typical gains: images ten times smaller, no compiler and no
+        source in production, and far fewer packages for a scanner to report.
+    - type: references
+      links:
+      - url: https://docs.docker.com/build/building/multi-stage/
+        text: 'Docker: Multi-stage builds'
+- title: A Minimal Runtime Stage
+  category: Dockerfile Hardening
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The second stage of the build above currently starts from `debian:12`. The binary is statically linked and needs no libraries.
+      Use an image from the distroless family or the empty `scratch` image for the final stage, and run as the distroless
+      non-root user ID `65532`.
+  - type: question
+    question:
+      questionType: dockerfile
+      header: 'Complete the Dockerfile: keep the build stage and make the final stage minimal, non-root and a start command
+        for `/app`.'
+      hint: The distroless static images and scratch both work; a shell-form start command would need a shell, so use the
+        exec form.
+      correctAnswerInfo: '`gcr.io/distroless/static-debian12:nonroot` also exists and already defaults to UID 65532. `CGO_ENABLED=0`
+        matters because a dynamically linked binary needs libc, which static/scratch images do not have.'
+      initialContent: |
+        FROM golang:1.22 AS build
+        WORKDIR /src
+        COPY . .
+        RUN CGO_ENABLED=0 go build -o /app ./cmd/server
+
+        FROM debian:12
+        COPY --from=build /app /app
+        CMD ["/app"]
+      expected:
+      - stage: build
+      - instructions:
+        - instruction: COPY
+          flags:
+            from: build
+        - instruction: USER
+          args:
+          - '65532'
+      cel:
+      - name: Minimal base
+        expression: dockerfile.stages[1].from.image == 'scratch' || dockerfile.stages[1].from.image.startsWith('gcr.io/distroless/')
+        message: The runtime stage must use a minimal base image
+      - name: Pinned
+        expression: dockerfile.stages[1].from.image == 'scratch' || dockerfile.stages[1].from.tag != '' || dockerfile.stages[1].from.digest
+          != ''
+        message: Pin the runtime image
+      - name: Starts the binary
+        expression: dockerfile.stages[1].instructions.exists(i, (i.name == 'CMD' || i.name == 'ENTRYPOINT') && i.args == ['/app'])
+        message: The container must start the compiled binary
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Check the usual failure after moving to a minimal image: "exec format error" or "no such file or directory" (missing dynamic
+        loader), and "permission denied" on writing files (the user changed). Debug with `kubectl debug` using an ephemeral container.
+    - type: references
+      links:
+      - url: https://github.com/GoogleContainerTools/distroless
+        text: Distroless images
+      - url: https://docs.docker.com/build/building/multi-stage/
+        text: 'Docker: Multi-stage builds'
+- title: Package Manager Hygiene
+  category: Dockerfile Hardening
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      In an Ubuntu-based image the installation of `curl` is split into three RUN lines. The package index and caches stay in the
+      layers, and the second line installs recommended packages that are never used.
+  - type: manifest
+    header: Current Dockerfile
+    content: |
+      FROM ubuntu:22.04
+      RUN apt-get update
+      RUN apt-get install -y curl
+      RUN rm -rf /var/lib/apt/lists/*
+  - type: question
+    question:
+      questionType: dockerfile
+      header: Combine these steps into one RUN instruction that installs `curl` without recommended packages and removes the
+        package lists in the same layer.
+      hint: Chain commands with the shell AND operator; the cleanup must be in the same instruction as the installation.
+      correctAnswerInfo: 'Deleting files in a later layer does not shrink the image: the earlier layer still contains them,
+        and `docker history` or an attacker can read them.'
+      initialContent: |
+        FROM ubuntu:22.04
+        RUN apt-get update
+        RUN apt-get install -y curl
+        RUN rm -rf /var/lib/apt/lists/*
+      expected:
+      - from:
+          image: ubuntu
+          tag: '22.04'
+      cel:
+      - name: One RUN instruction
+        expression: dockerfile.stages[0].instructions.filter(i, i.name == 'RUN').size() == 1
+        message: All package steps belong in a single instruction
+      - name: Update and install together
+        expression: dockerfile.stages[0].instructions.exists(i, i.name == 'RUN' && i.text.contains('apt-get update') && i.text.contains('apt-get
+          install'))
+        message: Index refresh and installation must happen in the same layer
+      - name: No recommends
+        expression: dockerfile.stages[0].instructions.exists(i, i.name == 'RUN' && i.text.contains('--no-install-recommends'))
+        message: Skip packages that are only recommended
+      - name: Lists removed
+        expression: dockerfile.stages[0].instructions.exists(i, i.name == 'RUN' && i.text.contains('/var/lib/apt/lists'))
+        message: Package lists must not stay in the layer
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Every `RUN`, `COPY` and `ADD` creates a layer. Files removed in a later layer are only hidden. Install and clean in the same
+        instruction, and do not install tools (`curl`, `wget`, `netcat`) you do not need at run time.
+    - type: references
+      links:
+      - url: https://docs.docker.com/build/building/best-practices/
+        text: 'Docker: Building best practices'
+- title: Secrets and Unneeded Content
+  category: Dockerfile Hardening
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      This Dockerfile bakes an API key into the image through `ENV`, copies the developer's `.env` file along with the code and
+      downloads a script with `ADD` from the internet. Anyone who can pull the image can read all three.
+  - type: manifest
+    header: Current Dockerfile
+    content: |
+      FROM node:20-alpine
+      WORKDIR /app
+      ENV API_KEY=sk_live_51Hx0aQ2eZvKYlo2C
+      ADD https://example.com/install.sh /tmp/install.sh
+      COPY . .
+      COPY .env .env
+      CMD ["node", "server.js"]
+  - type: question
+    question:
+      questionType: dockerfile
+      header: 'Fix the Dockerfile: remove the baked-in key, the `.env` file and the remote download, keep the working directory,
+        the code and the start command.'
+      hint: Secrets belong in the cluster, not in the image. And one instruction has behavior beyond plain copying.
+      correctAnswerInfo: Provide the key at run time through a Kubernetes Secret (environment variable or mounted file). For
+        build-time secrets use `RUN --mount=type=secret`, which never lands in a layer.
+      initialContent: |
+        FROM node:20-alpine
+        WORKDIR /app
+        ENV API_KEY=sk_live_51Hx0aQ2eZvKYlo2C
+        ADD https://example.com/install.sh /tmp/install.sh
+        COPY . .
+        COPY .env .env
+        CMD ["node", "server.js"]
+      expected:
+      - from:
+          image: node
+          tag: 20-alpine
+        instructions:
+        - instruction: WORKDIR
+          args:
+          - /app
+        - instruction: COPY
+          args:
+          - .
+          - .
+        - instruction: CMD
+          args:
+          - node
+          - server.js
+      cel:
+      - name: No secret in ENV
+        expression: '!dockerfile.stages[0].instructions.exists(i, (i.name == ''ENV'' || i.name == ''ARG'') && i.values.exists(k,
+          k.upperAscii().contains(''KEY'') || k.upperAscii().contains(''TOKEN'') || k.upperAscii().contains(''SECRET'') ||
+          k.upperAscii().contains(''PASSWORD'')))'
+        message: Credentials must not be part of the image
+      - name: No env file copied
+        expression: '!dockerfile.stages[0].instructions.exists(i, i.name == ''COPY'' && i.text.contains(''.env''))'
+        message: Do not copy local environment files into the image
+      - name: No remote ADD
+        expression: '!dockerfile.stages[0].instructions.exists(i, i.name == ''ADD'')'
+        message: Fetching remote content at build time is not allowed
+  - type: question
+    question:
+      questionType: single-line
+      header: Which file in the build context lists patterns Docker must not send to the builder (so `.env` can never be copied
+        by accident)?
+      hint: Same idea as .gitignore.
+      expectedAnswer: .dockerignore
+      cel: answer.trim().lowerAscii() in [".dockerignore", "dockerignore"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Image layers are readable by anyone who can pull the image, and `docker history` shows every `ENV`, `ARG` and `RUN` line.
+        Prefer `COPY` over `ADD` (ADD extracts archives and fetches URLs implicitly), keep a `.dockerignore`, and keep secrets out of the
+        image completely.
+    - type: references
+      links:
+      - url: https://docs.docker.com/build/building/best-practices/
+        text: 'Docker: Building best practices'
+- title: Build and Check the Result
+  category: Verifying the Image
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The fixed Dockerfile is in `/srv/api`. Build it as `shop/api:1.1` and then verify the result before pushing.
+  - type: question
+    question:
+      questionType: command
+      header: Build the image from the directory `/srv/api` and tag it `shop/api:1.1`.
+      hint: The build context is the last argument; the tag uses a flag.
+      command:
+        executable: docker
+        subcommands:
+        - name: build
+        positionals:
+        - index: 0
+          value: /srv/api
+        flags:
+        - name: tag
+          short: t
+          required: true
+          value: shop/api:1.1
+  - type: question
+    question:
+      questionType: command
+      header: Show the layers of `shop/api:1.1`, one line per layer with the instruction that created it.
+      hint: docker has a subcommand to list the history of an image.
+      correctAnswerInfo: '`docker history --no-trunc` shows full instruction text, including any secrets that were passed
+        with ENV or ARG.'
+      command:
+        executable: docker
+        strictness: permissive
+        subcommands:
+        - name: history
+        positionals:
+        - index: 0
+          value: shop/api:1.1
+  - type: question
+    question:
+      questionType: command
+      header: Print the default user of the image `shop/api:1.1` using inspect with a Go template that reads `.Config.User`.
+      hint: inspect has a flag that applies a template to the JSON.
+      correctAnswerInfo: An empty result means the image runs as root.
+      command:
+        executable: docker
+        subcommands:
+        - name: inspect
+        positionals:
+        - index: 0
+          value: shop/api:1.1
+        flags:
+        - name: format
+          short: f
+          required: true
+          regex: \.Config\.User
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Verification before shipping: size (`docker images`), layers and leaked content (`docker history`), user (`docker inspect`), and a
+        vulnerability scan (`trivy image`). Then push and reference the digest in Kubernetes.
+    - type: references
+      links:
+      - url: https://docs.docker.com/reference/cli/docker/image/history/
+        text: docker image history
+- title: 'Capstone: Harden a Whole Dockerfile'
+  category: Capstone
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The following Dockerfile for a Node.js API was written in a hurry. Harden it completely:
+
+      - build stage (named `build`) based on `node:20` that installs dependencies and builds the app,
+      - final stage on a pinned `node:20-alpine` image that copies only the built result (`/app/dist`) from the build stage,
+      - non-root user with a numeric ID, and
+      - no secrets or package manager leftovers.
+  - type: manifest
+    header: Dockerfile to harden
+    content: |
+      FROM node:latest
+      WORKDIR /app
+      COPY . .
+      ENV DB_PASSWORD=hunter2
+      RUN npm install
+      RUN npm run build
+      EXPOSE 3000
+      CMD npm start
+  - type: question
+    question:
+      questionType: dockerfile
+      header: Write the hardened Dockerfile.
+      hint: 'Combine the earlier lessons: stages, pinned tags, the exec form for CMD, USER with a number.'
+      correctAnswerInfo: A possible solution has two FROM lines, `USER 10001` before CMD, `COPY --from=build /app/dist ./dist`,
+        and a start command like CMD ["node", "dist/server.js"].
+      initialContent: |
+        FROM node:latest
+        WORKDIR /app
+        COPY . .
+        ENV DB_PASSWORD=hunter2
+        RUN npm install
+        RUN npm run build
+        EXPOSE 3000
+        CMD npm start
+      expected:
+      - stage: build
+        from:
+          image: node
+          tag: '20'
+        instructions:
+        - instruction: RUN
+          contains: npm
+      - from:
+          image: node
+          tag: 20-alpine
+        instructions:
+        - instruction: COPY
+          flags:
+            from: build
+      cel:
+      - *id001
+      - name: Pinned base images
+        expression: dockerfile.stages.all(s, s.from.image == 'scratch' || s.from.digest != '' || (s.from.tag != '' && s.from.tag
+          != 'latest') || dockerfile.stages.exists(o, o.name != '' && o.name == s.from.image))
+        message: Every base image must be pinned to a specific version
+      - name: No secrets
+        expression: '!dockerfile.stages.exists(s, s.instructions.exists(i, (i.name == ''ENV'' || i.name == ''ARG'') && i.values.exists(k,
+          k.upperAscii().contains(''PASSWORD'') || k.upperAscii().contains(''SECRET'') || k.upperAscii().contains(''TOKEN''))))'
+        message: Credentials must not be part of the image
+      - name: Dist copied
+        expression: dockerfile.stages[1].instructions.exists(i, i.name == 'COPY' && i.flags.exists(k, k == 'from') && i.text.contains('/app/dist'))
+        message: The final stage must contain the build output
+      - name: Exec form start
+        expression: dockerfile.stages[1].instructions.exists(i, (i.name == 'CMD' || i.name == 'ENTRYPOINT') && i.form == 'exec')
+        message: Start the app so that it receives signals directly
+  explanation:
+    elements:
+    - type: context
+      text: |
+        The hardening checklist you applied: pinned base (tag or digest), multi-stage, minimal runtime image, numeric non-root user,
+        no secrets or ADD, exec-form start command. Next steps in a real pipeline: scan the result with Trivy, then enforce at admission
+        that only images from your registry (by digest) run.
+    - type: references
+      links:
+      - url: https://docs.docker.com/build/building/best-practices/
+        text: 'Docker: Building best practices'
+      - url: https://docs.docker.com/build/building/multi-stage/
+        text: 'Docker: Multi-stage builds'

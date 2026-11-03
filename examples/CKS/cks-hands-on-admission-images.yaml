@@ -1,0 +1,731 @@
+apiVersion: v1alpha1
+name: 'CKS (Hands-On): Admission Control for Images'
+k8sVersion: 1.34.0
+timing:
+  enabled: true
+  limitSeconds: 7200
+introduction:
+  elements:
+  - type: context
+    text: |
+      Hands-on practice with **admission control for images** in the CKS *Supply Chain Security* domain: configure the
+      `ImagePolicyWebhook` admission plugin on the API server, and write `ValidatingAdmissionPolicy` objects and bindings that allow only
+      trusted registries and digest-pinned images. There is no multiple choice.
+
+      **Lab environment**
+
+      - You are `root` on the control-plane node of a kubeadm cluster (Kubernetes 1.34, containerd). `kubectl` uses the admin
+        credentials; the API server is a static Pod in `/etc/kubernetes/manifests`.
+      - The company registry is `registry.local`. Namespaces `prod` (label `env=prod`) and `default` exist.
+
+      **How answers are checked**
+
+      - *Manifests* are validated against the Kubernetes schema and then for what they *mean* (what the policy matches, what the CEL
+        expressions test, which actions the binding takes). Wording of messages and variable names do not matter.
+      - *Configuration files* are checked for the required settings; *commands* structurally; short answers accept common spellings.
+
+      Exam content is under NDA: this is practice for the common patterns, not a prediction.
+  - type: references
+    links:
+    - url: https://kubernetes.io/docs/reference/access-authn-authz/admission-controllers/#imagepolicywebhook
+      text: 'Admission Controllers: ImagePolicyWebhook'
+    - url: https://kubernetes.io/docs/reference/access-authn-authz/validating-admission-policy/
+      text: Validating Admission Policy
+    - url: https://kubernetes.io/docs/reference/using-api/cel/
+      text: Common Expression Language in Kubernetes
+    - url: https://training.linuxfoundation.org/certification/certified-kubernetes-security-specialist-cks/
+      text: CKS Domains and Competencies
+manifestDefinitions:
+- id: vap-v1
+  kind: ValidatingAdmissionPolicy
+  apiVersion: admissionregistration.k8s.io/v1
+  autoLoad: true
+- id: vapb-v1
+  kind: ValidatingAdmissionPolicyBinding
+  apiVersion: admissionregistration.k8s.io/v1
+  autoLoad: true
+scenarios:
+- title: Where Image Policy Is Enforced
+  category: Admission Basics
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Scanning and signing happen before deployment, but nothing stops someone from running `kubectl run x --image=evil/miner` in
+      production. Only the API server sees every Pod that gets created, so image rules are enforced as **admission control**.
+
+      Three mechanisms are common for image rules: the built-in `ImagePolicyWebhook` plugin (asks an external service),
+      `ValidatingAdmissionPolicy` (CEL expressions evaluated inside the API server) and external policy engines such as Gatekeeper or Kyverno.
+  - type: question
+    question:
+      questionType: single-line
+      header: Which of the built-in options needs no extra Pods or external service to run, because the rules are CEL expressions
+        evaluated by the API server itself?
+      hint: Its name says that it validates and that it is a policy.
+      expectedAnswer: ValidatingAdmissionPolicy
+      cel: answer.trim().lowerAscii() in ["validatingadmissionpolicy", "validating admission policy", "vap", "validatingadmissionpolicies"]
+  - type: question
+    question:
+      questionType: single-line
+      header: Admission runs after authentication and authorization. If the user is not authorized to create Pods at all,
+        does the request even reach the admission plugins? (yes/no)
+      hint: Think about the order of the API request flow.
+      correctAnswerInfo: The order is authentication, authorization, mutating admission, object schema validation, validating
+        admission, then persistence in etcd.
+      expectedAnswer: 'no'
+      cel: answer.trim().lowerAscii() in ["no"]
+  - type: question
+    question:
+      questionType: single-line
+      header: Do admission plugins affect Pods that already exist and are running? (yes/no)
+      hint: When does admission run?
+      correctAnswerInfo: Admission only evaluates API requests (create, update, delete, connect). Existing Pods keep running;
+        a policy only blocks new or changed objects, so an audit of the running cluster must be done separately (for example,
+        with the Audit action).
+      expectedAnswer: 'no'
+      cel: answer.trim().lowerAscii() in ["no"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Admission is the **enforcement point** of the supply chain: the build proves an image is good, admission makes sure only such images run.
+        `ImagePolicyWebhook` delegates the decision to your own service (for example one that checks signatures or scan results);
+        `ValidatingAdmissionPolicy` expresses simple rules (registries, tags, digests) directly in the cluster.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/reference/access-authn-authz/admission-controllers/
+        text: Admission Controllers Reference
+      - url: https://kubernetes.io/docs/reference/access-authn-authz/extensible-admission-controllers/
+        text: Dynamic Admission Control
+- title: Enable ImagePolicyWebhook
+  category: ImagePolicyWebhook
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      An image-checking service is deployed in the cluster. The API server must ask it before admitting a Pod. On the kubeadm
+      control-plane node, the files for this will live in `/etc/kubernetes/admission`. The API server is a static Pod defined in
+      `/etc/kubernetes/manifests/kube-apiserver.yaml`.
+  - type: question
+    question:
+      questionType: single-line
+      header: Which kube-apiserver flag turns admission plugins on? Add ImagePolicyWebhook to its list.
+      hint: Look for the admission flag whose name says "enable".
+      correctAnswerInfo: 'kubeadm already sets `--enable-admission-plugins=NodeRestriction`. Keep it: the value is a comma-separated
+        list, so it becomes `NodeRestriction,ImagePolicyWebhook`.'
+      expectedAnswer: --enable-admission-plugins
+      cel: answer.trim().lowerAscii() in ["--enable-admission-plugins", "enable-admission-plugins"]
+  - type: question
+    question:
+      questionType: single-line
+      header: Which kube-apiserver flag points to the file that configures admission plugins (the file that references the
+        webhook kubeconfig)?
+      hint: Admission control, config, file.
+      expectedAnswer: --admission-control-config-file
+      cel: answer.trim().lowerAscii() in ["--admission-control-config-file", "admission-control-config-file"]
+  - type: question
+    question:
+      questionType: single-line
+      header: The API server runs in a container. What must you add to its static Pod manifest so that it can read files from
+        `/etc/kubernetes/admission`? (name the two pod spec parts)
+      hint: Files on the host are not visible in the container unless you map them in.
+      correctAnswerInfo: Add a `hostPath` volume for `/etc/kubernetes/admission` and a `volumeMount` of the same path (readOnly
+        is fine). Without it, the API server fails at startup with "no such file or directory".
+      expectedAnswer: volume and volumeMount
+      cel: answer.trim().lowerAscii() in ["volume and volumemount", "volumes and volumemounts", "volume, volumemount", "hostpath
+        volume and volumemount", "volumemount and volume", "volume and volumemounts", "volumes and volumemounts", "hostpath
+        volume and volume mount", "volume and volume mount"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        The three changes, always together: (1) the plugin in `--enable-admission-plugins`, (2) `--admission-control-config-file` with the
+        path *as seen inside the container*, and (3) the volume and mount that make that path exist. A typo in any of them keeps the API
+        server from starting; fix by editing the manifest again and watching `crictl ps -a`.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/reference/access-authn-authz/admission-controllers/#imagepolicywebhook
+        text: 'Admission Controllers: ImagePolicyWebhook'
+- title: The Admission Configuration
+  category: ImagePolicyWebhook
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Write `/etc/kubernetes/admission/admission-config.yaml` (an `AdmissionConfiguration` for the plugin) with these requirements:
+
+      - the webhook's kubeconfig is `/etc/kubernetes/admission/kubeconfig.yaml`
+      - approved responses are cached for 60 seconds, denied responses for 20 seconds
+      - retry backoff is 500 milliseconds
+      - when the webhook cannot be reached, Pods must be **rejected**
+  - type: question
+    question:
+      questionType: multiline
+      header: Write the content of the file.
+      hint: The plugin is configured under plugins/configuration/imagePolicy. The "fail closed" setting is a boolean named
+        after the default decision.
+      correctAnswerInfo: '`defaultAllow: false` is fail-closed: if the service is unreachable the request is denied. `true`
+        would silently let every image through during an outage, which defeats the control.'
+      expectedAnswer: |
+        apiVersion: apiserver.config.k8s.io/v1
+        kind: AdmissionConfiguration
+        plugins:
+          - name: ImagePolicyWebhook
+            configuration:
+              imagePolicy:
+                kubeConfigFile: /etc/kubernetes/admission/kubeconfig.yaml
+                allowTTL: 60
+                denyTTL: 20
+                retryBackoff: 500
+                defaultAllow: false
+      cel: 'answer.contains(''kind: AdmissionConfiguration'') && answer.contains(''name: ImagePolicyWebhook'') && answer.contains(''imagePolicy:'')
+        && answer.contains(''kubeConfigFile: /etc/kubernetes/admission/kubeconfig.yaml'') && answer.matches(''allowTTL: *60\\b'')
+        && answer.matches(''denyTTL: *20\\b'') && answer.matches(''retryBackoff: *500\\b'') && answer.matches(''defaultAllow:
+        *false'')'
+  - type: question
+    question:
+      questionType: single-line
+      header: 'A webhook outage with `defaultAllow: true`: does an attacker who can crash the image service get to run any
+        image? (yes/no)'
+      hint: What does the API server decide when it gets no answer?
+      expectedAnswer: 'yes'
+      cel: answer.trim().lowerAscii() in ["yes"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        `allowTTL` and `denyTTL` cache decisions per image set so the webhook is not called for every replica. `retryBackoff` is the wait between
+        retries when the call fails. The exam's trap is `defaultAllow`: the secure value is `false`.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/reference/access-authn-authz/admission-controllers/#imagepolicywebhook
+        text: 'Admission Controllers: ImagePolicyWebhook'
+- title: The Webhook Kubeconfig
+  category: ImagePolicyWebhook
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The plugin reads the address and credentials of the image service from a kubeconfig file. Use these facts:
+
+      - the service is reachable at `https://image-bouncer.kube-system.svc:1323/image_policy`
+      - it is verified with the CA file `/etc/kubernetes/admission/ca.crt`
+      - the API server authenticates with `/etc/kubernetes/admission/apiserver-client.crt` and `/etc/kubernetes/admission/apiserver-client.key`
+  - type: question
+    question:
+      questionType: multiline
+      header: Write the webhook kubeconfig (`/etc/kubernetes/admission/kubeconfig.yaml`) with one cluster, one user and one
+        context that is current.
+      hint: 'It is a regular kubeconfig: clusters, users, contexts and a current-context that ties them together.'
+      correctAnswerInfo: The paths are as seen from inside the API server container (hence the volume mount). The URL path
+        (`/image_policy`) is defined by the service; the API server POSTs an ImageReview there.
+      expectedAnswer: |
+        apiVersion: v1
+        kind: Config
+        clusters:
+          - name: image-checker
+            cluster:
+              certificate-authority: /etc/kubernetes/admission/ca.crt
+              server: https://image-bouncer.kube-system.svc:1323/image_policy
+        users:
+          - name: api-server
+            user:
+              client-certificate: /etc/kubernetes/admission/apiserver-client.crt
+              client-key: /etc/kubernetes/admission/apiserver-client.key
+        contexts:
+          - name: image-checker
+            context:
+              cluster: image-checker
+              user: api-server
+        current-context: image-checker
+      cel: 'answer.contains(''kind: Config'') && answer.contains(''certificate-authority: /etc/kubernetes/admission/ca.crt'')
+        && answer.contains(''server: https://image-bouncer.kube-system.svc:1323/image_policy'') && answer.contains(''client-certificate:
+        /etc/kubernetes/admission/apiserver-client.crt'') && answer.contains(''client-key: /etc/kubernetes/admission/apiserver-client.key'')
+        && answer.contains(''current-context:'') && answer.contains(''contexts:'') && answer.contains(''clusters:'') && answer.contains(''users:'')'
+  explanation:
+    elements:
+    - type: context
+      text: |
+        The webhook receives an `ImageReview` object (the Pod's container images, namespace and annotations) and answers `allowed: true/false` with
+        a reason. Pod annotations beginning with `*.image-policy.k8s.io/` are passed to the service, which is how an exception such as
+        `break-glass` can be requested if the service supports it.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/reference/access-authn-authz/admission-controllers/#imagepolicywebhook
+        text: 'Admission Controllers: ImagePolicyWebhook'
+- title: API Server Down After the Change
+  category: ImagePolicyWebhook
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      You edited the static Pod manifest and saved. A minute later `kubectl` answers "The connection to the server was refused". The
+      kubelet is still running and has tried to restart the API server several times.
+  - type: question
+    question:
+      questionType: command
+      header: List all containers, including exited ones, whose name is `kube-apiserver` with the container runtime CLI.
+      hint: kubectl is unusable, so talk to containerd directly. Include stopped containers.
+      command:
+        executable: crictl
+        strictness: permissive
+        subcommands:
+        - name: ps
+        flags:
+        - name: all
+          short: a
+          required: true
+          boolean: true
+        - name: name
+          required: true
+          value: kube-apiserver
+  - type: table
+    style: terminal
+    columns:
+    - CONTAINER
+    - IMAGE
+    - CREATED
+    - STATE
+    - NAME
+    - ATTEMPT
+    rows:
+    - - 9d1f7c2a4b3e8
+      - registry.k8s.io/kube-apiserver:v1.34.0
+      - 40 seconds ago
+      - Exited
+      - kube-apiserver
+      - '3'
+    - - 2b7f0e3c91a45
+      - registry.k8s.io/kube-apiserver:v1.34.0
+      - 3 minutes ago
+      - Exited
+      - kube-apiserver
+      - '2'
+  - type: question
+    question:
+      questionType: command
+      header: Show the logs of the container `9d1f7c2a4b3e8`.
+      hint: Same CLI, logs subcommand and the container ID.
+      command:
+        executable: crictl
+        subcommands:
+        - name: logs
+        positionals:
+        - index: 0
+          value: 9d1f7c2a4b3e8
+  - type: manifest
+    header: Last lines of the log
+    content: |
+      E1103 10:21:07.123456       1 run.go:72] "command failed" err="failed to initialize admission: couldn't init admission plugin \"ImagePolicyWebhook\": invalid configuration: open /etc/kubernetes/admission/kubeconfig.yaml: no such file or directory"
+  - type: question
+    question:
+      questionType: single-line
+      header: 'Which part of the static Pod manifest is most likely missing or wrong for this error? '
+      hint: The file exists on the host. Why can the container not see it?
+      expectedAnswer: volume
+      cel: answer.trim().lowerAscii() in ["volume", "volumes", "volumemount", "volumemounts", "volume mount", "the volume",
+        "a volume"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Troubleshooting order for a broken API server: `crictl ps -a` (is it restarting?), `crictl logs <id>` (why did it exit?), then
+        `/var/log/pods/kube-system_kube-apiserver-*/` and `journalctl -u kubelet`. Keep a copy of the manifest outside
+        `/etc/kubernetes/manifests` before editing so you can roll back quickly.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/tasks/debug/debug-cluster/crictl/
+        text: Debugging Kubernetes nodes with crictl
+- title: Allowed Registries with a ValidatingAdmissionPolicy
+  category: ValidatingAdmissionPolicy
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Only images from the company registry `registry.local/` may run. Write a `ValidatingAdmissionPolicy` named `allowed-registries`
+      that denies Pods when any container uses another registry. The policy applies to Pod creation and updates, and requests must be
+      rejected (not allowed) if the policy itself cannot be evaluated.
+  - type: question
+    question:
+      questionType: manifest
+      header: Write the policy.
+      hint: 'The pieces: matchConstraints (what), validations with a CEL expression and a message (the rule), failurePolicy
+        (what if evaluation fails).'
+      correctAnswerInfo: In CEL, `object` is the incoming Pod. An expression such as `object.spec.containers.all(c, c.image.startsWith("registry.local/"))`
+        must evaluate to true for the request to pass.
+      manifestDefinitionId: vap-v1
+      initialContent: |
+        apiVersion: admissionregistration.k8s.io/v1
+        kind: ValidatingAdmissionPolicy
+        metadata:
+          name: allowed-registries
+        spec:
+      expectedFields:
+      - path: metadata.name
+        expectedValue: allowed-registries
+      - path: spec.failurePolicy
+        expectedValue: Fail
+      cel:
+      - name: Targets pods
+        expression: has(manifest.spec.matchConstraints) && manifest.spec.matchConstraints.resourceRules.exists(r, 'pods' in
+          r.resources && '' in r.apiGroups && 'CREATE' in r.operations && 'UPDATE' in r.operations)
+        message: The policy must match Pod creation and updates
+      - name: Registry check
+        expression: manifest.spec.validations.exists(v, v.expression.contains('startsWith') && v.expression.contains('registry.local/'))
+        message: A validation must require the company registry prefix on containers
+      - name: Message
+        expression: manifest.spec.validations.exists(v, has(v.message) && size(v.message) > 0)
+        message: The user needs an explanation when the request is denied
+  - type: manifest
+    header: A complete policy, also covering init and ephemeral containers
+    content: |
+      apiVersion: admissionregistration.k8s.io/v1
+      kind: ValidatingAdmissionPolicy
+      metadata:
+        name: allowed-registries
+      spec:
+        failurePolicy: Fail
+        matchConstraints:
+          resourceRules:
+            - apiGroups: [""]
+              apiVersions: ["v1"]
+              operations: ["CREATE", "UPDATE"]
+              resources: ["pods"]
+        variables:
+          - name: allContainers
+            expression: "object.spec.containers + object.spec.?initContainers.orValue([]) + object.spec.?ephemeralContainers.orValue([])"
+        validations:
+          - expression: "variables.allContainers.all(c, c.image.startsWith('registry.local/'))"
+            message: "Images must come from registry.local"
+  explanation:
+    elements:
+    - type: context
+      text: |
+        A policy does **nothing** until a `ValidatingAdmissionPolicyBinding` references it. Common mistake: a policy that only checks `containers`
+        leaves `initContainers` and `ephemeralContainers` unchecked, so a Pod could pull a hostile image in an init step.
+        `startsWith('registry.local/')` includes the trailing slash on purpose: `registry.local.evil.io/` must not match.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/reference/access-authn-authz/validating-admission-policy/
+        text: Validating Admission Policy
+      - url: https://kubernetes.io/docs/reference/using-api/cel/
+        text: Common Expression Language in Kubernetes
+- title: Bind the Policy
+  category: ValidatingAdmissionPolicy
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The policy exists but denies nothing yet. Create the binding `allowed-registries-prod` so that it is **enforced by rejecting**
+      requests, only in namespaces that have the label `env=prod`.
+  - type: question
+    question:
+      questionType: manifest
+      header: Write the binding.
+      hint: A binding names the policy, selects the namespaces and chooses the actions to take on a violation.
+      correctAnswerInfo: '`validationActions` accepts `Deny`, `Warn` (returns a warning to the client) and `Audit` (adds an
+        audit event annotation). Several can be combined, for example `[Warn, Audit]` while testing.'
+      manifestDefinitionId: vapb-v1
+      initialContent: |
+        apiVersion: admissionregistration.k8s.io/v1
+        kind: ValidatingAdmissionPolicyBinding
+        metadata:
+          name: allowed-registries-prod
+        spec:
+      expectedFields:
+      - path: metadata.name
+        expectedValue: allowed-registries-prod
+      - path: spec.policyName
+        expectedValue: allowed-registries
+      - path: spec.matchResources.namespaceSelector.matchLabels.env
+        expectedValue: prod
+      cel:
+      - name: Deny action
+        expression: '''Deny'' in manifest.spec.validationActions'
+        message: Violations must be rejected
+  - type: question
+    question:
+      questionType: command
+      header: Show the policy and the binding objects at the same time (one command, comma-separated resource types).
+      hint: The resource names are long and have no short names. Plural forms work.
+      command:
+        executable: kubectl
+        strictness: permissive
+        subcommands:
+        - name: get
+      cel: positionals.exists(p, p.contains('validatingadmissionpolic') && p.contains('validatingadmissionpolicybinding'))
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Binding-level knobs: `matchResources` (namespaces, objects), `paramRef` (feed a ConfigMap or CRD of parameters into the policy so one
+        policy can serve many allow-lists), and `validationActions`. Without a binding the policy is inert; without `Deny` it never blocks.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/reference/access-authn-authz/validating-admission-policy/
+        text: Validating Admission Policy
+- title: 'Roll Out Safely: Warn and Audit First'
+  category: ValidatingAdmissionPolicy
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Enforcing immediately in `prod` would break existing Deployments whose Pods are re-created from `docker.io` images. The team wants
+      two weeks of evidence first: clients should be **warned** on violations and violations should be **recorded in the audit log**, but
+      nothing may be blocked yet.
+  - type: question
+    question:
+      questionType: single-line
+      header: Which `validationActions` list gives exactly that? Write the two actions, comma separated.
+      hint: Two of the three action names; leave the blocking one out.
+      expectedAnswer: Warn,Audit
+      cel: answer.trim().lowerAscii() in ["warn,audit", "warn, audit", "audit,warn", "audit, warn", "warn and audit", "audit
+        and warn"]
+  - type: question
+    question:
+      questionType: single-line
+      header: Which action turns the policy into real enforcement later?
+      hint: The one that rejects requests.
+      expectedAnswer: Deny
+      cel: answer.trim().lowerAscii() in ["deny"]
+  - type: question
+    question:
+      questionType: single-line
+      header: Which API server feature must be enabled for the Audit action to be visible to you? (the file that decides what
+        the API server logs)
+      hint: Think about the earlier work on audit logging.
+      correctAnswerInfo: The Audit action only adds an annotation to the audit event of the request. If your audit policy
+        does not record that request at all, the evidence never appears.
+      expectedAnswer: audit policy
+      cel: answer.trim().lowerAscii() in ["audit policy", "audit-policy", "auditing", "audit log", "audit logging", "audit
+        policy file", "audit", "--audit-policy-file"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        The standard adoption path for any policy: `Audit` + `Warn` (observe), fix the offenders, then `Deny`. Review the audit events
+        with `jq` filtering for `validation.policy.admission.k8s.io/validation_failure` annotations.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/reference/access-authn-authz/validating-admission-policy/
+        text: Validating Admission Policy
+- title: 'Do Not Lock Yourself Out: System Namespaces'
+  category: ValidatingAdmissionPolicy
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      After enforcing the registry policy cluster-wide, a node restart brings up the control plane and add-ons slowly: kube-proxy and
+      CoreDNS Pods fail to be recreated, with the message "Images must come from registry.local". They use `registry.k8s.io/...` images
+      in `kube-system`.
+  - type: question
+    question:
+      questionType: manifest
+      header: Fix the binding `allowed-registries-all` so that it applies to every namespace except `kube-system`, keeping
+        `Deny` as the action.
+      hint: Every namespace carries an automatic label with its own name. Use an expression with a set operator.
+      correctAnswerInfo: The label `kubernetes.io/metadata.name` is set by the API server on every namespace, so you can select
+        or exclude a namespace by name without labeling it yourself.
+      manifestDefinitionId: vapb-v1
+      initialContent: |
+        apiVersion: admissionregistration.k8s.io/v1
+        kind: ValidatingAdmissionPolicyBinding
+        metadata:
+          name: allowed-registries-all
+        spec:
+          policyName: allowed-registries
+          validationActions: ["Deny"]
+      expectedFields:
+      - path: spec.policyName
+        expectedValue: allowed-registries
+      cel:
+      - name: Excludes kube-system
+        expression: has(manifest.spec.matchResources) && has(manifest.spec.matchResources.namespaceSelector) && has(manifest.spec.matchResources.namespaceSelector.matchExpressions)
+          && manifest.spec.matchResources.namespaceSelector.matchExpressions.exists(e, e.key == 'kubernetes.io/metadata.name'
+          && e.operator == 'NotIn' && 'kube-system' in e.values)
+        message: The system namespace must be excluded from the selection
+      - name: Deny
+        expression: '''Deny'' in manifest.spec.validationActions'
+        message: Violations must still be rejected
+  explanation:
+    elements:
+    - type: context
+      text: |
+        System components are the first thing a strict policy breaks. Exclude the control-plane namespace (and any others you operate
+        differently), and prefer an allow-list that contains `registry.k8s.io/` over disabling the policy there. Remember that static Pods
+        are not created through the API server's admission path the same way (mirror Pods are created, but the kubelet starts the real ones).
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/reference/access-authn-authz/validating-admission-policy/
+        text: Validating Admission Policy
+- title: Require Digests
+  category: ValidatingAdmissionPolicy
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Tags can be re-pushed, so the policy `require-digest` must demand that every container image (including init containers) is referenced by
+      **digest** (`...@sha256:<64 hex characters>`). Pods that use tags must be denied.
+  - type: question
+    question:
+      questionType: manifest
+      header: Write the policy `require-digest`.
+      hint: Strings in CEL have methods like contains, startsWith and matches. A digest has a recognisable marker.
+      correctAnswerInfo: 'A stricter expression: `c.image.matches("@sha256:[a-f0-9]{64}$")`. `contains` is easier to read
+        but accepts malformed digests (the runtime would then fail the pull).'
+      manifestDefinitionId: vap-v1
+      initialContent: |
+        apiVersion: admissionregistration.k8s.io/v1
+        kind: ValidatingAdmissionPolicy
+        metadata:
+          name: require-digest
+        spec:
+      expectedFields:
+      - path: metadata.name
+        expectedValue: require-digest
+      cel:
+      - name: Targets pods
+        expression: manifest.spec.matchConstraints.resourceRules.exists(r, 'pods' in r.resources && 'CREATE' in r.operations)
+        message: The policy must match Pod creation
+      - name: Digest rule
+        expression: manifest.spec.validations.exists(v, v.expression.contains('@sha256:'))
+        message: A validation must require a sha256 digest in the image reference
+      - name: Init containers
+        expression: manifest.spec.validations.exists(v, v.expression.contains('initContainers')) || (has(manifest.spec.variables)
+          && manifest.spec.variables.exists(x, x.expression.contains('initContainers')))
+        message: Init containers must be checked too
+      - name: Fails closed
+        expression: has(manifest.spec.failurePolicy) && manifest.spec.failurePolicy == 'Fail'
+        message: An error while evaluating must reject the request
+  - type: question
+    question:
+      questionType: single-line
+      header: A Deployment is changed to the digest form. Which field of the running Pod status shows the digest the node
+        actually pulled? (give the field name)
+      hint: It sits next to the container state, not in the spec.
+      expectedAnswer: imageID
+      cel: answer.trim().lowerAscii() in ["imageid"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Digest enforcement turns every release into an explicit, reviewable change: someone must update the digest. Pair it with a
+        tool (for example Renovate) that bumps tags and digests together, and with scanning/signing in the pipeline that produces the digest.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/reference/access-authn-authz/validating-admission-policy/
+        text: Validating Admission Policy
+      - url: https://kubernetes.io/docs/concepts/containers/images/
+        text: Images
+- title: 'Capstone: Registry and Digest Gate'
+  category: Capstone
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Design the final control. Pods in all namespaces except `kube-system` must (1) use `registry.local/` images and (2) be referenced
+      by digest. Start with the policy, `image-gate`, and then test it.
+  - type: question
+    question:
+      questionType: manifest
+      header: Write one `ValidatingAdmissionPolicy` named `image-gate` that enforces both rules, for Pod creation and update,
+        covering init containers.
+      hint: Two validations (or one combined) and one variable with all containers are a clean way to do it.
+      manifestDefinitionId: vap-v1
+      initialContent: |
+        apiVersion: admissionregistration.k8s.io/v1
+        kind: ValidatingAdmissionPolicy
+        metadata:
+          name: image-gate
+        spec:
+      expectedFields:
+      - path: metadata.name
+        expectedValue: image-gate
+      - path: spec.failurePolicy
+        expectedValue: Fail
+      cel:
+      - name: Registry rule
+        expression: manifest.spec.validations.exists(v, v.expression.contains('registry.local/'))
+        message: A validation must restrict the registry
+      - name: Digest rule
+        expression: manifest.spec.validations.exists(v, v.expression.contains('@sha256:'))
+        message: A validation must require digests
+      - name: Pods
+        expression: manifest.spec.matchConstraints.resourceRules.exists(r, 'pods' in r.resources && 'CREATE' in r.operations
+          && 'UPDATE' in r.operations)
+        message: The policy must match Pod creation and updates
+      - name: Init containers
+        expression: manifest.spec.validations.exists(v, v.expression.contains('initContainers')) || (has(manifest.spec.variables)
+          && manifest.spec.variables.exists(x, x.expression.contains('initContainers')))
+        message: Init containers must be checked
+  - type: question
+    question:
+      questionType: manifest
+      header: 'Write the binding `image-gate-binding`: it enforces the policy by rejecting violations in every namespace except
+        `kube-system`.'
+      hint: The same shape as the earlier binding.
+      manifestDefinitionId: vapb-v1
+      initialContent: |
+        apiVersion: admissionregistration.k8s.io/v1
+        kind: ValidatingAdmissionPolicyBinding
+        metadata:
+          name: image-gate-binding
+        spec:
+      expectedFields:
+      - path: spec.policyName
+        expectedValue: image-gate
+      cel:
+      - name: Excludes kube-system
+        expression: manifest.spec.matchResources.namespaceSelector.matchExpressions.exists(e, e.key == 'kubernetes.io/metadata.name'
+          && e.operator == 'NotIn' && 'kube-system' in e.values)
+        message: The system namespace must not be selected
+      - name: Deny
+        expression: '''Deny'' in manifest.spec.validationActions'
+        message: Violations must be rejected
+  - type: question
+    question:
+      questionType: command
+      header: 'Test: try to run a Pod `probe` with image `nginx:1.27.3` in namespace `default`.'
+      hint: An imperative command for a single Pod.
+      command:
+        executable: kubectl
+        strictness: permissive
+        subcommands:
+        - name: run
+        positionals:
+        - index: 0
+          value: probe
+        flags:
+        - name: image
+          required: true
+          value: nginx:1.27.3
+        - name: namespace
+          short: n
+          required: true
+          value: default
+  - type: manifest
+    header: The request is rejected
+    content: |
+      Error from server (Invalid): pods "probe" is invalid: : ValidatingAdmissionPolicy 'image-gate' with binding 'image-gate-binding' denied request: Images must come from registry.local
+  - type: question
+    question:
+      questionType: single-line
+      header: 'Name the three-part chain of objects that produced this message: the policy, the ____ and the namespace selection.
+        What is the missing object type?'
+      hint: The message names it right after the policy.
+      expectedAnswer: ValidatingAdmissionPolicyBinding
+      cel: answer.trim().lowerAscii() in ["validatingadmissionpolicybinding", "binding", "validating admission policy binding",
+        "policy binding", "vapb"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        This is the supply-chain loop closed: the pipeline produces a scanned, signed digest in `registry.local`, and admission refuses
+        everything else. In production also add a webhook-based or engine-based verification of signatures (cosign/Kyverno) if you need to prove
+        *who* built the image; digests and registries only prove *where* it came from and *which bytes*.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/reference/access-authn-authz/validating-admission-policy/
+        text: Validating Admission Policy
+      - url: https://kubernetes.io/docs/reference/using-api/cel/
+        text: Common Expression Language in Kubernetes

@@ -1,0 +1,1004 @@
+apiVersion: v1alpha1
+name: 'CKS (Hands-On): Upgrading a kubeadm Cluster'
+k8sVersion: 1.34.0
+timing:
+  enabled: true
+  limitSeconds: 7200
+introduction:
+  elements:
+  - type: context
+    text: |
+      Hands-on practice with **upgrading a kubeadm cluster** for the CKS *Cluster Hardening* domain (patching known vulnerabilities): choose a safe target version, respect the
+      version skew policy, back up etcd, upgrade the control plane and worker nodes, drain and uncordon nodes and verify the result. There is no multiple choice.
+
+      **Lab environment**
+
+      - You are `root` on control-plane node `cp1` of a kubeadm cluster with workers `worker-1` and `worker-2` (containerd, Ubuntu hosts, packages from the official `pkgs.k8s.io` repository).
+        The cluster runs Kubernetes `v1.33.4`; scenarios state the target version and package version string.
+      - Scenarios mention when a command runs on another node.
+
+      **How answers are checked**
+
+      - *Commands* are checked structurally (flag order is free, long and short forms accepted); *ordering* questions check the whole sequence; short answers accept common spellings.
+
+      Exam content is under NDA: this is practice for the common patterns, not a prediction.
+  - type: references
+    links:
+    - url: https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/kubeadm-upgrade/
+      text: Upgrading kubeadm clusters
+    - url: https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/upgrading-linux-nodes/
+      text: Upgrading Linux nodes
+    - url: https://kubernetes.io/releases/version-skew-policy/
+      text: Version Skew Policy
+    - url: https://training.linuxfoundation.org/certification/certified-kubernetes-security-specialist-cks/
+      text: CKS Domains and Competencies
+manifestDefinitions: []
+scenarios:
+- title: Why and Which Version
+  category: Planning
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The cluster runs Kubernetes `v1.33.4`. A security advisory describes a privilege-escalation flaw fixed in `v1.33.7` and in `v1.34.2`.
+      The latest available release is `v1.34.2`. Management wants the smallest safe change.
+  - type: question
+    question:
+      questionType: single-line
+      header: Which target version is the smallest change that includes the fix?
+      hint: A patch upgrade within the same minor version is less risky than a minor upgrade.
+      correctAnswerInfo: Patch releases (same minor) carry only fixes. A minor upgrade brings new features and deprecations
+        and must be planned and tested.
+      expectedAnswer: v1.33.7
+      cel: answer.trim().lowerAscii() in ["v1.33.7", "1.33.7"]
+  - type: question
+    question:
+      questionType: single-line
+      header: Is it allowed to upgrade a kubeadm cluster from v1.33.4 directly to v1.35.x? (yes/no)
+      hint: kubeadm upgrades by one minor version at a time.
+      correctAnswerInfo: kubeadm supports upgrades from one minor version to the next (v1.33 → v1.34 → v1.35); minor versions
+        cannot be skipped.
+      expectedAnswer: 'no'
+      cel: answer.trim().lowerAscii() in ["no"]
+  - type: question
+    question:
+      questionType: single-line
+      header: Kubernetes maintains patch releases for how many of the most recent minor versions? (number)
+      hint: Roughly one year of support per release.
+      correctAnswerInfo: The project supports the three most recent minor releases; older ones receive no security fixes.
+      expectedAnswer: '3'
+      cel: answer.trim().lowerAscii() in ["3", "three"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Staying on a supported version is itself a security control. Plan upgrades: read the release notes for deprecations, back up etcd, upgrade control plane nodes first, then worker nodes.
+    - type: references
+      links:
+      - url: https://kubernetes.io/releases/patch-releases/
+        text: Patch Releases (supported versions)
+      - url: https://kubernetes.io/releases/version-skew-policy/
+        text: Version Skew Policy
+- title: Version Skew
+  category: Planning
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      After the control plane is upgraded, kubelets, kubectl and kube-proxy lag behind for a while. The version skew policy defines what is allowed.
+  - type: question
+    question:
+      questionType: single-line
+      header: May the kubelet on a worker be OLDER than the kube-apiserver? (yes/no)
+      hint: Yes, within limits; think rolling upgrades.
+      correctAnswerInfo: Kubelets may be up to three minor versions older than the API server (since v1.28), but never newer.
+      expectedAnswer: 'yes'
+      cel: answer.trim().lowerAscii() in ["yes"]
+  - type: question
+    question:
+      questionType: single-line
+      header: May the kubelet be NEWER than the kube-apiserver? (yes/no)
+      hint: The API server must be the newest component.
+      expectedAnswer: 'no'
+      cel: answer.trim().lowerAscii() in ["no"]
+  - type: question
+    question:
+      questionType: single-line
+      header: How far can kubectl differ from the API server (in minor versions, in either direction)?
+      hint: A single minor version.
+      expectedAnswer: '1'
+      cel: answer.trim().lowerAscii() in ["1", "one", "+-1", "\u00b11", "one minor version", "1 minor version", "plus or minus
+        one"]
+  - type: question
+    question:
+      questionType: single-line
+      header: Which group of nodes is upgraded first?
+      hint: The newest component must be at the top.
+      expectedAnswer: control plane
+      cel: answer.trim().lowerAscii() in ["control plane", "control plane nodes", "the control plane", "control-plane", "control
+        plane first", "master"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        | Component | Allowed skew relative to kube-apiserver |
+        |---|---|
+        | kubelet | same or up to 3 minor versions older (never newer) |
+        | kube-proxy | same as kubelet |
+        | kube-controller-manager, kube-scheduler | same or 1 minor older |
+        | kubectl | 1 minor older or newer |
+    - type: references
+      links:
+      - url: https://kubernetes.io/releases/version-skew-policy/
+        text: Version Skew Policy
+- title: Survey the Cluster and Plan
+  category: Control Plane Upgrade
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      You are on the control-plane node `cp1`. Check the situation before changing anything.
+  - type: question
+    question:
+      questionType: command
+      header: Show the nodes of the cluster with their versions.
+      hint: The VERSION column shows the kubelet version.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: get
+        - name: nodes
+          aliases:
+          - node
+          - 'no'
+  - type: table
+    style: terminal
+    columns:
+    - NAME
+    - STATUS
+    - ROLES
+    - AGE
+    - VERSION
+    rows:
+    - - cp1
+      - Ready
+      - control-plane
+      - 120d
+      - v1.33.4
+    - - worker-1
+      - Ready
+      - <none>
+      - 120d
+      - v1.33.4
+    - - worker-2
+      - Ready
+      - <none>
+      - 120d
+      - v1.33.4
+  - type: question
+    question:
+      questionType: command
+      header: Print the version of the installed kubeadm.
+      hint: kubeadm has a version subcommand.
+      command:
+        executable: kubeadm
+        subcommands:
+        - name: version
+  - type: question
+    question:
+      questionType: command
+      header: 'After installing the new kubeadm, get the upgrade plan: which versions can you upgrade to and which components
+        change.'
+      hint: upgrade has a subcommand that only shows possibilities.
+      command:
+        executable: kubeadm
+        subcommands:
+        - name: upgrade
+        - name: plan
+  - type: manifest
+    header: kubeadm upgrade plan (shortened)
+    content: |
+      Components that must be upgraded manually after you have upgraded the control plane with 'kubeadm upgrade apply':
+      COMPONENT   NODE       CURRENT    TARGET
+      kubelet     cp1        v1.33.4    v1.33.7
+      kubelet     worker-1   v1.33.4    v1.33.7
+      kubelet     worker-2   v1.33.4    v1.33.7
+
+      Upgrade to the latest version in the v1.33 series:
+
+      COMPONENT                 NODE   CURRENT    TARGET
+      kube-apiserver            cp1    v1.33.4    v1.33.7
+      kube-controller-manager   cp1    v1.33.4    v1.33.7
+      kube-scheduler            cp1    v1.33.4    v1.33.7
+      kube-proxy                       1.33.4     v1.33.7
+      CoreDNS                          v1.12.0    v1.12.0
+      etcd                      cp1    3.5.21-0   3.5.21-0
+
+      You can now apply the upgrade by executing the following command:
+
+              kubeadm upgrade apply v1.33.7
+  - type: question
+    question:
+      questionType: single-line
+      header: What does kubeadm say you must upgrade manually even after `kubeadm upgrade apply`?
+      hint: Look at the first block.
+      correctAnswerInfo: '`kubeadm upgrade apply` upgrades control plane static Pods, CoreDNS, kube-proxy and renews certificates;
+        the kubelet and kubectl are OS packages you update yourself.'
+      expectedAnswer: kubelet
+      cel: answer.trim().lowerAscii() in ["kubelet"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Read `kubeadm upgrade plan` for three things: the target version string to pass to `apply`, which components change, and what you must still do by hand.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/kubeadm-upgrade/
+        text: Upgrading kubeadm clusters
+- title: Back Up etcd First
+  category: Control Plane Upgrade
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      A control plane upgrade is not reversible without a backup. Take an etcd snapshot to `/opt/backup/etcd-pre-upgrade.db` before you touch anything. etcd listens on `https://127.0.0.1:2379`;
+      the certificates are `/etc/kubernetes/pki/etcd/ca.crt`, `server.crt` and `server.key`.
+  - type: question
+    question:
+      questionType: command
+      header: Create the snapshot.
+      hint: etcdctl snapshot subcommand, the file as the argument, the four connection flags.
+      command:
+        executable: etcdctl
+        subcommands:
+        - name: snapshot
+        - name: save
+        positionals:
+        - index: 0
+          value: /opt/backup/etcd-pre-upgrade.db
+        flags:
+        - name: endpoints
+          required: true
+          value: https://127.0.0.1:2379
+        - name: cacert
+          required: true
+          value: /etc/kubernetes/pki/etcd/ca.crt
+        - name: cert
+          required: true
+          value: /etc/kubernetes/pki/etcd/server.crt
+        - name: key
+          required: true
+          value: /etc/kubernetes/pki/etcd/server.key
+  - type: question
+    question:
+      questionType: command
+      header: 'Check the snapshot file: print its status as a table (hash, revision, total keys, size).'
+      hint: A status subcommand with an output format flag.
+      correctAnswerInfo: In etcd 3.6 `snapshot status` moved to `etcdutl`; both give the same information.
+      command:
+        executable: etcdctl
+        subcommands:
+        - name: snapshot
+        - name: status
+        positionals:
+        - index: 0
+          value: /opt/backup/etcd-pre-upgrade.db
+        flags:
+        - name: write-out
+          short: w
+          required: true
+          value: table
+  explanation:
+    elements:
+    - type: context
+      text: |
+        `kubeadm upgrade apply` also backs up the manifests and etcd data of the node it changes (under `/etc/kubernetes/tmp`), but an independent snapshot stored off the node is your real recovery path.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/tasks/administer-cluster/configure-upgrade-etcd/#backing-up-an-etcd-cluster
+        text: Backing up an etcd cluster
+- title: Upgrade kubeadm
+  category: Control Plane Upgrade
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Target: `v1.33.7`. The package repository offers the package version string `1.33.7-1.1`. The packages `kubeadm`, `kubelet` and `kubectl` are on hold, so a plain system
+      update cannot move them accidentally.
+  - type: question
+    question:
+      questionType: command
+      header: Release the hold on kubeadm so it can be changed.
+      hint: apt-mark has the opposite of hold.
+      command:
+        executable: apt-mark
+        subcommands:
+        - name: unhold
+        positionals:
+        - index: 0
+          value: kubeadm
+  - type: question
+    question:
+      questionType: command
+      header: Install exactly version `1.33.7-1.1` of kubeadm.
+      hint: Package name, equals sign, version string.
+      command:
+        executable: apt-get
+        subcommands:
+        - name: install
+        positionals:
+        - index: 0
+          value: kubeadm=1.33.7-1.1
+        flags:
+        - name: 'yes'
+          short: y
+          boolean: true
+  - type: question
+    question:
+      questionType: command
+      header: Hold the package again.
+      hint: The reverse of the first command.
+      command:
+        executable: apt-mark
+        subcommands:
+        - name: hold
+        positionals:
+        - index: 0
+          value: kubeadm
+  - type: question
+    question:
+      questionType: command
+      header: Check that the new binary reports the right version.
+      hint: Same command as before.
+      command:
+        executable: kubeadm
+        strictness: permissive
+        subcommands:
+        - name: version
+        flags:
+        - name: output
+          short: o
+          value: short
+  explanation:
+    elements:
+    - type: context
+      text: |
+        On RPM-based hosts the same steps use `yum versionlock` or `dnf`. Whatever the package manager: **kubeadm first** — the new kubeadm knows how to perform the upgrade to its own version.
+        Holding the packages prevents surprise upgrades from unattended updates.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/kubeadm-upgrade/
+        text: Upgrading kubeadm clusters
+- title: Apply the Upgrade on the First Control Plane Node
+  category: Control Plane Upgrade
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      `kubeadm upgrade plan` listed `v1.33.7` as a possible target.
+  - type: question
+    question:
+      questionType: command
+      header: Upgrade the control plane components of this node to `v1.33.7`. Confirm automatically.
+      hint: The apply subcommand takes the target version as its argument.
+      correctAnswerInfo: This rewrites the static Pod manifests of the API server, controller manager and scheduler, upgrades
+        etcd if the version changed, updates CoreDNS and kube-proxy and renews certificates that are about to expire.
+      command:
+        executable: kubeadm
+        subcommands:
+        - name: upgrade
+        - name: apply
+        positionals:
+        - index: 0
+          value: v1.33.7
+        flags:
+        - name: 'yes'
+          short: y
+          boolean: true
+  - type: manifest
+    header: End of the output
+    content: |
+      [upgrade/successful] SUCCESS! Your cluster was upgraded to "v1.33.7". Enjoy!
+
+      [upgrade/kubelet] Now that your control plane is upgraded, please proceed with upgrading your kubelets if you haven't already done so.
+  - type: question
+    question:
+      questionType: single-line
+      header: With several control plane nodes, which kubeadm command do you run on the remaining ones instead of `apply`?
+      hint: The same one you use on workers.
+      expectedAnswer: kubeadm upgrade node
+      cel: answer.trim().lowerAscii() in ["kubeadm upgrade node", "upgrade node", "kubeadm upgrade node"]
+  - type: question
+    question:
+      questionType: single-line
+      header: Does `kubeadm upgrade apply` change the version shown by `kubectl get nodes` for the control plane node? (yes/no)
+      hint: The column shows the kubelet version.
+      expectedAnswer: 'no'
+      cel: answer.trim().lowerAscii() in ["no"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        `apply` is for the *first* control plane node; `node` is for everything else (additional control plane nodes and workers). `apply` also holds a version check: it refuses a target that is more than one minor version ahead.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/kubeadm-upgrade/
+        text: Upgrading kubeadm clusters
+- title: Drain, Upgrade the Kubelet, Uncordon
+  category: Control Plane Upgrade
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The kubelet still runs `v1.33.4`. Upgrading it restarts the process, so first move workloads away from the node.
+  - type: question
+    question:
+      questionType: command
+      header: Evict the Pods from `cp1`, ignoring DaemonSet-managed Pods that cannot be moved.
+      hint: drain refuses to proceed with DaemonSet Pods unless told to ignore them.
+      correctAnswerInfo: Drain first cordons the node (marks it unschedulable) and then evicts Pods, respecting PodDisruptionBudgets.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: drain
+        positionals:
+        - index: 0
+          value: cp1
+        flags:
+        - name: ignore-daemonsets
+          required: true
+          boolean: true
+        - name: delete-emptydir-data
+          boolean: true
+  - type: question
+    question:
+      questionType: command
+      header: Release the hold on kubelet and kubectl.
+      hint: Two packages in one command.
+      command:
+        executable: apt-mark
+        subcommands:
+        - name: unhold
+        positionals:
+        - index: 0
+          value: kubelet
+        - index: 1
+          value: kubectl
+  - type: question
+    question:
+      questionType: command
+      header: Install kubelet and kubectl in version `1.33.7-1.1`.
+      hint: Two package=version arguments.
+      command:
+        executable: apt-get
+        subcommands:
+        - name: install
+        positionals:
+        - index: 0
+          value: kubelet=1.33.7-1.1
+        - index: 1
+          value: kubectl=1.33.7-1.1
+        flags:
+        - name: 'yes'
+          short: y
+          boolean: true
+  - type: question
+    question:
+      questionType: command
+      header: Hold them again.
+      hint: Mirror of the unhold command.
+      command:
+        executable: apt-mark
+        subcommands:
+        - name: hold
+        positionals:
+        - index: 0
+          value: kubelet
+        - index: 1
+          value: kubectl
+  - type: question
+    question:
+      questionType: command
+      header: Reload the systemd unit files, in case the packages changed them.
+      hint: One verb.
+      command:
+        executable: systemctl
+        subcommands:
+        - name: daemon-reload
+  - type: question
+    question:
+      questionType: command
+      header: Restart the kubelet.
+      hint: A service restart.
+      command:
+        executable: systemctl
+        subcommands:
+        - name: restart
+        positionals:
+        - index: 0
+          value: kubelet
+  - type: question
+    question:
+      questionType: command
+      header: Make `cp1` schedulable again.
+      hint: The opposite of cordon.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: uncordon
+        positionals:
+        - index: 0
+          value: cp1
+  explanation:
+    elements:
+    - type: context
+      text: |
+        If the node stays `NotReady` after the restart, check `systemctl status kubelet` and `journalctl -u kubelet`. A node that remains cordoned (`SchedulingDisabled`) after a
+        successful upgrade is the most common leftover; `kubectl get nodes` shows it.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/kubeadm-upgrade/
+        text: Upgrading kubeadm clusters
+      - url: https://kubernetes.io/docs/tasks/administer-cluster/safely-drain-node/
+        text: Safely Drain a Node
+- title: Order of the Control Plane Procedure
+  category: Control Plane Upgrade
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Put the steps of upgrading the first control plane node in the order of the official procedure.
+  - type: question
+    question:
+      questionType: ordering
+      header: Arrange the steps.
+      hint: kubeadm itself is the first tool to move; the kubelet restart is the disruptive part, so draining directly precedes
+        it.
+      items:
+      - id: kubeadm
+        text: Upgrade the kubeadm package
+      - id: plan
+        text: kubeadm upgrade plan
+      - id: apply
+        text: kubeadm upgrade apply <version>
+      - id: drain
+        text: Drain the node
+      - id: kubelet
+        text: Upgrade the kubelet and kubectl packages
+      - id: restart
+        text: Restart the kubelet
+      - id: uncordon
+        text: Uncordon the node
+      correctOrder:
+      - kubeadm
+      - plan
+      - apply
+      - drain
+      - kubelet
+      - restart
+      - uncordon
+  explanation:
+    elements:
+    - type: context
+      text: |
+        For the first control plane node the official documentation drains **after** `kubeadm upgrade apply` (the API server keeps serving through the upgrade because the static Pods are restarted one by one) and just before the kubelet upgrade.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/kubeadm-upgrade/
+        text: Upgrading kubeadm clusters
+- title: Upgrade a Worker Node
+  category: Worker Upgrade
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Now `worker-1`. Commands that change the node run **on the worker** (SSH into it), while draining and uncordoning use `kubectl`, which is configured on the control plane node.
+      You are on `worker-1` as root; the new kubeadm package is already installed.
+  - type: question
+    question:
+      questionType: command
+      header: Upgrade the local kubelet configuration and node components to the version of the installed kubeadm.
+      hint: The subcommand for nodes other than the first control plane node.
+      correctAnswerInfo: '`kubeadm upgrade node` downloads the new kubelet configuration from the cluster (the `kubelet-config`
+        ConfigMap). On a worker, it does not touch static Pod manifests.'
+      command:
+        executable: kubeadm
+        subcommands:
+        - name: upgrade
+        - name: node
+  - type: context
+    text: |
+      Back on `cp1`, drain the worker before its kubelet is replaced.
+  - type: question
+    question:
+      questionType: command
+      header: Drain `worker-1`.
+      hint: The same as for the control plane node.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: drain
+        positionals:
+        - index: 0
+          value: worker-1
+        flags:
+        - name: ignore-daemonsets
+          required: true
+          boolean: true
+        - name: delete-emptydir-data
+          boolean: true
+  - type: context
+    text: |
+      On `worker-1` again, install the kubelet in version `1.33.7-1.1` (the hold on `kubelet` and `kubectl` is released, the packages were installed and held again) and restart it.
+  - type: question
+    question:
+      questionType: command
+      header: Restart the kubelet on the worker.
+      hint: A service.
+      command:
+        executable: systemctl
+        subcommands:
+        - name: restart
+        positionals:
+        - index: 0
+          value: kubelet
+  - type: question
+    question:
+      questionType: command
+      header: From `cp1`, make `worker-1` schedulable again.
+      hint: uncordon.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: uncordon
+        positionals:
+        - index: 0
+          value: worker-1
+  - type: question
+    question:
+      questionType: command
+      header: Check the node versions.
+      hint: The VERSION column.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: get
+        - name: nodes
+          aliases:
+          - node
+          - 'no'
+  - type: table
+    style: terminal
+    columns:
+    - NAME
+    - STATUS
+    - ROLES
+    - AGE
+    - VERSION
+    rows:
+    - - cp1
+      - Ready
+      - control-plane
+      - 120d
+      - v1.33.7
+    - - worker-1
+      - Ready
+      - <none>
+      - 120d
+      - v1.33.7
+    - - worker-2
+      - Ready
+      - <none>
+      - 120d
+      - v1.33.4
+  - type: question
+    question:
+      questionType: single-line
+      header: Which node still has to be upgraded?
+      hint: Look at the VERSION column.
+      expectedAnswer: worker-2
+      cel: answer.trim().lowerAscii() in ["worker-2"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Upgrade workers one at a time (or in small batches) so that PodDisruptionBudgets and capacity are respected. Drain moves Pods with controllers elsewhere; Pods without a controller (bare Pods) are
+        deleted and need `--force`, which you should use deliberately.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/upgrading-linux-nodes/
+        text: Upgrading Linux nodes
+      - url: https://kubernetes.io/docs/tasks/administer-cluster/safely-drain-node/
+        text: Safely Drain a Node
+- title: When the Drain Does Not Finish
+  category: Worker Upgrade
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      `kubectl drain worker-2 --ignore-daemonsets` stops with an error:
+  - type: manifest
+    header: Output
+    content: |
+      error when evicting pods/"cache-0" -n shop (will retry after 5s): Cannot evict pod as it would violate the pod's disruption budget.
+  - type: question
+    question:
+      questionType: single-line
+      header: Which API object defines how many replicas of the application must stay available during voluntary disruptions
+        such as drain?
+      hint: Three words, abbreviated PDB.
+      expectedAnswer: PodDisruptionBudget
+      cel: answer.trim().lowerAscii() in ["poddisruptionbudget", "pdb", "poddisruptionbudgets", "pod disruption budget"]
+  - type: question
+    question:
+      questionType: command
+      header: List the PodDisruptionBudgets in namespace `shop`.
+      hint: Namespaced resource.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: get
+        - name: poddisruptionbudgets
+          aliases:
+          - poddisruptionbudget
+          - pdb
+        flags:
+        - name: namespace
+          short: n
+          required: true
+          value: shop
+  - type: question
+    question:
+      questionType: single-line
+      header: A Pod without any controller (created directly) blocks the drain with the message "cannot delete Pods declare
+        no controller". Which flag lets the drain delete such Pods?
+      hint: A flag whose name says "no questions asked".
+      expectedAnswer: --force
+      cel: answer.trim().lowerAscii() in ["--force", "force"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Do not remove the PDB to push a drain through: add replicas (so the budget allows an eviction) or drain when load is low. Using `--force` deletes bare Pods permanently — they are not recreated.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/tasks/administer-cluster/safely-drain-node/
+        text: Safely Drain a Node
+- title: After the Upgrade
+  category: Verification
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      All nodes now report `v1.33.7`. Verify that the cluster is healthy and that certificates were renewed.
+  - type: question
+    question:
+      questionType: command
+      header: Check that the control plane Pods in `kube-system` are running.
+      hint: Namespaced query.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: get
+        - name: pods
+          aliases:
+          - pod
+          - po
+        flags:
+        - name: namespace
+          short: n
+          required: true
+          value: kube-system
+  - type: question
+    question:
+      questionType: command
+      header: Check the expiry dates of the cluster certificates managed by kubeadm.
+      hint: kubeadm has a certs subcommand.
+      command:
+        executable: kubeadm
+        subcommands:
+        - name: certs
+        - name: check-expiration
+  - type: table
+    style: terminal
+    columns:
+    - CERTIFICATE
+    - EXPIRES
+    - RESIDUAL TIME
+    - CERTIFICATE AUTHORITY
+    - EXTERNALLY MANAGED
+    rows:
+    - - admin.conf
+      - Nov 03, 2027 09:30 UTC
+      - 364d
+      - ''
+      - 'no'
+    - - apiserver
+      - Nov 03, 2027 09:30 UTC
+      - 364d
+      - ca
+      - 'no'
+    - - etcd-server
+      - Nov 03, 2027 09:30 UTC
+      - 364d
+      - etcd-ca
+      - 'no'
+    - - ca
+      - Nov 01, 2035 08:00 UTC
+      - 9y
+      - ''
+      - 'no'
+  - type: question
+    question:
+      questionType: single-line
+      header: 'Why did the leaf certificates get a fresh one-year lifetime? (answer: upgrade renews them)'
+      hint: What does kubeadm do with certificates during `upgrade apply` by default?
+      correctAnswerInfo: Use `--certificate-renewal=false` to prevent it. The CA certificates are not renewed by upgrades
+        (10-year lifetime).
+      expectedAnswer: kubeadm upgrade renews certificates
+      cel: answer.trim().lowerAscii() in ["kubeadm upgrade renews certificates", "upgrade renews them", "because the upgrade
+        renewed them", "they were renewed", "renewed by the upgrade", "kubeadm upgrade renews them", "upgrade renews certificates",
+        "renewal", "the upgrade renewed them", "kubeadm renews them during upgrade", "renewed during the upgrade", "renewed"]
+  - type: question
+    question:
+      questionType: command
+      header: 'Finally, check that a Pod can still be scheduled: list all Pods in all namespaces that are NOT in Running status
+        using a field selector.'
+      hint: A selector on the phase field.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: get
+        - name: pods
+          aliases:
+          - pod
+          - po
+        flags:
+        - name: all-namespaces
+          short: A
+          required: true
+          boolean: true
+        - name: field-selector
+          required: true
+          value: status.phase!=Running
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Verification checklist: nodes `Ready` and at the new version, control plane Pods running, CoreDNS and CNI Pods healthy, no Pods stuck in `Pending`/`CrashLoopBackOff`, certificate expiry as expected,
+        and the workloads' own readiness. Keep the etcd snapshot until you are confident.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/kubeadm-certs/
+        text: Certificate Management with kubeadm
+      - url: https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/kubeadm-upgrade/
+        text: Upgrading kubeadm clusters
+- title: 'Capstone: Plan and Upgrade a Cluster'
+  category: Capstone
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      A one-control-plane, two-worker cluster runs `v1.33.4`. The target is the latest patch `v1.33.7` (package version `1.33.7-1.1`). Run the key steps for the control plane node and
+      the first worker in order.
+  - type: question
+    question:
+      questionType: command
+      header: Install kubeadm in the target version (assume the package hold was lifted).
+      hint: Package=version.
+      command:
+        executable: apt-get
+        subcommands:
+        - name: install
+        positionals:
+        - index: 0
+          value: kubeadm=1.33.7-1.1
+        flags:
+        - name: 'yes'
+          short: y
+          boolean: true
+  - type: question
+    question:
+      questionType: command
+      header: Preview the upgrade.
+      hint: Read-only.
+      command:
+        executable: kubeadm
+        subcommands:
+        - name: upgrade
+        - name: plan
+  - type: question
+    question:
+      questionType: command
+      header: Apply the upgrade to the control plane.
+      hint: Version with the leading v.
+      command:
+        executable: kubeadm
+        subcommands:
+        - name: upgrade
+        - name: apply
+        positionals:
+        - index: 0
+          value: v1.33.7
+        flags:
+        - name: 'yes'
+          short: y
+          boolean: true
+  - type: question
+    question:
+      questionType: command
+      header: Drain the control plane node `cp1`, ignoring DaemonSet Pods.
+      hint: Evict workloads.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: drain
+        positionals:
+        - index: 0
+          value: cp1
+        flags:
+        - name: ignore-daemonsets
+          required: true
+          boolean: true
+        - name: delete-emptydir-data
+          boolean: true
+  - type: question
+    question:
+      questionType: command
+      header: Install kubelet in the target version.
+      hint: Package=version.
+      command:
+        executable: apt-get
+        strictness: permissive
+        subcommands:
+        - name: install
+        positionals:
+        - index: 0
+          value: kubelet=1.33.7-1.1
+        flags:
+        - name: 'yes'
+          short: y
+          boolean: true
+  - type: question
+    question:
+      questionType: command
+      header: Restart the kubelet.
+      hint: The service name.
+      command:
+        executable: systemctl
+        subcommands:
+        - name: restart
+        positionals:
+        - index: 0
+          value: kubelet
+  - type: question
+    question:
+      questionType: command
+      header: Make `cp1` schedulable.
+      hint: Opposite of cordon.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: uncordon
+        positionals:
+        - index: 0
+          value: cp1
+  - type: question
+    question:
+      questionType: single-line
+      header: On `worker-1`, which kubeadm subcommand upgrades the node (instead of `apply`)?
+      hint: The word after upgrade differs.
+      expectedAnswer: kubeadm upgrade node
+      cel: answer.trim().lowerAscii() in ["kubeadm upgrade node", "upgrade node"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        The pattern for the exam: **upgrade the tool (kubeadm) → plan → apply (control plane) / node (workers) → drain → upgrade kubelet + kubectl → restart kubelet → uncordon → verify**.
+        Commands must run on the right host, so note which node you are on after each SSH hop.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/kubeadm-upgrade/
+        text: Upgrading kubeadm clusters
+      - url: https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/upgrading-linux-nodes/
+        text: Upgrading Linux nodes

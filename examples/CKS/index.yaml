@@ -146,3 +146,140 @@ sets:
       - Hands-On
       - Cluster Hardening
       - Hard
+  - name: "CKS (Hands-On): Image Scanning with Trivy"
+    filename: cks-hands-on-image-scanning-trivy.yaml
+    description: "No multiple choice. Scan images with Trivy: filter by severity and fixability, gate builds with exit codes, write JSON reports and query them with jq, scan archives offline, choose scanners (vuln, secret, config), keep a .trivyignore, find the Pods that run vulnerable images and remove or fix them, with an audit-and-remediate capstone."
+    tags:
+      - Trivy
+      - Image Scanning
+      - Supply Chain
+      - Hands-On
+      - Hard
+  - name: "CKS (Hands-On): SBOMs with Trivy and bom"
+    filename: cks-hands-on-sbom.yaml
+    description: "No multiple choice. Generate SPDX and CycloneDX SBOMs with Trivy and bom from images, archives and source directories, read package names, versions and purls, search many SBOMs for one library, compare releases, scan a stored SBOM for vulnerabilities, and combine it all in a Pod-to-decision capstone."
+    tags:
+      - SBOM
+      - SPDX
+      - CycloneDX
+      - Trivy
+      - bom
+      - Supply Chain
+      - Hands-On
+      - Hard
+  - name: "CKS (Hands-On): Image Footprint and Dockerfile Hardening"
+    filename: cks-hands-on-dockerfile-hardening.yaml
+    description: "No multiple choice. Write and fix real Dockerfiles: minimal and distroless base images, pinned tags and digests, non-root USER, multi-stage builds, package-manager hygiene, removing secrets and ADD, verifying a build with docker history and inspect, and hardening a whole Dockerfile in a capstone."
+    tags:
+      - Dockerfile
+      - Distroless
+      - Multi-Stage
+      - Image Footprint
+      - Supply Chain
+      - Hands-On
+      - Hard
+  - name: "CKS (Hands-On): Static Analysis with kubesec and KubeLinter"
+    filename: cks-hands-on-static-analysis.yaml
+    description: "No multiple choice. Score manifests with kubesec and read its critical and advisory findings, lint with kube-linter, list checks, configure which checks run, suppress a finding with an annotation, fix Pod and Deployment manifests until they are clean, and review a directory of manifests."
+    tags:
+      - kubesec
+      - KubeLinter
+      - Static Analysis
+      - Supply Chain
+      - Hands-On
+      - Hard
+  - name: "CKS (Hands-On): Admission Control for Images"
+    filename: cks-hands-on-admission-images.yaml
+    description: "No multiple choice. Enable and configure ImagePolicyWebhook on the API server (flags, AdmissionConfiguration, webhook kubeconfig, fail-closed defaults, recovering a broken API server), then write ValidatingAdmissionPolicies and bindings that allow only trusted registries and digest-pinned images, roll them out safely and exempt system namespaces."
+    tags:
+      - ImagePolicyWebhook
+      - ValidatingAdmissionPolicy
+      - Admission Control
+      - CEL
+      - Supply Chain
+      - Hands-On
+      - Hard
+  - name: "CKS (Hands-On): securityContext and Pod Security Admission"
+    filename: cks-hands-on-securitycontext-psa.yaml
+    description: "No multiple choice. Set users, groups, capabilities, privilege escalation and read-only root filesystems in Pod and container securityContexts, decide which Pod Security Standard a Pod meets, label namespaces for enforce, warn and audit, read and fix rejections, dry-run a label, diagnose empty Deployments, set cluster-wide defaults and exemptions, and harden a Deployment for a restricted namespace."
+    tags:
+      - securityContext
+      - Pod Security Admission
+      - Pod Security Standards
+      - Immutability
+      - Hands-On
+      - Hard
+  - name: "CKS (Hands-On): Secrets and Encryption at Rest"
+    filename: cks-hands-on-secrets-encryption.yaml
+    description: "No multiple choice. Create and consume Secrets safely, see what etcd really stores with etcdctl, write an EncryptionConfiguration, enable it on the API server, verify the k8s:enc prefix with hexdump, re-encrypt existing Secrets, rotate and remove keys, choose providers, and protect the cluster's Secrets end to end."
+    tags:
+      - Secrets
+      - Encryption at Rest
+      - etcd
+      - EncryptionConfiguration
+      - Hands-On
+      - Hard
+  - name: "CKS (Hands-On): Sandboxed Runtimes with RuntimeClass"
+    filename: cks-hands-on-runtimeclass-sandbox.yaml
+    description: "No multiple choice. Understand gVisor and Kata isolation, create RuntimeClass objects (handler, scheduling, overhead), run Pods and Deployments in them, verify the sandbox from inside, register the handler in containerd, troubleshoot sandbox failures, and require the class with a ValidatingAdmissionPolicy."
+    tags:
+      - RuntimeClass
+      - gVisor
+      - Kata Containers
+      - Sandbox
+      - Hands-On
+      - Hard
+  - name: "CKS (Hands-On): Pod-to-Pod Encryption (Cilium and Istio)"
+    filename: cks-hands-on-pod-encryption.yaml
+    description: "No multiple choice. Enable and verify Cilium WireGuard encryption, compare it with IPsec, require Cilium mutual authentication in a CiliumNetworkPolicy, put namespaces into an Istio mesh, require mTLS with PeerAuthentication at namespace and workload level, test enforcement from a non-mesh client, and authorize by workload identity."
+    tags:
+      - Cilium
+      - WireGuard
+      - Istio
+      - mTLS
+      - PeerAuthentication
+      - Hands-On
+      - Hard
+  - name: "CKS (Hands-On): CIS Benchmarks with kube-bench"
+    filename: cks-hands-on-kube-bench.yaml
+    description: "No multiple choice. Run kube-bench for each target, read FAIL and WARN results and remediations, re-run single checks, and fix findings on the API server, controller manager, scheduler, etcd, kubelet and file permissions of a kubeadm cluster. Includes the manual policy checks and a report-to-green capstone."
+    tags:
+      - kube-bench
+      - CIS Benchmark
+      - Cluster Setup
+      - kubeadm
+      - Hands-On
+      - Hard
+  - name: "CKS (Hands-On): Ingress with TLS"
+    filename: cks-hands-on-ingress-tls.yaml
+    description: "No multiple choice. Create self-signed certificates with openssl, build kubernetes.io/tls Secrets, write Ingresses with spec.tls for one or several hosts, test with curl --resolve and --cacert, troubleshoot the fake-certificate fallback, understand HTTP to HTTPS redirects and rotate certificates in place."
+    tags:
+      - Ingress
+      - TLS
+      - openssl
+      - curl
+      - Cluster Setup
+      - Hands-On
+      - Hard
+  - name: "CKS (Hands-On): API Server, Kubelet and Host Hardening"
+    filename: cks-hands-on-api-kubelet-host-hardening.yaml
+    description: "No multiple choice. Close anonymous access and AlwaysAllow on the API server, enable NodeRestriction and protected node labels, lock down the kubelet API (anonymous, webhook authentication and authorization, read-only port), read the live kubelet config, verify binaries with sha512sum, and minimize the host: services, packages, listening ports, ufw rules, users and SSH."
+    tags:
+      - API Server
+      - Kubelet
+      - NodeRestriction
+      - Host Hardening
+      - System Hardening
+      - Cluster Hardening
+      - Hands-On
+      - Hard
+  - name: "CKS (Hands-On): Upgrading a kubeadm Cluster"
+    filename: cks-hands-on-kubeadm-upgrade.yaml
+    description: "No multiple choice. Pick a safe target version and respect version skew, back up etcd, upgrade kubeadm, run upgrade plan and apply on the first control plane node, drain, upgrade kubelet and kubectl, restart and uncordon, upgrade workers with upgrade node, handle blocked drains, and verify nodes and certificates afterwards."
+    tags:
+      - kubeadm
+      - Upgrade
+      - Patching
+      - Cluster Hardening
+      - Hands-On
+      - Hard

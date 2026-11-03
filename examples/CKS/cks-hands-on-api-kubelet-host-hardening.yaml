@@ -1,0 +1,1000 @@
+apiVersion: v1alpha1
+name: 'CKS (Hands-On): API Server, Kubelet and Host Hardening'
+k8sVersion: 1.34.0
+timing:
+  enabled: true
+  limitSeconds: 7200
+introduction:
+  elements:
+  - type: context
+    text: |
+      Hands-on practice with **API server, kubelet and host hardening** for the CKS *Cluster Hardening* and *System Hardening* domains: restrict anonymous access and
+      authorization on the API server, enable NodeRestriction, lock down the kubelet API, verify platform binaries with checksums, and minimize the host's
+      services, packages, ports and accounts. There is no multiple choice. (Upgrading a cluster has its own set.)
+
+      **Lab environment**
+
+      - You are `root` on the control-plane node `cp1` (`10.0.0.11`) of a kubeadm cluster (Kubernetes 1.34, containerd, Ubuntu hosts). Worker nodes are `worker-1` (`10.0.0.21`) and `worker-2`.
+        The API server runs as a static Pod; the kubelet is a systemd service configured through `/var/lib/kubelet/config.yaml`.
+      - Command outputs shown in scenarios are realistic but shortened.
+
+      **How answers are checked**
+
+      - *Configuration lines and fragments* are checked for the required settings; *commands* structurally (flag order is free, long and short forms accepted); short answers accept
+        common spellings.
+
+      Exam content is under NDA: this is practice for the common patterns, not a prediction.
+  - type: references
+    links:
+    - url: https://kubernetes.io/docs/reference/command-line-tools-reference/kube-apiserver/
+      text: kube-apiserver reference
+    - url: https://kubernetes.io/docs/reference/access-authn-authz/kubelet-authn-authz/
+      text: Kubelet authentication / authorization
+    - url: https://kubernetes.io/docs/reference/access-authn-authz/node/
+      text: Node authorization
+    - url: https://kubernetes.io/docs/reference/access-authn-authz/admission-controllers/#noderestriction
+      text: 'Admission controllers: NodeRestriction'
+    - url: https://kubernetes.io/releases/download/
+      text: Download Kubernetes (checksums)
+    - url: https://training.linuxfoundation.org/certification/certified-kubernetes-security-specialist-cks/
+      text: CKS Domains and Competencies
+manifestDefinitions: []
+scenarios:
+- title: Who Can Talk to the API Server Without Credentials?
+  category: API Server
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      A penetration tester has network access to the API server `https://10.0.0.11:6443` but no credentials. Requests without credentials are treated as the user
+      `system:anonymous` of the group `system:unauthenticated` **if anonymous authentication is enabled**. RBAC then decides what they may do.
+  - type: question
+    question:
+      questionType: command
+      header: 'Ask the API server which API paths are readable without credentials: request `https://10.0.0.11:6443/api` with
+        curl and skip certificate verification (silent mode).'
+      hint: A TLS shortcut for lab systems; no authentication flags.
+      command:
+        executable: curl
+        strictness: permissive
+        positionals:
+        - index: 0
+          value: https://10.0.0.11:6443/api
+        flags:
+        - name: insecure
+          short: k
+          required: true
+          boolean: true
+  - type: manifest
+    header: Response
+    content: |
+      {
+        "kind": "Status",
+        "apiVersion": "v1",
+        "status": "Failure",
+        "message": "forbidden: User \"system:anonymous\" cannot get path \"/api\"",
+        "reason": "Forbidden",
+        "code": 403
+      }
+  - type: question
+    question:
+      questionType: single-line
+      header: Which status code would the same request return if anonymous authentication were disabled? (number)
+      hint: 'Not "forbidden" but "unauthorized": the server does not even identify the caller.'
+      correctAnswerInfo: 401 = authentication failed or missing; 403 = identified (possibly as anonymous) but not authorized.
+      expectedAnswer: '401'
+      cel: answer.trim().lowerAscii() in ["401"]
+  - type: question
+    question:
+      questionType: command
+      header: 'Check what `system:anonymous` is allowed to do in the cluster: list its permissions with impersonation.'
+      hint: An auth subcommand, a list flag and an impersonation flag.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: auth
+        - name: can-i
+        flags:
+        - name: list
+          required: true
+          boolean: true
+        - name: as
+          required: true
+          value: system:anonymous
+  - type: table
+    style: terminal
+    columns:
+    - Resources
+    - Non-Resource URLs
+    - Resource Names
+    - Verbs
+    rows:
+    - - ''
+      - '[/healthz]'
+      - '[]'
+      - '[get]'
+    - - ''
+      - '[/livez]'
+      - '[]'
+      - '[get]'
+    - - ''
+      - '[/readyz]'
+      - '[]'
+      - '[get]'
+    - - ''
+      - '[/version]'
+      - '[]'
+      - '[get]'
+    - - ''
+      - '[/version/]'
+      - '[]'
+      - '[get]'
+  - type: question
+    question:
+      questionType: single-line
+      header: Which default ClusterRole grants these read-only discovery paths to all, including unauthenticated, users? (name
+        of the ClusterRole)
+      hint: '"public info viewer" in the system: namespace.'
+      expectedAnswer: system:public-info-viewer
+      cel: answer.trim() in ["system:public-info-viewer"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Anonymous requests are only dangerous when RBAC bindings give `system:anonymous` or `system:unauthenticated` something. The classic mistakes are a ClusterRoleBinding to those subjects and
+        `--authorization-mode=AlwaysAllow`. Review with `kubectl get clusterrolebindings -o wide | grep -i anonymous|unauthenticated`.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/reference/access-authn-authz/authentication/#anonymous-requests
+        text: 'Authentication: anonymous requests'
+      - url: https://kubernetes.io/docs/reference/command-line-tools-reference/kube-apiserver/
+        text: kube-apiserver reference
+- title: Turn Anonymous Authentication Off
+  category: API Server
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Policy: the API server must reject every request that carries no valid credential. The API server is a static Pod, its manifest is
+      `/etc/kubernetes/manifests/kube-apiserver.yaml`. Right now it contains the line `- --anonymous-auth=true` in the container `command` list (and it is not
+      the only flag).
+  - type: question
+    question:
+      questionType: multiline
+      header: Write the corrected line as it must appear in the command list.
+      hint: The same flag, a different value.
+      expectedAnswer: |
+        - --anonymous-auth=false
+      cel: answer.trim().matches('^- *--anonymous-auth=false$')
+  - type: question
+    question:
+      questionType: single-line
+      header: The API server restarts after you save the file. Which component notices the change and recreates the container?
+      hint: Static Pods are managed by the node agent.
+      expectedAnswer: kubelet
+      cel: answer.trim().lowerAscii() in ["kubelet", "the kubelet"]
+  - type: question
+    question:
+      questionType: command
+      header: 'Confirm that the API server is back: list the nodes (the command fails while the API server is down).'
+      hint: A basic query that needs a healthy API server.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: get
+        - name: nodes
+          aliases:
+          - node
+          - 'no'
+  - type: question
+    question:
+      questionType: single-line
+      header: 'A cluster component (for example the kubelet liveness probe of the API server or a load balancer health check)
+        calls `/healthz` or `/livez` without credentials. What can happen after this change, and what is the safe way to check
+        health instead? (answer: authenticated check/probe with credentials)'
+      hint: Anonymous access to the health endpoints is gone too.
+      correctAnswerInfo: Health probes of kubeadm clusters and external load balancers must either authenticate or use endpoints
+        you deliberately keep anonymous (newer versions can allow anonymous only on listed paths through an authentication
+        configuration file). Always check the cluster after the change.
+      expectedAnswer: use an authenticated check
+      cel: answer.trim().lowerAscii() in ["use an authenticated check", "authenticated", "authenticated check", "use credentials",
+        "with credentials", "authenticated probe", "use a client certificate", "send credentials", "authenticate the probe",
+        "use a token", "authenticated requests", "authenticate"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Disable anonymous authentication on the API server (`--anonymous-auth=false`) and on the kubelet (`authentication.anonymous.enabled: false`). If you need unauthenticated health checks, expose the
+        read-only health endpoints through a separate, restricted path instead of enabling anonymous access for everything.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/reference/access-authn-authz/authentication/#anonymous-requests
+        text: 'Authentication: anonymous requests'
+      - url: https://kubernetes.io/docs/reference/command-line-tools-reference/kube-apiserver/
+        text: kube-apiserver reference
+- title: Authorization Mode
+  category: API Server
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      In the API server manifest a colleague tried to "unblock" a permissions issue:
+  - type: manifest
+    header: kube-apiserver.yaml (extract)
+    content: |
+      spec:
+        containers:
+        - command:
+          - kube-apiserver
+          - --advertise-address=10.0.0.11
+          - --authorization-mode=AlwaysAllow
+          - --client-ca-file=/etc/kubernetes/pki/ca.crt
+  - type: question
+    question:
+      questionType: single-line
+      header: What does the `AlwaysAllow` authorization mode do to every authenticated request?
+      hint: Its name.
+      expectedAnswer: allows it
+      cel: answer.trim().lowerAscii() in ["allows it", "allow", "allows everything", "allows all", "allows all requests",
+        "allows every request", "everything is allowed", "it allows everything", "allow everything", "allows all requests
+        without checking"]
+  - type: question
+    question:
+      questionType: multiline
+      header: Write the corrected flag line with the two authorizers that a kubeadm cluster uses, in the correct order.
+      hint: One authorizer is dedicated to kubelets; the other implements Roles and Bindings. The kubelet one comes first.
+      expectedAnswer: |
+        - --authorization-mode=Node,RBAC
+      cel: answer.trim().matches('^- *--authorization-mode=Node,RBAC$')
+  - type: question
+    question:
+      questionType: single-line
+      header: What does the Node authorizer allow? (who and what, in a few words)
+      hint: It exists so kubelets do not need broad RBAC roles.
+      correctAnswerInfo: The Node authorizer grants a kubelet read access to Secrets, ConfigMaps and PVCs that Pods **scheduled
+        on its node** reference, plus write access to its own Node and Pod status.
+      expectedAnswer: kubelets to read objects related to their Pods
+      cel: answer.trim().lowerAscii() in ["kubelets to read objects related to their pods", "kubelets", "kubelet requests",
+        "requests from kubelets", "kubelet access to its pods secrets", "authorize kubelets", "requests of kubelets", "kubelet",
+        "the kubelet to access objects of pods on its node", "kubelet api requests", "kubelet to read secrets of its pods"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        `AlwaysAllow` turns a cluster into an open system for everyone who can authenticate: any ServiceAccount token can delete nodes. The default `Node,RBAC` is both necessary and sufficient for kubeadm clusters;
+        `Webhook` can be added for external authorizers. Never use `AlwaysAllow` on a real cluster, and check the flag with `ps -ef | grep kube-apiserver`.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/reference/access-authn-authz/node/
+        text: Node authorization
+      - url: https://kubernetes.io/docs/reference/command-line-tools-reference/kube-apiserver/
+        text: kube-apiserver reference
+- title: NodeRestriction
+  category: API Server
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      A kubelet authenticates with a client certificate for the identity `system:node:<nodeName>` in the group `system:nodes`. If an attacker compromises `worker-2`, its kubelet
+      credentials could be used to modify **other** nodes' objects, for example label `worker-1` as dedicated to something else so that sensitive Pods are scheduled to the attacker, unless an
+      admission plugin restricts what kubelets may change.
+  - type: question
+    question:
+      questionType: multiline
+      header: 'Write the flag line that enables only that one plugin (keep it short: just this plugin).'
+      hint: Admission plugins are enabled with a comma separated list.
+      correctAnswerInfo: kubeadm already sets `--enable-admission-plugins=NodeRestriction`. If you add another plugin, keep
+        NodeRestriction in the list instead of replacing it.
+      expectedAnswer: |
+        - --enable-admission-plugins=NodeRestriction
+      cel: answer.trim().matches('^- *--enable-admission-plugins=([A-Za-z]+,)*NodeRestriction(,[A-Za-z]+)*$')
+  - type: question
+    question:
+      questionType: command
+      header: As an administrator, mark node `worker-1` as a secure node by setting the label `node-restriction.kubernetes.io/tier=secure`.
+      hint: 'A normal label command: the key has a special domain prefix.'
+      correctAnswerInfo: Kubelets cannot set, change or remove labels whose key starts with `node-restriction.kubernetes.io/`
+        on their own Node object. That makes such labels trustworthy for `nodeSelector`/affinity of sensitive workloads.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: label
+        - name: node
+          aliases:
+          - nodes
+          - 'no'
+        positionals:
+        - index: 0
+          value: worker-1
+        - index: 1
+          value: node-restriction.kubernetes.io/tier=secure
+        flags:
+        - name: overwrite
+          boolean: true
+  - type: question
+    question:
+      questionType: single-line
+      header: With NodeRestriction active, can the kubelet of `worker-2` delete the Pod `payments` that runs on `worker-1`?
+        (yes/no)
+      hint: Kubelets may only touch Pods bound to their own node.
+      expectedAnswer: 'no'
+      cel: answer.trim().lowerAscii() in ["no"]
+  - type: question
+    question:
+      questionType: single-line
+      header: Can the kubelet of `worker-2` change the label `node-restriction.kubernetes.io/tier` on its own Node object?
+        (yes/no)
+      hint: Think about the special prefix.
+      expectedAnswer: 'no'
+      cel: answer.trim().lowerAscii() in ["no"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        NodeRestriction limits a kubelet to its own Node object, to Pods bound to it, and to reading only what those Pods need. It does not stop an attacker with the kubelet certificate from reading those Pods'
+        Secrets, so rotate and protect the credentials, too.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/reference/access-authn-authz/admission-controllers/#noderestriction
+        text: 'Admission controllers: NodeRestriction'
+      - url: https://kubernetes.io/docs/reference/access-authn-authz/node/
+        text: Node authorization
+- title: The Kubelet API Is an API Server of Its Own
+  category: Kubelet
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Every node runs the kubelet's HTTPS API on port `10250`. It can list Pods, return logs and — most importantly — **execute commands in containers**. A scan of the lab
+      network reports that `worker-1` (`10.0.0.21`) answers requests without credentials:
+  - type: question
+    question:
+      questionType: command
+      header: 'Request the list of Pods from the kubelet of `worker-1` without credentials: use curl with certificate verification
+        skipped (silent), URL `https://10.0.0.21:10250/pods`.'
+      hint: The same request shape as for the API server.
+      command:
+        executable: curl
+        strictness: permissive
+        positionals:
+        - index: 0
+          value: https://10.0.0.21:10250/pods
+        flags:
+        - name: insecure
+          short: k
+          required: true
+          boolean: true
+  - type: manifest
+    header: Response
+    content: |
+      {"kind":"PodList","apiVersion":"v1","metadata":{},"items":[{"metadata":{"name":"payments-7d9f6c5b84-9vj8m","namespace":"payments", ...
+  - type: question
+    question:
+      questionType: single-line
+      header: What do you conclude about the kubelet configuration of `worker-1`? (anonymous access is ...)
+      hint: The request had no credentials.
+      expectedAnswer: enabled
+      cel: answer.trim().lowerAscii() in ["enabled", "allowed", "on", "enabled and authorized", "permitted", "open", "anonymous
+        access is enabled", "enabled and not restricted"]
+  - type: question
+    question:
+      questionType: single-line
+      header: Which port, if enabled, would serve a read-only subset of this API over plain HTTP without any authentication?
+      hint: Close to 10250 but one higher.
+      expectedAnswer: '10255'
+      cel: answer.trim().lowerAscii() in ["10255"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        A kubelet with `anonymous: enabled: true` **and** `authorization: mode: AlwaysAllow` hands out command execution on every container of the node to anybody who can reach
+        port 10250 (`/run`, `/exec`). The API server also talks to this port, so firewall it to the control plane when possible.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/reference/access-authn-authz/kubelet-authn-authz/
+        text: Kubelet authentication / authorization
+      - url: https://kubernetes.io/docs/reference/networking/ports-and-protocols/
+        text: Ports and Protocols
+- title: Harden the Kubelet Configuration
+  category: Kubelet
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Fix `worker-1`: the kubelet must (1) reject anonymous requests, (2) authenticate requests with client certificates signed by the cluster CA
+      `/etc/kubernetes/pki/ca.crt` and with bearer tokens validated through the API server, (3) ask the API server whether the caller is authorized, and (4) not expose the read-only port.
+      Its configuration file is `/var/lib/kubelet/config.yaml`.
+  - type: question
+    question:
+      questionType: multiline
+      header: Write the YAML fields (authentication, authorization and the port setting) to put into `/var/lib/kubelet/config.yaml`.
+      hint: authentication has three methods (anonymous, webhook, x509); authorization has a mode; the read-only port is a
+        separate top-level field.
+      correctAnswerInfo: '`authorization.mode: Webhook` makes the kubelet call `SubjectAccessReview` on the API server (the
+        API server therefore needs `--authorization-mode` to include RBAC and the kubelet user must be allowed `nodes/proxy`,
+        `nodes/log`, ... as needed).'
+      expectedAnswer: |
+        authentication:
+          anonymous:
+            enabled: false
+          webhook:
+            enabled: true
+          x509:
+            clientCAFile: /etc/kubernetes/pki/ca.crt
+        authorization:
+          mode: Webhook
+        readOnlyPort: 0
+      cel: 'answer.contains(''authentication:'') && answer.matches(''anonymous:\\s+enabled: *false'') && answer.matches(''webhook:\\s+enabled:
+        *true'') && answer.matches(''clientCAFile: */etc/kubernetes/pki/ca.crt'') && answer.matches(''authorization:\\s+mode:
+        *Webhook'') && answer.matches(''readOnlyPort: *0'')'
+  - type: question
+    question:
+      questionType: command
+      header: Restart the kubelet service so it reads the new configuration.
+      hint: The kubelet is a systemd service.
+      command:
+        executable: systemctl
+        subcommands:
+        - name: restart
+        positionals:
+        - index: 0
+          value: kubelet
+  - type: question
+    question:
+      questionType: command
+      header: Repeat the earlier anonymous request to `https://10.0.0.21:10250/pods` (skip verification, silent).
+      hint: The same request as before.
+      command:
+        executable: curl
+        strictness: permissive
+        positionals:
+        - index: 0
+          value: https://10.0.0.21:10250/pods
+        flags:
+        - name: insecure
+          short: k
+          required: true
+          boolean: true
+  - type: table
+    style: terminal
+    columns:
+    - OUTPUT
+    rows:
+    - - Unauthorized
+  - type: question
+    question:
+      questionType: single-line
+      header: Which status code accompanies the message "Unauthorized"?
+      hint: Authentication failure.
+      expectedAnswer: '401'
+      cel: answer.trim().lowerAscii() in ["401"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        `kubectl logs` and `kubectl exec` still work after the change because the API server authenticates to the kubelet with its own client certificate (`--kubelet-client-certificate`) and the kubelet
+        authorizes it by webhook. Also set `--kubelet-certificate-authority` on the API server, so it verifies the kubelet's serving certificate.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/reference/access-authn-authz/kubelet-authn-authz/
+        text: Kubelet authentication / authorization
+      - url: https://kubernetes.io/docs/reference/config-api/kubelet-config.v1beta1/
+        text: Kubelet Configuration (v1beta1)
+- title: Read the Live Kubelet Configuration
+  category: Kubelet
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      After a configuration change, do not trust the file: ask the running kubelet. The API server proxies a `configz` endpoint of each node, so you can read the effective
+      configuration of `worker-1` through the API server.
+  - type: question
+    question:
+      questionType: command
+      header: Print the effective kubelet configuration of node `worker-1` via the raw API path `/api/v1/nodes/worker-1/proxy/configz`.
+      hint: A kubectl get flag reads an arbitrary API path.
+      correctAnswerInfo: The output is JSON in a `kubeletconfig` wrapper; pipe it to `jq .kubeletconfig.authentication` to
+        look at a part.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: get
+        flags:
+        - name: raw
+          required: true
+          value: /api/v1/nodes/worker-1/proxy/configz
+  - type: question
+    question:
+      questionType: command
+      header: 'Show only `.kubeletconfig.authorization` from that output: pipe the same raw read into jq.'
+      hint: jq takes a filter expression with dot notation.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: get
+        flags:
+        - name: raw
+          required: true
+          value: /api/v1/nodes/worker-1/proxy/configz
+      modifiers:
+      - type: Pipe
+        pipe:
+          command:
+            executable: jq
+            strictness: permissive
+      cel: pipes[0].positionals.exists(p, p.contains('authorization'))
+  - type: table
+    style: terminal
+    columns:
+    - OUTPUT
+    rows:
+    - - '{"mode":"Webhook","webhook":{"cacheAuthorizedTTL":"5m0s","cacheUnauthorizedTTL":"30s"}}'
+  - type: question
+    question:
+      questionType: single-line
+      header: Which authorization mode does the kubelet use according to this output?
+      hint: Read the mode field.
+      expectedAnswer: Webhook
+      cel: answer.trim().lowerAscii() in ["webhook"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Checking the live state avoids the classic "I edited the file but the kubelet was never restarted" error. Compare file, live configz and the process arguments
+        (`ps -ef | grep kubelet`) when behavior and expectations differ: command line flags override the config file.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/reference/config-api/kubelet-config.v1beta1/
+        text: Kubelet Configuration (v1beta1)
+- title: Verify the Platform Binaries
+  category: Host
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The `kubelet` binary was copied to `/usr/bin/kubelet` from an unofficial mirror. Before trusting it, compare it to the published SHA-512 checksum of the official release.
+      The checksum from the official download site is
+      `d14591b240d4201f135463facfcc5c864370ea86d2cf7d508dd7769267e1fd1db5e1569c09de53b6b5ce59aee347d1f5c1e5928fa2331bda2b61be172f976516`.
+  - type: question
+    question:
+      questionType: command
+      header: Compute the SHA-512 checksum of `/usr/bin/kubelet`.
+      hint: The tool name includes the algorithm.
+      command:
+        executable: sha512sum
+        positionals:
+        - index: 0
+          value: /usr/bin/kubelet
+  - type: table
+    style: terminal
+    columns:
+    - OUTPUT
+    rows:
+    - - d14591b240d4201f135463facfcc5c864370ea86d2cf7d508dd7769267e1fd1db5e1569c09de53b6b5ce59aee347d1f5c1e5928fa2331bda2b61be172f976516  /usr/bin/kubelet
+  - type: question
+    question:
+      questionType: command
+      header: 'Let sha512sum do the comparison: pipe the line `<hash>  /usr/bin/kubelet` (hash and path separated by two spaces,
+        quoted) via echo into sha512sum in check mode.'
+      hint: Check mode reads lines of the form hash, two spaces, file name from standard input.
+      correctAnswerInfo: 'Output `/usr/bin/kubelet: OK` for a match or `FAILED` plus a warning for a mismatch. Two spaces
+        (or a space and an asterisk for binary mode) between hash and name are required.'
+      command:
+        executable: echo
+        strictness: permissive
+      modifiers:
+      - type: Pipe
+        pipe:
+          command:
+            executable: sha512sum
+            flags:
+            - name: check
+              short: c
+              required: true
+              boolean: true
+      cel: answer.contains('d14591b240d4201f135463facfcc5c864370ea86d2cf7d508dd7769267e1fd1db5e1569c09de53b6b5ce59aee347d1f5c1e5928fa2331bda2b61be172f976516')
+        && answer.contains('/usr/bin/kubelet')
+  - type: manifest
+    header: Result
+    content: |
+      /usr/bin/kubelet: FAILED
+      sha512sum: WARNING: 1 computed checksum did NOT match
+  - type: question
+    question:
+      questionType: single-line
+      header: What do you do with the binary?
+      hint: A mismatch means the file is not the official one.
+      expectedAnswer: replace it
+      cel: answer.trim().lowerAscii() in ["replace it", "do not use it", "remove it", "delete it", "replace", "do not use",
+        "remove", "reinstall", "download again", "discard it", "reinstall it from the official source", "delete", "replace
+        it with the official one", "do not trust it"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Verify downloaded platform binaries (kubeadm, kubelet, kubectl) against the checksum published at `dl.k8s.io` (`https://dl.k8s.io/release/<version>/bin/linux/amd64/kubelet.sha512` or `.sha256`).
+        Apt/yum repositories add signature checks of the packages. The exam asks you to compare hashes by hand or with `--check`.
+    - type: references
+      links:
+      - url: https://kubernetes.io/releases/download/
+        text: Download Kubernetes (checksums)
+- title: 'Minimize the Host: Services and Packages'
+  category: Host
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      A review of worker node `worker-1` shows that it runs more than Kubernetes needs: the services `snapd`, `cups` and `avahi-daemon`, and the package `telnetd` is installed.
+      Every extra service is attack surface, and every extra package is code to patch.
+  - type: question
+    question:
+      questionType: command
+      header: List the running systemd services on the node.
+      hint: systemctl can filter units by type and state.
+      command:
+        executable: systemctl
+        subcommands:
+        - name: list-units
+        flags:
+        - name: type
+          required: true
+          value: service
+        - name: state
+          required: true
+          value: running
+  - type: question
+    question:
+      questionType: command
+      header: Stop `cups` immediately and make sure it does not start at boot.
+      hint: One verb and one flag do both.
+      correctAnswerInfo: '`systemctl disable --now cups`. For a service that other units might start again use `systemctl
+        mask cups`.'
+      command:
+        executable: systemctl
+        subcommands:
+        - name: disable
+        positionals:
+        - index: 0
+          value: cups
+        flags:
+        - name: now
+          required: true
+          boolean: true
+  - type: question
+    question:
+      questionType: command
+      header: Remove the package `telnetd` together with its configuration files.
+      hint: Remove keeps configuration; one other verb deletes it too.
+      command:
+        executable: apt-get
+        subcommands:
+        - name: purge
+        positionals:
+        - index: 0
+          value: telnetd
+        flags:
+        - name: 'yes'
+          short: y
+          boolean: true
+  - type: question
+    question:
+      questionType: command
+      header: 'Verify that no package with `telnet` in its name remains: use dpkg to list packages and filter with grep.'
+      hint: List all installed packages, then filter.
+      command:
+        executable: dpkg
+        strictness: permissive
+        flags:
+        - name: list
+          short: l
+          required: true
+          boolean: true
+      modifiers:
+      - type: Pipe
+        pipe:
+          command:
+            executable: grep
+            positionals:
+            - index: 0
+              value: telnet
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Minimization checklist: services (`systemctl list-units --type=service`), packages (`dpkg -l`, `apt list --installed`), listening ports (`ss -tulpn`), users/groups, scheduled jobs (`crontab -l`, `/etc/cron.*`),
+        SUID binaries (`find / -perm -4000`). Remove what is not needed; document what you keep. Kubernetes nodes need only the runtime, the kubelet, kube-proxy/CNI and a few system services.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/concepts/security/
+        text: Kubernetes security concepts
+- title: Listening Ports and the Host Firewall
+  category: Host
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      `worker-1` should expose only SSH (22), the kubelet API (10250, to the control plane `10.0.0.11` only) and the NodePort range. First see what listens on the node.
+  - type: question
+    question:
+      questionType: command
+      header: List all listening TCP and UDP sockets with numeric ports and the owning process.
+      hint: ss has one-letter flags for protocol, listening state, process and numeric output.
+      command:
+        executable: ss
+        flags:
+        - name: tcp
+          short: t
+          required: true
+          boolean: true
+        - name: udp
+          short: u
+          required: true
+          boolean: true
+        - name: listening
+          short: l
+          required: true
+          boolean: true
+        - name: processes
+          short: p
+          required: true
+          boolean: true
+        - name: numeric
+          short: n
+          required: true
+          boolean: true
+  - type: table
+    style: terminal
+    columns:
+    - Netid
+    - State
+    - Local Address:Port
+    - Process
+    rows:
+    - - tcp
+      - LISTEN
+      - 0.0.0.0:22
+      - users:(("sshd",pid=812))
+    - - tcp
+      - LISTEN
+      - '*:10250'
+      - users:(("kubelet",pid=640))
+    - - tcp
+      - LISTEN
+      - 0.0.0.0:23
+      - users:(("telnetd",pid=1203))
+    - - tcp
+      - LISTEN
+      - 127.0.0.1:631
+      - users:(("cupsd",pid=914))
+  - type: question
+    question:
+      questionType: single-line
+      header: Which listening port in this output is a leftover that should be removed first because the protocol sends passwords
+        in clear text?
+      hint: Plain-text remote login protocol.
+      expectedAnswer: '23'
+      cel: answer.trim().lowerAscii() in ["23"]
+  - type: question
+    question:
+      questionType: command
+      header: Deny all incoming connections by default with the host firewall `ufw`.
+      hint: ufw default <policy> <direction>.
+      command:
+        executable: ufw
+        subcommands:
+        - name: default
+        positionals:
+        - index: 0
+          value: deny
+        - index: 1
+          value: incoming
+  - type: question
+    question:
+      questionType: command
+      header: Allow SSH on TCP port 22.
+      hint: Port and protocol in one argument.
+      command:
+        executable: ufw
+        subcommands:
+        - name: allow
+        positionals:
+        - index: 0
+          value: 22/tcp
+  - type: question
+    question:
+      questionType: command
+      header: 'Allow the control plane `10.0.0.11` to reach the kubelet API: allow from that address to any port 10250 over
+        TCP.'
+      hint: ufw rules use words like from, to, port and proto instead of dashed flags.
+      correctAnswerInfo: '`ufw allow from 10.0.0.11 to any port 10250 proto tcp`. Since the grammar is word-based, the answer
+        is checked on its meaning.'
+      command:
+        executable: ufw
+        strictness: permissive
+        subcommands:
+        - name: allow
+      cel: answer.matches('from +10\\.0\\.0\\.11') && answer.matches('port +10250')
+  - type: question
+    question:
+      questionType: command
+      header: Turn the firewall on.
+      hint: The last step; check that SSH is allowed first or you lock yourself out.
+      command:
+        executable: ufw
+        subcommands:
+        - name: enable
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Host firewall rules complement NetworkPolicies: Kubernetes policies govern Pod traffic, the host firewall governs traffic to the node's own processes (SSH, kubelet, etcd, API server). Required node ports are
+        documented in the Kubernetes ports-and-protocols table: control plane `6443`, `2379-2380`, `10250`, `10257`, `10259`; workers `10250` and `30000-32767`.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/reference/networking/ports-and-protocols/
+        text: Ports and Protocols
+      - url: https://help.ubuntu.com/community/UFW
+        text: 'Ubuntu: UFW'
+- title: Users and SSH
+  category: Host
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The same review found an interactive account `deploy` that is no longer used, and `/etc/ssh/sshd_config` allows root login and password logins. SSH is required for admins using keys.
+  - type: question
+    question:
+      questionType: command
+      header: Lock the password of the account `deploy` so it cannot log in with a password.
+      hint: passwd has an option to lock.
+      command:
+        executable: passwd
+        positionals:
+        - index: 0
+          value: deploy
+        flags:
+        - name: lock
+          short: l
+          required: true
+          boolean: true
+  - type: question
+    question:
+      questionType: command
+      header: Delete the user `deploy` together with the home directory.
+      hint: A flag removes the home directory and mail spool.
+      command:
+        executable: userdel
+        positionals:
+        - index: 0
+          value: deploy
+        flags:
+        - name: remove
+          short: r
+          required: true
+          boolean: true
+  - type: question
+    question:
+      questionType: multiline
+      header: Write the two lines for `/etc/ssh/sshd_config` that forbid root login and password authentication.
+      hint: Two directives; the values are simple words.
+      expectedAnswer: |
+        PermitRootLogin no
+        PasswordAuthentication no
+      cel: answer.matches('(?m)^PermitRootLogin +no$') && answer.matches('(?m)^PasswordAuthentication +no$')
+  - type: question
+    question:
+      questionType: command
+      header: Apply the SSH change by restarting the SSH daemon (the unit is called `sshd`).
+      hint: A systemd service again.
+      command:
+        executable: systemctl
+        subcommands:
+        - name: restart
+        positionals:
+        - index: 0
+          value: sshd
+  - type: question
+    question:
+      questionType: command
+      header: 'List the accounts in /etc/passwd that have a login shell and are therefore able to log in: show lines that
+        do not end in `nologin` or `false`.'
+      hint: Invert the match for service accounts.
+      command:
+        executable: grep
+        strictness: permissive
+        flags:
+        - name: invert-match
+          short: v
+          required: true
+          boolean: true
+          repeatable: true
+        - name: extended-regexp
+          short: E
+          boolean: true
+      cel: answer.contains('/etc/passwd') && answer.contains('nologin')
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Identity hygiene on a node: no shared or unused accounts, key-based SSH only, no root login, `sudo` instead of root shells, and logging of authentication events (`/var/log/auth.log`).
+        Remember that kubelet and containerd run as root by design; the goal is a small set of well-known accounts.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/concepts/security/
+        text: Kubernetes security concepts
+- title: 'Capstone: Harden a Node and Its Control Plane'
+  category: Capstone
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Close the audit with these findings:
+
+      1. API server: authorization mode includes `AlwaysAllow`; anonymous auth is enabled.
+      2. Kubelet of `worker-1`: anonymous requests are accepted.
+      3. Host: an unused service `rpcbind` is listening on port 111.
+      4. The `kubelet` binary needs its checksum verified against `/root/kubelet.sha512` (it contains hash and file name, in the form accepted by the check mode).
+
+      Do the checks and fixes in order.
+  - type: question
+    question:
+      questionType: multiline
+      header: API server flag lines to fix finding 1 (both flags, one per line).
+      hint: Two flags, as in the first scenarios.
+      expectedAnswer: |
+        - --authorization-mode=Node,RBAC
+        - --anonymous-auth=false
+      cel: answer.contains('--authorization-mode=Node,RBAC') && answer.contains('--anonymous-auth=false') && !answer.contains('AlwaysAllow')
+  - type: question
+    question:
+      questionType: single-line
+      header: 'Finding 2: which kubelet configuration field (dotted path) do you set to false?'
+      hint: authentication → anonymous → enabled.
+      expectedAnswer: authentication.anonymous.enabled
+      cel: 'answer.trim() in ["authentication.anonymous.enabled", "authentication.anonymous.enabled=false", "authentication.anonymous.enabled:
+        false"]'
+  - type: question
+    question:
+      questionType: command
+      header: 'Finding 3: stop `rpcbind` and keep it from starting again; also its socket unit `rpcbind.socket` must not reactivate
+        it, so use the verb that links the unit to /dev/null.'
+      hint: Beyond disable there is a stronger verb.
+      correctAnswerInfo: A masked unit cannot be started manually or by other units. Mask the socket unit too (`rpcbind.socket`).
+      command:
+        executable: systemctl
+        strictness: permissive
+        subcommands:
+        - name: mask
+        positionals:
+        - index: 0
+          value: rpcbind
+        flags:
+        - name: now
+          boolean: true
+  - type: question
+    question:
+      questionType: command
+      header: 'Finding 4: verify `/usr/bin/kubelet` against the checksum file in check mode.'
+      hint: Check mode reads a file in the sha512sum output format.
+      command:
+        executable: sha512sum
+        positionals:
+        - index: 0
+          value: /root/kubelet.sha512
+        flags:
+        - name: check
+          short: c
+          required: true
+          boolean: true
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Defense for the control plane and nodes is layered: *authentication* (no anonymous), *authorization* (Node, RBAC), *admission* (NodeRestriction), *configuration of agents* (kubelet),
+        *the host* (services, ports, users, binaries). Make one change at a time and verify the cluster after each; a typo in a static Pod manifest takes the API server down.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/reference/command-line-tools-reference/kube-apiserver/
+        text: kube-apiserver reference
+      - url: https://kubernetes.io/docs/reference/access-authn-authz/kubelet-authn-authz/
+        text: Kubelet authentication / authorization

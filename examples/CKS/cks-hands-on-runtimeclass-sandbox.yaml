@@ -1,0 +1,670 @@
+apiVersion: v1alpha1
+name: 'CKS (Hands-On): Sandboxed Runtimes with RuntimeClass'
+k8sVersion: 1.34.0
+timing:
+  enabled: true
+  limitSeconds: 7200
+introduction:
+  elements:
+  - type: context
+    text: |
+      Hands-on practice with **sandboxed container runtimes** for the CKS *Minimize Microservice Vulnerabilities* domain: understand why runc
+      containers share the host kernel, create `RuntimeClass` objects for gVisor (`runsc`) and Kata, run Pods in them, verify the sandbox, register the handler
+      in containerd, troubleshoot sandbox failures and enforce the class with admission. There is no multiple choice.
+
+      **Lab environment**
+
+      - You are `root` on the control-plane node of a kubeadm cluster (Kubernetes 1.34, containerd). Worker `worker-2` has gVisor installed
+        (`runsc`). `kubectl` uses the admin credentials.
+      - Namespaces `tenants` (untrusted code) and `shop` exist.
+
+      **How answers are checked**
+
+      - *Manifests* are validated against the Kubernetes schema and then for what they *mean*. Names of handlers and classes are given in each task.
+      - *Commands* are checked structurally (flag order is free); short answers accept common spellings.
+
+      Exam content is under NDA: this is practice for the common patterns, not a prediction.
+  - type: references
+    links:
+    - url: https://kubernetes.io/docs/concepts/containers/runtime-class/
+      text: Runtime Class
+    - url: https://gvisor.dev/docs/user_guide/containerd/quick_start/
+      text: 'gVisor: containerd quick start'
+    - url: https://github.com/kata-containers/kata-containers
+      text: Kata Containers
+    - url: https://training.linuxfoundation.org/certification/certified-kubernetes-security-specialist-cks/
+      text: CKS Domains and Competencies
+manifestDefinitions:
+- id: pod-v1
+  kind: Pod
+  apiVersion: v1
+  autoLoad: true
+- id: runtimeclass-v1
+  kind: RuntimeClass
+  apiVersion: node.k8s.io/v1
+  autoLoad: true
+- id: deployment-v1
+  kind: Deployment
+  apiVersion: apps/v1
+  autoLoad: true
+- id: vap-v1
+  kind: ValidatingAdmissionPolicy
+  apiVersion: admissionregistration.k8s.io/v1
+  autoLoad: true
+scenarios:
+- title: Why Sandbox a Container
+  category: Sandboxed Runtimes
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      A SaaS platform runs customer-supplied code in Pods of the `tenants` namespace. Regular containers (runc) are processes of the **host kernel**
+      with namespaces and cgroups around them. A kernel vulnerability reachable from a syscall lets code in one container escape to the node,
+      and from there to every other tenant on it.
+  - type: question
+    question:
+      questionType: single-line
+      header: 'In a normal runc container, which kernel handles the container''s system calls: the host kernel or a separate
+        guest kernel? (host/guest)'
+      hint: Containers do not boot their own operating system.
+      correctAnswerInfo: All runc containers on a node share the node's kernel, so kernel bugs and over-broad syscalls are
+        the main escape path.
+      expectedAnswer: host
+      cel: answer.trim().lowerAscii() in ["host"]
+  - type: question
+    question:
+      questionType: single-line
+      header: Which sandbox implements a user-space "application kernel" (the Sentry) that intercepts the syscalls of a container,
+        written in Go and started with the `runsc` binary?
+      hint: Google open-source project; its binary is called runsc.
+      expectedAnswer: gVisor
+      cel: answer.trim().lowerAscii() in ["gvisor", "gvisor", "g visor"]
+  - type: question
+    question:
+      questionType: single-line
+      header: Which sandbox runs each Pod inside a lightweight virtual machine with its own guest kernel?
+      hint: Named after the Greek word for "below"... the VM-based one.
+      expectedAnswer: Kata Containers
+      cel: answer.trim().lowerAscii() in ["kata containers", "kata", "kata containers", "kata-containers", "katacontainers"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        | Runtime | Isolation mechanism | Typical `handler` |
+        |---|---|---|
+        | runc (default) | namespaces + cgroups, shared host kernel | `runc` |
+        | gVisor | user-space kernel intercepting syscalls | `runsc` |
+        | Kata Containers | lightweight VM per Pod, own guest kernel | `kata`, `kata-qemu`, ... |
+
+        Costs: extra start-up time and memory, some syscalls and features unsupported (gVisor), nested virtualization or hardware support (Kata).
+        Use sandboxes for untrusted or multi-tenant workloads, not as a default for everything.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/concepts/containers/runtime-class/
+        text: Runtime Class
+      - url: https://kubernetes.io/docs/concepts/security/linux-kernel-security-constraints/
+        text: Linux kernel security constraints for Pods and containers
+- title: The RuntimeClass Object
+  category: Sandboxed Runtimes
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The node runtime was prepared by the platform team: containerd has a runtime handler named `runsc` (gVisor). Kubernetes only knows
+      it by a **RuntimeClass**, which gives the handler a cluster-wide name that Pods can refer to.
+  - type: question
+    question:
+      questionType: command
+      header: List the RuntimeClasses of the cluster.
+      hint: RuntimeClass is a cluster-scoped resource; no namespace needed.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: get
+        - name: runtimeclass
+          aliases:
+          - runtimeclasses
+  - type: table
+    style: terminal
+    columns:
+    - NAME
+    - HANDLER
+    - AGE
+    rows:
+    - - kata
+      - kata-qemu
+      - 40d
+    - - untrusted
+      - runsc
+      - 40d
+  - type: question
+    question:
+      questionType: single-line
+      header: A Pod must use gVisor. Which RuntimeClass name do you reference?
+      hint: Match the HANDLER column to the runtime.
+      correctAnswerInfo: The class name (`untrusted`) is what Pods use; the handler (`runsc`) is the node-side name. They
+        are independent, and the names are chosen by the administrator.
+      expectedAnswer: untrusted
+      cel: answer.trim().lowerAscii() in ["untrusted"]
+  - type: question
+    question:
+      questionType: manifest
+      header: The platform team also wants a class named `gvisor` for the same handler. Write the object.
+      hint: 'RuntimeClass has no spec: `handler` sits at the top level, next to metadata.'
+      correctAnswerInfo: RuntimeClass objects are not namespaced.
+      manifestDefinitionId: runtimeclass-v1
+      initialContent: |
+        apiVersion: node.k8s.io/v1
+        kind: RuntimeClass
+        metadata:
+      expectedFields:
+      - path: metadata.name
+        expectedValue: gvisor
+      - path: handler
+        expectedValue: runsc
+  explanation:
+    elements:
+    - type: context
+      text: |
+        `kubectl get runtimeclass` is the first command in any sandbox task. Note that creating the RuntimeClass does not install anything:
+        the **handler must already be configured in the container runtime on every node** where such Pods can land.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/concepts/containers/runtime-class/
+        text: Runtime Class
+- title: Run a Pod in the Sandbox
+  category: Sandboxed Runtimes
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Pod `tenant-job` in namespace `tenants` (image `registry.local/tenants/job:1.0`) executes code uploaded by customers. It must run in the
+      RuntimeClass `gvisor`.
+  - type: question
+    question:
+      questionType: manifest
+      header: Write the Pod manifest.
+      hint: A Pod-level field names the class.
+      correctAnswerInfo: '`runtimeClassName` is set on the Pod spec (not per container). For Deployments it goes into the
+        Pod template.'
+      manifestDefinitionId: pod-v1
+      initialContent: |
+        apiVersion: v1
+        kind: Pod
+        metadata:
+          name: tenant-job
+          namespace: tenants
+        spec:
+          containers:
+            - name: job
+              image: registry.local/tenants/job:1.0
+      expectedFields:
+      - path: metadata.name
+        expectedValue: tenant-job
+      - path: spec.runtimeClassName
+        expectedValue: gvisor
+  - type: question
+    question:
+      questionType: command
+      header: Print the runtime class of the Pod `tenant-job` in namespace `tenants` with JSONPath.
+      hint: The field name from the manifest, in a JSONPath expression.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: get
+        - name: pod
+          aliases:
+          - pods
+          - po
+        positionals:
+        - index: 0
+          value: tenant-job
+        flags:
+        - name: namespace
+          short: n
+          required: true
+          value: tenants
+        - name: output
+          short: o
+          required: true
+          regex: ^jsonpath.*runtimeClassName
+  - type: question
+    question:
+      questionType: single-line
+      header: A Pod omits `runtimeClassName`. Which runtime does it use?
+      hint: Think about what happens without any configuration.
+      expectedAnswer: the default runtime
+      cel: answer.trim().lowerAscii() in ["the default runtime", "default", "runc", "default runtime", "the default", "the
+        node default", "node default"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Changing `runtimeClassName` on an existing Pod is not allowed (the field is immutable); recreate the Pod. For Deployments, edit the template and let the rollout
+        replace Pods.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/concepts/containers/runtime-class/
+        text: Runtime Class
+- title: Verify the Sandbox
+  category: Sandboxed Runtimes
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      "Is it really in a sandbox?" is a question to answer with evidence from inside the container. gVisor's kernel prints its own boot
+      messages and reports a fixed kernel version string.
+  - type: question
+    question:
+      questionType: command
+      header: Run `dmesg` in the Pod `tenant-job` in namespace `tenants`.
+      hint: kubectl exec, with the command after a double dash.
+      command:
+        executable: kubectl
+        strictness: permissive
+        subcommands:
+        - name: exec
+        positionals:
+        - index: 0
+          value: tenant-job
+        flags:
+        - name: namespace
+          short: n
+          required: true
+          value: tenants
+      cel: answer.trim().endsWith(' dmesg')
+  - type: manifest
+    header: Output
+    content: |
+      [    0.000000] Starting gVisor...
+      [    0.349915] Granting licence to kill(2)...
+      [    0.640431] Checking naughty and nice process list...
+      [    0.838117] Reticulating splines...
+      [    1.296547] Gathering forks...
+      [    1.626731] Searching for needles in stacks...
+      [    1.908423] Ready!
+  - type: question
+    question:
+      questionType: single-line
+      header: In a regular runc container without extra privileges, `dmesg` shows no gVisor banner. What does it typically
+        do instead? (answer in a few words)
+      hint: Unprivileged containers are denied or show host kernel ring buffer content, depending on settings.
+      correctAnswerInfo: In runc containers `dmesg` is normally blocked (`Operation not permitted`) or exposes the host kernel
+        ring buffer if `kernel.dmesg_restrict` is 0 and the capability is present; the gVisor banner is unmistakable.
+      expectedAnswer: it is forbidden
+      cel: answer.trim().lowerAscii() in ["it is forbidden", "permission denied", "forbidden", "operation not permitted",
+        "not permitted", "denied", "nothing", "error", "host kernel messages", "host kernel"]
+  - type: question
+    question:
+      questionType: command
+      header: 'A second check: print the kernel release in the same Pod with `uname`.'
+      hint: One flag of uname prints only the release.
+      command:
+        executable: kubectl
+        strictness: permissive
+        subcommands:
+        - name: exec
+        positionals:
+        - index: 0
+          value: tenant-job
+        flags:
+        - name: namespace
+          short: n
+          required: true
+          value: tenants
+      cel: answer.contains('uname -r')
+  - type: table
+    style: terminal
+    columns:
+    - OUTPUT
+    rows:
+    - - 4.4.0
+  explanation:
+    elements:
+    - type: context
+      text: |
+        gVisor always reports the same emulated kernel (`4.4.0`), whatever the host runs. If `uname -r` equals the node's kernel version, the Pod is not
+        sandboxed. On the node you can also check `ps aux | grep runsc` or `runsc list`.
+    - type: references
+      links:
+      - url: https://gvisor.dev/docs/user_guide/containerd/quick_start/
+        text: 'gVisor: containerd quick start'
+- title: Configure the Handler on the Node
+  category: Node Setup
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      On node `worker-2` the `runsc` binary is installed in `/usr/local/bin`, but containerd does not know the handler, so Pods
+      fail with a sandbox error. containerd's configuration file is `/etc/containerd/config.toml` and uses the CRI plugin sections.
+  - type: question
+    question:
+      questionType: multiline
+      header: Write the TOML section that registers a runtime named `runsc` with the runtime type of gVisor (the containerd
+        shim `io.containerd.runsc.v1`). Use the section header syntax of your containerd version.
+      hint: The handler name is the last element of the section header; the runtime type is the shim identifier.
+      correctAnswerInfo: containerd 2.x uses the header `[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runsc]`.
+        Both forms are accepted here. The handler name `runsc` must equal `handler:` in the RuntimeClass.
+      expectedAnswer: |
+        [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runsc]
+          runtime_type = "io.containerd.runsc.v1"
+      cel: answer.contains('containerd.runtimes.runsc]') && answer.matches('runtime_type *= *["\']io.containerd.runsc.v1["\']')
+  - type: question
+    question:
+      questionType: command
+      header: Restart the container runtime service on the node so that it reads the new configuration.
+      hint: The runtime is a systemd service.
+      command:
+        executable: systemctl
+        subcommands:
+        - name: restart
+        positionals:
+        - index: 0
+          value: containerd
+  - type: question
+    question:
+      questionType: command
+      header: Check that the runtime is running again.
+      hint: Same tool, different verb.
+      command:
+        executable: systemctl
+        subcommands:
+        - name: status
+        positionals:
+        - index: 0
+          value: containerd
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Order of operations for a new runtime: install the binary → add the handler to the container runtime config → restart the runtime →
+        create the RuntimeClass → run a test Pod. The kubelet needs no change. With CRI-O the equivalent is a `[crio.runtime.runtimes.runsc]` table.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/setup/production-environment/container-runtimes/
+        text: Container Runtimes
+      - url: https://gvisor.dev/docs/user_guide/containerd/quick_start/
+        text: 'gVisor: containerd quick start'
+- title: Troubleshoot Failing Sandbox Pods
+  category: Troubleshooting
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Two Pods use `runtimeClassName: untrusted`. `job-a` was admitted and is stuck; creating `job-b` was refused:
+  - type: table
+    style: terminal
+    columns:
+    - NAME
+    - READY
+    - STATUS
+    - RESTARTS
+    - AGE
+    rows:
+    - - job-a
+      - 0/1
+      - ContainerCreating
+      - '0'
+      - 3m
+  - type: question
+    question:
+      questionType: command
+      header: Show the events of Pod `job-a` in namespace `tenants`.
+      hint: describe ends with the events.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: describe
+        - name: pod
+          aliases:
+          - pods
+          - po
+        positionals:
+        - index: 0
+          value: job-a
+        flags:
+        - name: namespace
+          short: n
+          required: true
+          value: tenants
+  - type: manifest
+    header: Events of job-a
+    content: |
+      Warning  FailedCreatePodSandBox  14s (x6 over 2m)  kubelet  Failed to create pod sandbox: rpc error: code = Unknown desc = failed to get sandbox runtime: no runtime for "runsc" is configured
+  - type: question
+    question:
+      questionType: single-line
+      header: Where is the problem?
+      hint: The kubelet found the class and the handler name, then asked containerd.
+      expectedAnswer: the container runtime configuration of the node
+      cel: answer.trim().lowerAscii() in ["the container runtime configuration of the node", "node", "containerd", "runtime
+        configuration", "container runtime", "container runtime configuration", "on the node", "node configuration", "containerd
+        config", "containerd configuration", "the node", "runtime config"]
+  - type: manifest
+    header: Creating job-b
+    content: |
+      Error from server (Forbidden): error when creating "job-b.yaml": pods "job-b" is forbidden: pod rejected: RuntimeClass "untrusted" not found
+  - type: question
+    question:
+      questionType: single-line
+      header: What must exist in the cluster so that job-b is admitted?
+      hint: The message names the object type.
+      expectedAnswer: RuntimeClass
+      cel: answer.trim().lowerAscii() in ["runtimeclass", "a runtimeclass", "runtime class", "the runtimeclass", "runtimeclass
+        untrusted"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Two distinct failures: **admission** error "RuntimeClass not found" (the API object is missing) and **kubelet** error "no runtime for X is configured"
+        (the node lacks the handler). The first is fixed with `kubectl create`, the second on the node.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/concepts/containers/runtime-class/
+        text: Runtime Class
+- title: Place Sandboxed Pods on the Right Nodes
+  category: Scheduling
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Only the nodes labeled `sandbox=gvisor` have `runsc` installed, and they carry the taint `sandbox=gvisor:NoSchedule` so that normal Pods stay
+      away. Pods using the class must therefore only be scheduled there and tolerate the taint. Their sandbox needs `memory: 120Mi` and `cpu: 250m`
+      of extra resources on top of the container requests, to be accounted by the scheduler.
+  - type: question
+    question:
+      questionType: manifest
+      header: Write the RuntimeClass `gvisor` (handler `runsc`) so that the scheduling and accounting are part of the class,
+        and Pod authors need to do nothing.
+      hint: 'Two optional blocks of the RuntimeClass: scheduling (nodeSelector and tolerations) and overhead.'
+      correctAnswerInfo: The RuntimeClass admission controller merges `scheduling.nodeSelector` into the Pod's nodeSelector
+        and unions the tolerations. `overhead.podFixed` is added to the Pod's resource requests for scheduling and quota.
+      manifestDefinitionId: runtimeclass-v1
+      initialContent: |
+        apiVersion: node.k8s.io/v1
+        kind: RuntimeClass
+        metadata:
+          name: gvisor
+        handler: runsc
+      expectedFields:
+      - path: metadata.name
+        expectedValue: gvisor
+      - path: handler
+        expectedValue: runsc
+      - path: scheduling.nodeSelector.sandbox
+        expectedValue: gvisor
+      - path: overhead.podFixed.memory
+        expectedValue: 120Mi
+      - path: overhead.podFixed.cpu
+        expectedValue: 250m
+      cel:
+      - name: Tolerates taint
+        expression: manifest.scheduling.tolerations.exists(t, t.key == 'sandbox' && t.value == 'gvisor' && t.effect == 'NoSchedule')
+        message: The class must add a toleration for the sandbox taint
+  explanation:
+    elements:
+    - type: context
+      text: |
+        `scheduling` and `overhead` are what make a RuntimeClass usable in clusters with mixed nodes. Without `scheduling`, a Pod can land on a node without the handler
+        and fail with the sandbox error from the previous scenario.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/concepts/containers/runtime-class/
+        text: Runtime Class
+- title: Require the Sandbox in a Namespace
+  category: Enforcement
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      A sandbox only helps if tenants cannot skip it. Every Pod created in the namespace `tenants` must have `runtimeClassName: gvisor`. Use a
+      `ValidatingAdmissionPolicy` named `require-gvisor` for Pod creation and updates; a binding will limit it to that namespace.
+  - type: question
+    question:
+      questionType: manifest
+      header: Write the policy.
+      hint: In CEL, an optional field can be read with the question-mark selector and a default, or tested with has().
+      correctAnswerInfo: 'For example: `has(object.spec.runtimeClassName) && object.spec.runtimeClassName == "gvisor"`.'
+      manifestDefinitionId: vap-v1
+      initialContent: |
+        apiVersion: admissionregistration.k8s.io/v1
+        kind: ValidatingAdmissionPolicy
+        metadata:
+          name: require-gvisor
+        spec:
+      expectedFields:
+      - path: metadata.name
+        expectedValue: require-gvisor
+      - path: spec.failurePolicy
+        expectedValue: Fail
+      cel:
+      - name: Targets pods
+        expression: manifest.spec.matchConstraints.resourceRules.exists(r, 'pods' in r.resources && 'CREATE' in r.operations)
+        message: The policy must match Pod creation
+      - name: Checks the class
+        expression: manifest.spec.validations.exists(v, v.expression.contains('runtimeClassName') && v.expression.contains('gvisor'))
+        message: A validation must require the sandbox class
+  - type: question
+    question:
+      questionType: single-line
+      header: Is a sandbox a replacement for securityContext hardening and NetworkPolicies? (yes/no)
+      hint: Defense in depth.
+      correctAnswerInfo: A sandbox limits the blast radius of a kernel exploit; it does not stop a root process from abusing
+        the application, the network or mounted Secrets. Keep dropping capabilities, running non-root and applying NetworkPolicies.
+      expectedAnswer: 'no'
+      cel: answer.trim().lowerAscii() in ["no"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Pod Security Admission can also exempt specific `runtimeClasses` in the plugin configuration: Pods that run in a sandbox may then be allowed settings that would otherwise be refused. Treat
+        that exemption with care; it trusts the sandbox for isolation.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/reference/access-authn-authz/validating-admission-policy/
+        text: Validating Admission Policy
+      - url: https://kubernetes.io/docs/concepts/containers/runtime-class/
+        text: Runtime Class
+- title: 'Capstone: A Sandboxed Tenant Workload'
+  category: Capstone
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The platform needs a Deployment `renderer` (2 replicas, label `app=renderer`, image `registry.local/tenants/renderer:3.2`) in namespace `tenants`
+      that runs sandboxed in the `gvisor` class and hardened: non-root, no privilege escalation.
+  - type: question
+    question:
+      questionType: manifest
+      header: Write the Deployment.
+      hint: runtimeClassName belongs to the Pod template spec.
+      manifestDefinitionId: deployment-v1
+      initialContent: |
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: renderer
+          namespace: tenants
+        spec:
+      expectedFields:
+      - path: metadata.name
+        expectedValue: renderer
+      - path: spec.replicas
+        expectedValue: 2
+      - path: spec.template.spec.runtimeClassName
+        expectedValue: gvisor
+      - path: spec.template.spec.containers.0.image
+        expectedValue: registry.local/tenants/renderer:3.2
+      cel:
+      - name: Selector matches
+        expression: manifest.spec.selector.matchLabels.app == 'renderer' && manifest.spec.template.metadata.labels.app ==
+          'renderer'
+        message: The selector must match the template labels
+      - name: Non-root
+        expression: manifest.spec.template.spec.containers.all(c, (has(c.securityContext) && has(c.securityContext.runAsNonRoot)
+          && c.securityContext.runAsNonRoot == true) || (has(manifest.spec.template.spec.securityContext) && has(manifest.spec.template.spec.securityContext.runAsNonRoot)
+          && manifest.spec.template.spec.securityContext.runAsNonRoot == true))
+        message: Containers must be required to run as non-root
+      - name: No escalation
+        expression: manifest.spec.template.spec.containers.all(c, has(c.securityContext) && has(c.securityContext.allowPrivilegeEscalation)
+          && c.securityContext.allowPrivilegeEscalation == false)
+        message: Privilege escalation must be disabled
+  - type: question
+    question:
+      questionType: command
+      header: 'Audit the cluster: list the Pods of all namespaces with columns for the Pod name and the runtime class.'
+      hint: Custom columns with the runtime class field as a path.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: get
+        - name: pods
+          aliases:
+          - pod
+          - po
+        flags:
+        - name: all-namespaces
+          short: A
+          required: true
+          boolean: true
+        - name: output
+          short: o
+          required: true
+          regex: ^custom-columns=.*runtimeClassName
+  - type: table
+    style: terminal
+    columns:
+    - NAMESPACE
+    - NAME
+    - RUNTIME
+    rows:
+    - - kube-system
+      - coredns-668d6bf9bc-4x8vz
+      - <none>
+    - - tenants
+      - renderer-6f7d5c9b8d-2lq7k
+      - gvisor
+    - - tenants
+      - renderer-6f7d5c9b8d-9wz4t
+      - gvisor
+    - - shop
+      - api-5d8c7b9f4-xk2jq
+      - <none>
+  - type: question
+    question:
+      questionType: single-line
+      header: Which of the listed Pods are NOT sandboxed? Answer with the namespaces, comma separated.
+      hint: <none> means no class was set.
+      expectedAnswer: kube-system,shop
+      cel: answer.trim().lowerAscii() in ["kube-system,shop", "kube-system, shop", "shop,kube-system", "shop, kube-system",
+        "kube-system and shop", "shop and kube-system"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        In the exam, the sandbox task is typically: create the RuntimeClass (name and handler given) → set `runtimeClassName` in an existing Pod or Deployment →
+        verify. Remember that a Pod's `runtimeClassName` cannot be changed in place; redeploy.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/concepts/containers/runtime-class/
+        text: Runtime Class
