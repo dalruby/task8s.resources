@@ -198,7 +198,7 @@ scenarios:
   elements:
   - type: context
     text: |
-      The web server `edge` in namespace `dev` must bind to port 80 as a non-root user. It needs no other Linux capability and must never gain
+      The web server `edge` in namespace `dev` must serve on port 80 (its configuration was changed to listen there) as a non-root user. It needs no other Linux capability and must never gain
       privileges through setuid binaries. The image is the unprivileged NGINX variant `nginxinc/nginx-unprivileged:1.27`, whose process runs as user ID 101.
   - type: question
     question:
@@ -477,7 +477,8 @@ scenarios:
       header: 'Pod E: strictest level passed?'
       hint: Everything about the container is restricted-grade. Look at the volume type.
       correctAnswerInfo: 'Restricted allows only these volume types: configMap, csi, downwardAPI, emptyDir, ephemeral, persistentVolumeClaim,
-        projected, secret. An `nfs` volume is fine for baseline but refused by restricted.'
+        projected, secret. An `nfs` volume is fine for baseline but refused by restricted; the message reads: restricted volume
+        types (volume "share" uses restricted volume type "nfs").'
       expectedAnswer: baseline
       cel: answer.trim().lowerAscii() in ["baseline"]
   - type: manifest
@@ -508,8 +509,8 @@ scenarios:
       questionType: single-line
       header: 'Pod F: strictest level passed?'
       hint: Which standard forbids mounting a path of the node?
-      correctAnswerInfo: '`hostPath` volumes are forbidden from baseline upwards, however hardened the container is. The rejection
-        text for restricted mentions "restricted volume types" (for example volume "data" uses restricted volume type "nfs").'
+      correctAnswerInfo: '`hostPath` volumes are forbidden from baseline upwards, however hardened the container is. The baseline
+        message reads: hostPath volumes (volume "node-logs").'
       expectedAnswer: privileged
       cel: answer.trim().lowerAscii() in ["privileged"]
   explanation:
@@ -1048,24 +1049,25 @@ scenarios:
   - type: question
     question:
       questionType: command
-      header: First, set the enforcement label on the namespace `payments`.
-      hint: One label, level restricted.
+      header: First, label the namespace `payments` so that the restricted standard is enforced and, at the same level, warnings
+        are shown for workload resources.
+      hint: Two modes, same level. Remember which modes are applied to Deployments and which only to Pods.
+      correctAnswerInfo: Enforce alone is checked only when Pods are created, so a Deployment would be accepted silently and
+        its ReplicaSet would fail later. Adding `warn` makes the check visible when the Deployment is applied.
       command:
         executable: kubectl
+        strictness: permissive
         subcommands:
         - name: label
         - name: namespace
           aliases:
           - namespaces
           - ns
-        positionals:
-        - index: 0
-          value: payments
-        - index: 1
-          value: pod-security.kubernetes.io/enforce=restricted
         flags:
         - name: overwrite
           boolean: true
+      cel: positionals.exists(p, p == 'payments') && positionals.exists(p, p == 'pod-security.kubernetes.io/enforce=restricted')
+        && positionals.exists(p, p == 'pod-security.kubernetes.io/warn=restricted')
   - type: question
     question:
       questionType: manifest
@@ -1124,8 +1126,9 @@ scenarios:
       header: 'Test the manifest `ledger.yaml` against admission without creating anything: apply it with a server-side dry
         run.'
       hint: The server runs the full admission chain, including Pod Security Admission, but does not persist the object.
-      correctAnswerInfo: '`kubectl auth can-i create pods` would not help here: it asks RBAC only and answers yes even when
-        Pod Security would reject the Pod.'
+      correctAnswerInfo: 'With the `warn` label from the first step the dry run prints a `would violate PodSecurity` warning
+        for a non-compliant template; without it a Deployment passes silently, because enforce is applied to Pods only. `kubectl
+        auth can-i create pods` would not help either: it asks RBAC only.'
       command:
         executable: kubectl
         subcommands:
