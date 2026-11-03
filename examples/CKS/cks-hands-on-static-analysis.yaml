@@ -854,7 +854,7 @@ scenarios:
     elements:
     - type: context
       text: |
-        Same engine, three front ends: binary (`kubesec scan file`), container (`docker run -i kubesec/kubesec:v2 scan /dev/stdin < file`) and HTTP (`kubesec http 8080`, POST to `/scan`). Do not send
+        Same engine, three front ends: binary (`kubesec scan file`), container (`docker run -i kubesec/kubesec:v2 scan /dev/stdin < file`) and HTTP (`kubesec http 8080`, POST to `/scan`). Kubernetes nodes that run containerd often have no `docker` command, so in practice expect the binary or the HTTP service; the container form is worth recognising. Do not send
         manifests with real secrets to a public instance such as v2.kubesec.io.
     - type: references
       links:

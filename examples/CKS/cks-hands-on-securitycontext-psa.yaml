@@ -174,11 +174,14 @@ scenarios:
   - type: question
     question:
       questionType: single-line
-      header: 'If you set runAsUser: 0 together with runAsNonRoot: true, what happens to the container?'
-      hint: Which check wins?
-      expectedAnswer: the Pod is rejected at start
-      cel: answer.trim().lowerAscii() in ["the pod is rejected at start", "rejected", "rejected at start", "does not start",
-        "fails", "error", "createcontainerconfigerror", "fails to start", "pod is rejected", "pod fails"]
+      header: 'If you set runAsUser: 0 together with runAsNonRoot: true, what happens when the kubelet creates the container?
+        Name the status.'
+      hint: The Pod is accepted by the API server; the failure shows in its status after scheduling.
+      correctAnswerInfo: 'The kubelet refuses to start the container ("container''s runAsUser breaks non-root policy"). Only
+        if Pod Security `restricted` is enforced does admission already reject `runAsUser: 0`.'
+      expectedAnswer: CreateContainerConfigError
+      cel: answer.trim().lowerAscii() in ["createcontainerconfigerror", "createcontainerconfigerror", "container config error",
+        "create container config error"]
   explanation:
     elements:
     - type: context
@@ -196,14 +199,18 @@ scenarios:
   - type: context
     text: |
       The web server `edge` in namespace `dev` must bind to port 80 as a non-root user. It needs no other Linux capability and must never gain
-      privileges through setuid binaries. The image is `nginx:1.27.3`.
+      privileges through setuid binaries. The image is the unprivileged NGINX variant `nginxinc/nginx-unprivileged:1.27`, whose process runs as user ID 101.
   - type: question
     question:
       questionType: manifest
       header: Write the Pod manifest for container `edge` with the least capabilities that make this work.
-      hint: Remove everything, then add back one thing. Capability names are written without the CAP_ prefix.
-      correctAnswerInfo: '`NET_BIND_SERVICE` allows binding ports below 1024. It is the only capability the restricted standard
-        lets you add back.'
+      hint: Remove everything, then add back one thing. Capability names are written without the CAP_ prefix. Make the user
+        explicit as well.
+      correctAnswerInfo: '`NET_BIND_SERVICE` is the only capability the restricted standard lets you add back, so this is
+        the accepted pattern for services that bind low ports. Be aware that Kubernetes does not grant ambient capabilities
+        to non-root processes: for a process that really runs as non-root, `capabilities.add` has no effect. Low ports usually
+        work anyway because current runtimes (containerd 2.x) set `net.ipv4.ip_unprivileged_port_start=0` by default. The
+        capability matters for images that start as root.'
       manifestDefinitionId: pod-v1
       initialContent: |
         apiVersion: v1
@@ -214,10 +221,12 @@ scenarios:
         spec:
           containers:
             - name: edge
-              image: nginx:1.27.3
+              image: nginxinc/nginx-unprivileged:1.27
       expectedFields:
       - path: metadata.name
         expectedValue: edge
+      - path: spec.containers.0.image
+        expectedValue: nginxinc/nginx-unprivileged:1.27
       - path: spec.containers.0.securityContext.allowPrivilegeEscalation
         expectedValue: false
       cel:
@@ -233,6 +242,11 @@ scenarios:
           == true) || (has(manifest.spec.securityContext) && has(manifest.spec.securityContext.runAsNonRoot) && manifest.spec.securityContext.runAsNonRoot
           == true)
         message: The process must be required to run as non-root
+      - name: Numeric user
+        expression: (has(manifest.spec.containers[0].securityContext.runAsUser) && manifest.spec.containers[0].securityContext.runAsUser
+          > 0) || (has(manifest.spec.securityContext) && has(manifest.spec.securityContext.runAsUser) && manifest.spec.securityContext.runAsUser
+          > 0)
+        message: A non-zero numeric user must be set, because runAsNonRoot alone cannot verify the image user
   - type: question
     question:
       questionType: single-line
@@ -433,6 +447,71 @@ scenarios:
         `SETUID`). `SYS_ADMIN` and `NET_RAW` are outside it. Restricted also limits `add` to `NET_BIND_SERVICE`.
       expectedAnswer: privileged
       cel: answer.trim().lowerAscii() in ["privileged"]
+  - type: manifest
+    header: Pod E
+    content: |
+      # Pod E
+      spec:
+        securityContext:
+          runAsNonRoot: true
+          seccompProfile:
+            type: RuntimeDefault
+        containers:
+          - name: app
+            image: nginx:1.27.3
+            securityContext:
+              allowPrivilegeEscalation: false
+              capabilities:
+                drop: ["ALL"]
+            volumeMounts:
+              - name: share
+                mountPath: /data
+        volumes:
+          - name: share
+            nfs:
+              server: 10.0.0.50
+              path: /exports/data
+  - type: question
+    question:
+      questionType: single-line
+      header: 'Pod E: strictest level passed?'
+      hint: Everything about the container is restricted-grade. Look at the volume type.
+      correctAnswerInfo: 'Restricted allows only these volume types: configMap, csi, downwardAPI, emptyDir, ephemeral, persistentVolumeClaim,
+        projected, secret. An `nfs` volume is fine for baseline but refused by restricted.'
+      expectedAnswer: baseline
+      cel: answer.trim().lowerAscii() in ["baseline"]
+  - type: manifest
+    header: Pod F
+    content: |
+      # Pod F
+      spec:
+        securityContext:
+          runAsNonRoot: true
+          seccompProfile:
+            type: RuntimeDefault
+        containers:
+          - name: app
+            image: nginx:1.27.3
+            securityContext:
+              allowPrivilegeEscalation: false
+              capabilities:
+                drop: ["ALL"]
+            volumeMounts:
+              - name: node-logs
+                mountPath: /logs
+        volumes:
+          - name: node-logs
+            hostPath:
+              path: /var/log
+  - type: question
+    question:
+      questionType: single-line
+      header: 'Pod F: strictest level passed?'
+      hint: Which standard forbids mounting a path of the node?
+      correctAnswerInfo: '`hostPath` volumes are forbidden from baseline upwards, however hardened the container is. The rejection
+        text for restricted mentions "restricted volume types" (for example volume "data" uses restricted volume type "nfs").'
+      expectedAnswer: privileged
+      cel: answer.trim().lowerAscii() in ["privileged"]
   explanation:
     elements:
     - type: context
@@ -543,8 +622,8 @@ scenarios:
       questionType: manifest
       header: Fix the Pod so it is admitted. Keep the name, namespace, container name and image.
       hint: The error message lists each missing field.
-      correctAnswerInfo: The image must really support a non-root user. If it starts as root and ignores `runAsUser`, the
-        Pod is admitted but fails with `CreateContainerConfigError`.
+      correctAnswerInfo: If the user of the image is root and you set only `runAsNonRoot`, the Pod is admitted but the container
+        fails with `CreateContainerConfigError`. Add a numeric `runAsUser`, and make sure the application works as that user.
       manifestDefinitionId: pod-v1
       initialContent: |
         apiVersion: v1
@@ -704,8 +783,9 @@ scenarios:
       header: Which Pod Security Admission mode lets the user see a message when the Deployment is created, without ever blocking
         the object?
       hint: One of enforce, audit, warn.
-      correctAnswerInfo: With `warn` (or enforce) set, PSA also checks the Pod template of workload resources when the Deployment
-        is created and returns a warning, even though it cannot block it.
+      correctAnswerInfo: Only the `warn` and `audit` modes are also applied to the Pod templates of workload resources (Deployment,
+        StatefulSet, Job, ...) when they are created. `enforce` is applied to Pods only, so a namespace with only an enforce
+        label gives no warning when the Deployment is created, which is why the Deployment looks fine while its Pods are refused.
       expectedAnswer: warn
       cel: answer.trim().lowerAscii() in ["warn"]
   explanation:
@@ -718,6 +798,181 @@ scenarios:
       links:
       - url: https://kubernetes.io/docs/concepts/security/pod-security-admission/
         text: Pod Security Admission
+- title: What the Warn Mode Shows
+  category: Pod Security Admission
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Namespace `staging` has the labels `enforce=baseline` and `warn=restricted`. You apply a Deployment whose Pods lack the restricted settings. The Pods themselves
+      meet baseline, so they are admitted.
+  - type: manifest
+    header: kubectl apply -f web.yaml
+    content: |
+      Warning: would violate PodSecurity "restricted:latest": allowPrivilegeEscalation != false (container "web" must set securityContext.allowPrivilegeEscalation=false), unrestricted capabilities (container "web" must set securityContext.capabilities.drop=["ALL"]), runAsNonRoot != true (pod or container "web" must set securityContext.runAsNonRoot=true), seccompProfile (pod or container "web" must set securityContext.seccompProfile.type to "RuntimeDefault" or "Localhost")
+      deployment.apps/web created
+  - type: question
+    question:
+      questionType: single-line
+      header: Is the Deployment created despite the message? (yes/no)
+      hint: Compare the last line.
+      correctAnswerInfo: 'A warning never blocks. Compare the enforce rejection: `Error from server (Forbidden): ... violates
+        PodSecurity "restricted:latest": ...` and nothing is created.'
+      expectedAnswer: 'yes'
+      cel: answer.trim().lowerAscii() in ["yes"]
+  - type: question
+    question:
+      questionType: single-line
+      header: Which prefix of the message tells you this is a warning about the stricter standard rather than a rejection?
+        (answer with the first two words of the message text after "Warning:")
+      hint: The wording is conditional, not definitive.
+      expectedAnswer: would violate
+      cel: answer.trim().lowerAscii() in ["would violate"]
+  - type: question
+    question:
+      questionType: single-line
+      header: Which audit event annotation records what the audit mode found? Write the full annotation key.
+      hint: The pod-security.kubernetes.io domain, then the mode and a word for what went wrong.
+      expectedAnswer: pod-security.kubernetes.io/audit-violations
+      cel: answer.trim() in ["pod-security.kubernetes.io/audit-violations"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        `warn` is for the user at the keyboard, `audit` is for the cluster's audit log (visible only if the audit policy records the request), `enforce` blocks. A namespace may combine them
+        with different levels: block what is clearly unsafe (baseline), and warn about what should improve (restricted).
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/concepts/security/pod-security-admission/
+        text: Pod Security Admission
+      - url: https://kubernetes.io/docs/tasks/configure-pod-container/enforce-standards-namespace-labels/
+        text: Enforce Pod Security Standards with Namespace Labels
+- title: Labels Do Not Evict Running Pods
+  category: Pod Security Admission
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Namespace `shop` has been running Deployments for months. You label it `enforce=restricted`. The label command succeeds (possibly with warnings about existing Pods) and
+      `kubectl get pods -n shop` still shows everything Running.
+  - type: question
+    question:
+      questionType: single-line
+      header: Are the running Pods that violate the standard evicted or killed when the enforce label is set? (yes/no)
+      hint: When does admission run?
+      correctAnswerInfo: Admission only evaluates create and update requests. Running Pods continue unchanged until they are
+        recreated, at which point the new Pod is refused.
+      expectedAnswer: 'no'
+      cel: answer.trim().lowerAscii() in ["no"]
+  - type: question
+    question:
+      questionType: command
+      header: To find out what would really happen, recreate the Pods of all Deployments in namespace `shop` with a rolling
+        restart.
+      hint: A rollout subcommand that replaces the Pods of a workload without changing the spec.
+      command:
+        executable: kubectl
+        strictness: permissive
+        subcommands:
+        - name: rollout
+        - name: restart
+        - name: deployment
+          aliases:
+          - deployments
+          - deploy
+        flags:
+        - name: namespace
+          short: n
+          required: true
+          value: shop
+  - type: question
+    question:
+      questionType: command
+      header: 'Afterwards, check why new Pods may be missing: list the events of namespace `shop`.'
+      hint: FailedCreate events from the ReplicaSet controller carry the PodSecurity message.
+      command:
+        executable: kubectl
+        strictness: permissive
+        subcommands:
+        - name: get
+        - name: events
+          aliases:
+          - event
+          - ev
+        flags:
+        - name: namespace
+          short: n
+          required: true
+          value: shop
+  explanation:
+    elements:
+    - type: context
+      text: |
+        The classic exam sequence: label the namespace, **restart the workloads**, then check for `FailedCreate` events and fix the manifests. Skipping the restart leaves you with a false impression
+        of success. A server-side dry run of the label before changing anything (earlier scenario) tells you in advance.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/tasks/configure-pod-container/enforce-standards-namespace-labels/
+        text: Enforce Pod Security Standards with Namespace Labels
+- title: Pod Level or Container Level?
+  category: securityContext
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Both levels may set the same field. This Pod sets a user at the Pod level and another one for the container:
+  - type: manifest
+    header: Pod excerpt
+    content: |
+      spec:
+        securityContext:
+          runAsUser: 1000
+          runAsNonRoot: true
+        containers:
+          - name: app
+            image: registry.local/shop/api:2.4
+            securityContext:
+              runAsUser: 2000
+          - name: sidecar
+            image: registry.local/shop/log-agent:1.1
+  - type: question
+    question:
+      questionType: single-line
+      header: Which user ID does the container `app` run as?
+      hint: The more specific setting wins.
+      expectedAnswer: '2000'
+      cel: answer.trim().lowerAscii() in ["2000"]
+  - type: question
+    question:
+      questionType: single-line
+      header: Which user ID does the container `sidecar` run as?
+      hint: It has no setting of its own.
+      expectedAnswer: '1000'
+      cel: answer.trim().lowerAscii() in ["1000"]
+  - type: question
+    question:
+      questionType: single-line
+      header: Which securityContext field exists only at Pod level and sets the group ownership of mounted volumes?
+      hint: Earlier scenario.
+      expectedAnswer: fsGroup
+      cel: answer.trim().lowerAscii() in ["fsgroup"]
+  - type: question
+    question:
+      questionType: single-line
+      header: Which field exists only at container level and is the place to drop Linux capabilities?
+      hint: Not available for the Pod as a whole.
+      expectedAnswer: capabilities
+      cel: answer.trim().lowerAscii() in ["capabilities"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Container-level values override Pod-level ones for the fields both have (`runAsUser`, `runAsGroup`, `runAsNonRoot`, `seccompProfile`, `seLinuxOptions`). Pod-only fields: `fsGroup`,
+        `supplementalGroups`, `sysctls`. Container-only fields: `privileged`, `allowPrivilegeEscalation`, `readOnlyRootFilesystem`, `capabilities`. Pod Security checks the effective values after this merge.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/tasks/configure-pod-container/security-context/
+        text: Configure a Security Context for a Pod or Container
 - title: Cluster-Wide Defaults and Exemptions
   category: Pod Security Admission
   hintsEnabled: true
@@ -766,7 +1021,9 @@ scenarios:
       header: Which kube-apiserver flag references this file?
       hint: The same flag as for other admission plugin configuration.
       correctAnswerInfo: 'As for ImagePolicyWebhook: mount the file into the static Pod with a hostPath volume. PodSecurity
-        is enabled by default since 1.25, so `--enable-admission-plugins` is not needed.'
+        has been enabled by default since 1.23 (GA in 1.25), so `--enable-admission-plugins` is not needed. The API server
+        accepts only one `--admission-control-config-file`: if ImagePolicyWebhook is configured too, both plugins go into
+        the same AdmissionConfiguration under `plugins:`.'
       expectedAnswer: --admission-control-config-file
       cel: answer.trim().lowerAscii() in ["--admission-control-config-file", "admission-control-config-file"]
   explanation:
@@ -858,29 +1115,29 @@ scenarios:
           && c.securityContext.readOnlyRootFilesystem == true)
         message: The root filesystem must be read-only
       - name: Writable tmp
-        expression: manifest.spec.template.spec.volumes.exists(v, has(v.emptyDir)) && manifest.spec.template.spec.containers[0].volumeMounts.exists(m,
-          m.mountPath == '/tmp')
+        expression: manifest.spec.template.spec.containers[0].volumeMounts.exists(m, m.mountPath == '/tmp' && manifest.spec.template.spec.volumes.exists(v,
+          v.name == m.name && has(v.emptyDir)) && (!has(m.readOnly) || m.readOnly == false))
         message: /tmp must be a writable volume
   - type: question
     question:
       questionType: command
-      header: 'Check what a user may do: ask whether the current user can create Pods in namespace `payments`.'
-      hint: A query subcommand; the answer is yes or no.
+      header: 'Test the manifest `ledger.yaml` against admission without creating anything: apply it with a server-side dry
+        run.'
+      hint: The server runs the full admission chain, including Pod Security Admission, but does not persist the object.
+      correctAnswerInfo: '`kubectl auth can-i create pods` would not help here: it asks RBAC only and answers yes even when
+        Pod Security would reject the Pod.'
       command:
         executable: kubectl
         subcommands:
-        - name: auth
-        - name: can-i
-        positionals:
-        - index: 0
-          value: create
-        - index: 1
-          value: pods
+        - name: apply
         flags:
-        - name: namespace
-          short: n
+        - name: filename
+          short: f
           required: true
-          value: payments
+          value: ledger.yaml
+        - name: dry-run
+          required: true
+          value: server
   explanation:
     elements:
     - type: context
