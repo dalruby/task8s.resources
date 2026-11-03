@@ -168,10 +168,12 @@ scenarios:
   - type: question
     question:
       questionType: command
-      header: Generate the SBOM for image `nginx:1.27.3` and write it to `/root/nginx.spdx`.
-      hint: bom has a generate subcommand that takes the source type as a flag. Check bom generate --help.
-      correctAnswerInfo: '`bom generate` can also take `--dirs` (a source directory), `--file`, `--archive` (image tarball)
-        and `--name`. The default output format is SPDX tag-value.'
+      header: Generate the SBOM for image `nginx:1.27.3` in SPDX tag-value format and write it to `/root/nginx.spdx`.
+      hint: bom has a generate subcommand that takes the source type as a flag. Check bom generate --help, including the default
+        format.
+      correctAnswerInfo: '`bom generate` can also take `--dirs`/`-d` (a source directory), `--file`/`-f`, `--image-archive`
+        (an image tarball), `--archive` (a generic tar or tar.gz added as a package) and `--name`. The default output format
+        is JSON since v0.8.0 and was tag-value before that, so always set `--format` explicitly.'
       command:
         executable: bom
         strictness: permissive
@@ -179,8 +181,12 @@ scenarios:
         - name: generate
         flags:
         - name: image
+          short: i
           required: true
           value: nginx:1.27.3
+        - name: format
+          required: true
+          value: tag-value
         - name: output
           short: o
           required: true
@@ -189,7 +195,7 @@ scenarios:
     question:
       questionType: command
       header: Generate the same SBOM in JSON format instead, written to `/root/nginx.spdx.json`.
-      hint: There is a flag for the document encoding; the default is tag-value.
+      hint: There is a flag for the document encoding.
       command:
         executable: bom
         strictness: permissive
@@ -197,6 +203,7 @@ scenarios:
         - name: generate
         flags:
         - name: image
+          short: i
           required: true
           value: nginx:1.27.3
         - name: format
@@ -438,8 +445,16 @@ scenarios:
         in a few words)
       hint: Think about what is available on the node and about what the file represents.
       expectedAnswer: no image needed
-      cel: answer.trim().lowerAscii() in ["no image needed", "no pull", "faster", "image not needed", "no registry access",
-        "does not need the image", "no need for the image", "works offline", "point in time", "reproducible"]
+      cel: '[''image'', ''pull'', ''registry'', ''offline'', ''fast'', ''quick'', ''download'', ''point in time'', ''reproduc'',
+        ''as shipped'', ''as built'', ''snapshot'', ''small''].exists(w, answer.lowerAscii().contains(w))'
+  - type: question
+    question:
+      questionType: single-line
+      header: In which stage of a CI/CD pipeline is the SBOM best generated and stored? (one word)
+      hint: The SBOM must describe exactly the artifact that is shipped.
+      expectedAnswer: build
+      cel: answer.trim().lowerAscii() in ["build", "the build", "build stage", "build step", "at build time", "build time",
+        "after build", "after the build", "image build"]
   explanation:
     elements:
     - type: context
@@ -549,10 +564,14 @@ scenarios:
     columns:
     - DIFF
     rows:
-    - - < libc6@2.36-9+deb12u1
-    - - '> libc6@2.36-9+deb12u3'
-    - - '> github.com/gin-gonic/gin@v1.9.1'
+    - - 1c1
     - - < github.com/gin-gonic/gin@v1.9.0
+    - - '---'
+    - - '> github.com/gin-gonic/gin@v1.9.1'
+    - - 3c3
+    - - < libc6@2.36-9+deb12u1
+    - - '---'
+    - - '> libc6@2.36-9+deb12u3'
   - type: question
     question:
       questionType: single-line
@@ -580,6 +599,41 @@ scenarios:
       that this image may contain `openssl` older than `3.0.12`.
 
       First, find out which image the Pod runs, directly from the cluster, printing only the image string.
+  - type: question
+    question:
+      questionType: command
+      header: The task does not say which Pods use the image. List namespace, name and images of all Pods in all namespaces
+        with JSONPath (a range over the items) and pipe the result into grep for `report`.
+      hint: Use -A, range over .items[*] and print namespace/name plus the container images.
+      correctAnswerInfo: |-
+        For example: kubectl get pods -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}: {.spec.containers[*].image}{"
+        "}{end}' | grep report
+      command:
+        executable: kubectl
+        subcommands:
+        - name: get
+        - name: pods
+          aliases:
+          - pod
+          - po
+        flags:
+        - name: all-namespaces
+          short: A
+          required: true
+          boolean: true
+        - name: output
+          short: o
+          required: true
+          regex: ^jsonpath.*range.*items.*image
+      modifiers:
+      - type: Pipe
+        pipe:
+          command:
+            executable: grep
+            strictness: permissive
+            positionals:
+            - index: 0
+              value: report
   - type: question
     question:
       questionType: command
@@ -630,8 +684,10 @@ scenarios:
   - type: question
     question:
       questionType: command
-      header: Search the SBOM for the openssl package and show the matching `PackageName` line and the two lines after it.
+      header: Search the SBOM for the openssl package and show the matching `"name"` line and the two lines after it.
       hint: grep has a context option for lines following the match. The JSON encoding writes the name as a quoted value.
+      correctAnswerInfo: 'An exact match is grep -A2 ''"name": "openssl"'' /root/report.spdx.json; a plain grep openssl also
+        hits libssl3 lines and purls.'
       command:
         executable: grep
         strictness: permissive
