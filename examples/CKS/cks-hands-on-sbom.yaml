@@ -605,9 +605,8 @@ scenarios:
       header: The task does not say which Pods use the image. List namespace, name and images of all Pods in all namespaces
         with JSONPath (a range over the items) and pipe the result into grep for `report`.
       hint: Use -A, range over .items[*] and print namespace/name plus the container images.
-      correctAnswerInfo: |-
-        For example: kubectl get pods -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}: {.spec.containers[*].image}{"
-        "}{end}' | grep report
+      correctAnswerInfo: 'For example: kubectl get pods -A -o jsonpath=''{range .items[*]}{.metadata.namespace}/{.metadata.name}:
+        {.spec.containers[*].image}{"\n"}{end}'' | grep report'
       command:
         executable: kubectl
         subcommands:
