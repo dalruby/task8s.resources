@@ -540,6 +540,70 @@ scenarios:
       links:
       - url: https://docs.docker.com/build/building/best-practices/
         text: 'Docker: Building best practices'
+- title: Review Without Adding or Removing Lines
+  category: Dockerfile Hardening
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      A common review task: you get a Dockerfile and may only **change** lines, not add or delete any. The file has four problems that can each be fixed
+      by editing a single line. Fix **at least two** of them, and keep the number of instructions unchanged and the start command working.
+  - type: manifest
+    header: Dockerfile under review
+    content: |
+      FROM ubuntu:latest
+      USER root
+      ENV DB_PASSWORD=hunter2
+      ADD https://example.com/app.tar.gz /opt/app.tar.gz
+      CMD ["/opt/app/run"]
+  - type: question
+    question:
+      questionType: dockerfile
+      header: 'Edit the Dockerfile: fix at least two of the problems without adding or removing any line.'
+      hint: Look at the base image, the user, what is stored in the environment and which instruction fetches from the internet.
+      correctAnswerInfo: 'Four findings: unpinned base image, running as root, a secret in ENV, ADD from a URL. Fixes by editing
+        one line each: pin a tag, USER with a numeric ID, change the ENV line to something harmless (the real value comes
+        from a Kubernetes Secret at run time), and turn ADD into COPY of a file from the build context.'
+      initialContent: |
+        FROM ubuntu:latest
+        USER root
+        ENV DB_PASSWORD=hunter2
+        ADD https://example.com/app.tar.gz /opt/app.tar.gz
+        CMD ["/opt/app/run"]
+      cel:
+      - name: Same number of instructions
+        expression: dockerfile.stages.size() == 1 && dockerfile.stages[0].instructions.size() == 4
+        message: Do not add or remove instructions
+      - name: Start command kept
+        expression: dockerfile.stages[0].instructions.exists(i, i.name == 'CMD' && i.args == ['/opt/app/run'])
+        message: The start command must stay
+      - name: At least two fixes
+        expression: '[dockerfile.stages[0].from.tag != '''' && dockerfile.stages[0].from.tag != ''latest'', dockerfile.stages[0].instructions.exists(i,
+          i.name == ''USER'' && size(i.args) > 0 && !(i.args[0].split('':'')[0] in [''root'', ''0''])), !dockerfile.stages[0].instructions.exists(i,
+          i.name == ''ENV'' && i.values.exists(k, k.upperAscii().contains(''PASSWORD''))), !dockerfile.stages[0].instructions.exists(i,
+          i.name == ''ADD'')].filter(x, x).size() >= 2'
+        message: At least two of the four problems must be fixed
+  - type: question
+    question:
+      questionType: single-line
+      header: A reviewer says "the image is fine, I removed curl and the package index in a later RUN". Where would an attacker
+        still find the removed files? (one word)
+      hint: Think about how images are built from instructions.
+      expectedAnswer: layers
+      cel: answer.trim().lowerAscii() in ["layers", "layer", "image layers", "previous layers", "earlier layers", "an earlier
+        layer", "the layers", "in the layers", "in earlier layers", "docker history", "in a previous layer"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Spot-it-on-sight list for Dockerfiles: `USER root` or no `USER`, `latest`/untagged base image, secrets in `ENV`/`ARG`, `ADD` from a URL (use `COPY`), build tools and package
+        managers left in the final image. When you may not add lines, a single edited line usually fixes each: change the tag, change the user, change or neutralise the variable, swap ADD for COPY.
+    - type: references
+      links:
+      - url: https://docs.docker.com/build/building/best-practices/
+        text: 'Docker: Building best practices'
+      - url: https://docs.docker.com/reference/dockerfile/
+        text: Dockerfile reference
 - title: Build and Check the Result
   category: Verifying the Image
   hintsEnabled: true

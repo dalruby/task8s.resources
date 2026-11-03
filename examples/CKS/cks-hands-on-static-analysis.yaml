@@ -85,7 +85,8 @@ scenarios:
       header: Score the manifest `/root/webapp-pod.yaml` with kubesec.
       hint: The tool has a subcommand that takes the manifest file.
       correctAnswerInfo: '`kubesec scan <file>` prints a JSON array with one result per object in the file. The score starts
-        at zero; critical findings subtract 30 points each, passed advisories add one point.'
+        at zero; each critical rule has its own negative weight (for example Privileged -30, HostNetwork -9, DockerSock -9);
+        each advisory you meet adds +1.'
       command:
         executable: kubesec
         strictness: permissive
@@ -104,19 +105,19 @@ scenarios:
         {
           "object": "Pod/webapp.shop",
           "valid": true,
-          "message": "Failed with a score of -90 points",
-          "score": -90,
+          "message": "Failed with a score of -48 points",
+          "score": -48,
           "scoring": {
             "critical": [
               { "id": "Privileged", "points": -30,
                 "reason": "Privileged containers can allow almost completely unrestricted host access" },
-              { "id": "DockerSock", "points": -30,
+              { "id": "DockerSock", "points": -9,
                 "reason": "Mounting the docker.socket leaks information about other containers and can allow container breakout" },
-              { "id": "HostNetwork", "points": -30,
+              { "id": "HostNetwork", "points": -9,
                 "reason": "Sharing the host's network namespace permits processes in the pod to communicate with processes bound to the host's loopback adapter" }
             ],
             "advise": [
-              { "id": "ContainersResourcesLimitsMemory", "points": 1, "reason": "Enforcing memory limits prevents DOS via resource exhaustion" },
+              { "id": "LimitsMemory", "points": 1, "reason": "Enforcing memory limits prevents DOS via resource exhaustion" },
               { "id": "ReadOnlyRootFilesystem", "points": 1, "reason": "An immutable root filesystem can prevent malicious binaries being added to PATH" }
             ]
           }
@@ -162,7 +163,7 @@ scenarios:
       questionType: command
       header: 'Print only the score of the first result: pipe the kubesec scan of `/root/webapp-pod.yaml` through jq.'
       hint: The JSON result is an array with one element per object.
-      correctAnswerInfo: '`kubesec scan /root/webapp-pod.yaml | jq ''.[0].score''` prints `-90`. In CI compare it with the
+      correctAnswerInfo: '`kubesec scan /root/webapp-pod.yaml | jq ''.[0].score''` prints `-48`. In CI compare it with the
         threshold and fail the job when it is lower.'
       command:
         executable: kubesec
@@ -314,9 +315,9 @@ scenarios:
   - type: manifest
     header: kube-linter output (shortened)
     content: |
-      /root/webapp-pod.yaml: (object: shop/webapp /v1, Kind=Pod) container "web" is Privileged (check: privileged-container, remediation: Do not run your container as privileged unless it is required.)
+      /root/webapp-pod.yaml: (object: shop/webapp /v1, Kind=Pod) container "web" is privileged (check: privileged-container, remediation: Do not run your container as privileged unless it is required.)
 
-      /root/webapp-pod.yaml: (object: shop/webapp /v1, Kind=Pod) host network is configured (check: host-network, remediation: Ensure the host's network namespace is not shared.)
+      /root/webapp-pod.yaml: (object: shop/webapp /v1, Kind=Pod) resource shares host's network namespace (via hostNetwork=true). (check: host-network, remediation: Ensure the host's network namespace is not shared.)
 
       /root/webapp-pod.yaml: (object: shop/webapp /v1, Kind=Pod) container "web" has image with disallowed tag "latest" (check: latest-tag, remediation: Use a container image with a specific tag other than latest.)
 
@@ -372,22 +373,29 @@ scenarios:
   - type: question
     question:
       questionType: command
-      header: Show the description and parameters of the check `no-read-only-root-fs`.
-      hint: The sibling of list shows details of one.
+      header: 'The list contains name, description and parameters of every check. Print only the lines that mention `no-read-only-root-fs`:
+        pipe the list into grep.'
+      hint: Filter the list output; grep takes the text to look for.
+      correctAnswerInfo: '`kube-linter checks list --format markdown` (or `json`) is easier to read when you need the full
+        description of a check.'
       command:
         executable: kube-linter
-        strictness: permissive
         subcommands:
         - name: checks
-        - name: info
-        positionals:
-        - index: 0
-          value: no-read-only-root-fs
+        - name: list
+      modifiers:
+      - type: Pipe
+        pipe:
+          command:
+            executable: grep
+            positionals:
+            - index: 0
+              value: no-read-only-root-fs
   explanation:
     elements:
     - type: context
       text: |
-        Checks are grouped by what they inspect. The ones that matter for CKS: `privileged-container`, `privilege-escalation-container`,
+        Checks are grouped by what they inspect. The ones that matter for CKS (most are on by default; `default-service-account` is not and only runs when you include it, while `env-var-secret` is on by default): `privileged-container`, `privilege-escalation-container`,
         `run-as-non-root`, `no-read-only-root-fs`, `host-network`, `host-pid`, `host-ipc`, `docker-sock`, `sensitive-host-mounts`,
         `drop-net-raw-capability`, `latest-tag`, `default-service-account`, `unset-cpu-requirements`, `unset-memory-requirements`,
         `env-var-secret`.
@@ -460,7 +468,7 @@ scenarios:
   elements:
   - type: context
     text: |
-      A log shipper DaemonSet legitimately reads host files, so the check `sensitive-host-mounts` must not fail for that one object. The
+      A node-metrics agent DaemonSet legitimately mounts the host's `/proc` to read node metrics, so the check `sensitive-host-mounts` must not fail for that one object. The
       exception has to be recorded on the object itself, with a reason, so it is visible in review.
   - type: question
     question:
@@ -468,45 +476,45 @@ scenarios:
       header: What is the annotation key that tells kube-linter to ignore the check `sensitive-host-mounts` for an object?
         Write it exactly.
       hint: The key is a domain-style prefix followed by the check name.
-      correctAnswerInfo: The annotation value is the justification, for example "log shipper reads /var/log". The special
-        key `ignore-all.kube-linter.io/...` is not recommended because it hides every check.
+      correctAnswerInfo: The annotation value is the justification, for example "reads node metrics". The special key `kube-linter.io/ignore-all`
+        is not recommended because it hides every check.
       expectedAnswer: ignore-check.kube-linter.io/sensitive-host-mounts
       cel: answer.trim() in ["ignore-check.kube-linter.io/sensitive-host-mounts"]
   - type: question
     question:
       questionType: manifest
-      header: Add that annotation, with the reason `reads node logs`, to this DaemonSet.
+      header: Add that annotation, with the reason `reads node metrics`, to this DaemonSet.
       hint: Annotations on the DaemonSet object itself, not the Pod template.
       manifestDefinitionId: daemonset-v1
       initialContent: |
         apiVersion: apps/v1
         kind: DaemonSet
         metadata:
-          name: log-shipper
+          name: node-agent
           namespace: kube-system
         spec:
           selector:
             matchLabels:
-              app: log-shipper
+              app: node-agent
           template:
             metadata:
               labels:
-                app: log-shipper
+                app: node-agent
             spec:
               containers:
-                - name: shipper
-                  image: registry.local/ops/shipper:1.4.2
+                - name: agent
+                  image: registry.local/ops/node-agent:1.4.2
                   volumeMounts:
-                    - name: varlog
-                      mountPath: /var/log
+                    - name: proc
+                      mountPath: /host/proc
                       readOnly: true
               volumes:
-                - name: varlog
+                - name: proc
                   hostPath:
-                    path: /var/log
+                    path: /proc
       expectedFields:
       - path: metadata.annotations[ignore-check.kube-linter.io/sensitive-host-mounts]
-        expectedValue: reads node logs
+        expectedValue: reads node metrics
   explanation:
     elements:
     - type: context
@@ -603,6 +611,255 @@ scenarios:
         text: 'KubeLinter: built-in checks'
       - url: https://kubernetes.io/docs/tasks/configure-pod-container/security-context/
         text: Configure a Security Context for a Pod or Container
+- title: Review a Manifest by Eye
+  category: Manual Review
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      No scanner is available on the machine you are given. A Deployment has to be reviewed by reading it. You may only **change values**: do not add or remove lines.
+      Five settings are insecure; find and fix them all.
+  - type: question
+    question:
+      questionType: manifest
+      header: Fix the five insecure settings by editing values only.
+      hint: One setting is at Pod level, four are in the container securityContext. Each has a safe value that fits on the
+        same line.
+      correctAnswerInfo: 'Look for: hostNetwork (also hostPID, hostIPC), privileged, runAsUser 0, allowPrivilegeEscalation
+        true, readOnlyRootFilesystem false. Others to spot on sight: added capabilities (SYS_ADMIN, NET_ADMIN), hostPath volumes
+        and the Docker socket.'
+      manifestDefinitionId: deployment-v1
+      initialContent: |
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: agent
+          namespace: shop
+        spec:
+          replicas: 1
+          selector:
+            matchLabels:
+              app: agent
+          template:
+            metadata:
+              labels:
+                app: agent
+            spec:
+              hostNetwork: true
+              containers:
+                - name: agent
+                  image: registry.local/shop/agent:1.2
+                  securityContext:
+                    privileged: true
+                    runAsUser: 0
+                    allowPrivilegeEscalation: true
+                    readOnlyRootFilesystem: false
+      expectedFields:
+      - path: metadata.name
+        expectedValue: agent
+      cel:
+      - name: Same number of lines
+        expression: answer.split('\n').filter(l, l.trim() != '').size() == 24
+        message: Do not add or remove lines
+      - name: No host network
+        expression: '!has(manifest.spec.template.spec.hostNetwork) || manifest.spec.template.spec.hostNetwork == false'
+        message: The Pod must not share the host network
+      - name: Not privileged
+        expression: manifest.spec.template.spec.containers.all(c, !has(c.securityContext.privileged) || c.securityContext.privileged
+          == false)
+        message: The container must not be privileged
+      - name: Not root
+        expression: manifest.spec.template.spec.containers.all(c, !has(c.securityContext.runAsUser) || c.securityContext.runAsUser
+          != 0)
+        message: The container must not run as user 0
+      - name: No escalation
+        expression: manifest.spec.template.spec.containers.all(c, has(c.securityContext.allowPrivilegeEscalation) && c.securityContext.allowPrivilegeEscalation
+          == false)
+        message: Privilege escalation must be disabled
+      - name: Read-only root
+        expression: manifest.spec.template.spec.containers.all(c, has(c.securityContext.readOnlyRootFilesystem) && c.securityContext.readOnlyRootFilesystem
+          == true)
+        message: The root filesystem must be read-only
+  - type: question
+    question:
+      questionType: single-line
+      header: Which Pod-level field would let the container see the processes of the node, like hostNetwork does for the network?
+      hint: 'Same naming pattern: host plus a namespace type.'
+      expectedAnswer: hostPID
+      cel: answer.trim().lowerAscii() in ["hostpid"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Quick checklist for manifests: `privileged`, `allowPrivilegeEscalation`, `runAsUser: 0` / missing `runAsNonRoot`, `capabilities.add`, `hostPath`, `hostNetwork` / `hostPID` / `hostIPC`, `readOnlyRootFilesystem`, a mutable `latest` image tag,
+        and secrets in environment variables. Scanners find these automatically, but you should recognise them on sight.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/tasks/configure-pod-container/security-context/
+        text: Configure a Security Context for a Pod or Container
+      - url: https://kubesec.io/basics/
+        text: 'kubesec: scoring basics and checks'
+- title: Scan a Live Object or Standard Input
+  category: Scanning Variants
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The Deployment `api` in namespace `shop` is already running and there is no manifest file for it. Both tools can read the manifest from standard input.
+  - type: question
+    question:
+      questionType: command
+      header: Export the Deployment `api` of namespace `shop` as YAML and pipe it into kubesec, which reads standard input
+        via the device file.
+      hint: kubesec scan needs a file argument; a device file stands for standard input.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: get
+        - name: deployment
+          aliases:
+          - deployments
+          - deploy
+        positionals:
+        - index: 0
+          value: api
+        flags:
+        - name: namespace
+          short: n
+          required: true
+          value: shop
+        - name: output
+          short: o
+          required: true
+          value: yaml
+      modifiers:
+      - type: Pipe
+        pipe:
+          command:
+            executable: kubesec
+            strictness: permissive
+            subcommands:
+            - name: scan
+            positionals:
+            - index: 0
+              value: /dev/stdin
+  - type: question
+    question:
+      questionType: command
+      header: 'Do the same for kube-linter: pipe the YAML of the Deployment `api` into kube-linter. It uses a dash to mean
+        standard input.'
+      hint: The lint subcommand takes a file or a dash.
+      correctAnswerInfo: The live object contains defaulted fields, `status` and managed fields. Findings are the same as
+        for the source file, but remember that fixing means changing the manifest in Git (or `kubectl edit`), not the scan
+        input.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: get
+        - name: deployment
+          aliases:
+          - deployments
+          - deploy
+        positionals:
+        - index: 0
+          value: api
+        flags:
+        - name: namespace
+          short: n
+          required: true
+          value: shop
+        - name: output
+          short: o
+          required: true
+          value: yaml
+      modifiers:
+      - type: Pipe
+        pipe:
+          command:
+            executable: kube-linter
+            strictness: permissive
+            subcommands:
+            - name: lint
+            positionals:
+            - index: 0
+              value: '-'
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Use stdin when the exam gives you a running workload: `kubectl get deploy api -n shop -o yaml | kubesec scan /dev/stdin` and `... | kube-linter lint -`.
+        Both work for any object kind, so Pods, DaemonSets and CronJobs are scanned the same way.
+    - type: references
+      links:
+      - url: https://kubesec.io/
+        text: kubesec.io
+      - url: https://docs.kubelinter.io/
+        text: KubeLinter documentation
+- title: kubesec as a Container or HTTP Service
+  category: Scanning Variants
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      On the exam machine kubesec may not be installed as a binary; it is offered as a container image `kubesec/kubesec:v2`, or as an HTTP service
+      that is already listening on `localhost:8080`.
+  - type: question
+    question:
+      questionType: command
+      header: 'Scan `/root/webapp-pod.yaml` with the container image: run it interactively (so it reads stdin), feeding the
+        file as standard input and scanning the device file for stdin.'
+      hint: The container needs an interactive flag to read input, and the file is redirected into the command.
+      command:
+        executable: docker
+        subcommands:
+        - name: run
+        positionals:
+        - index: 0
+          value: kubesec/kubesec:v2
+        - index: 1
+          value: scan
+        - index: 2
+          value: /dev/stdin
+        flags:
+        - name: interactive
+          short: i
+          required: true
+          boolean: true
+        - name: rm
+          boolean: true
+      modifiers:
+      - type: Redirect
+        redirect:
+          type: <
+          value: /root/webapp-pod.yaml
+  - type: question
+    question:
+      questionType: command
+      header: 'Scan the same file with the HTTP service: POST the file content to `http://localhost:8080/scan` with curl,
+        sending the file as binary data.'
+      hint: curl reads a file for the request body with an at sign before the file name.
+      correctAnswerInfo: '`curl -sSX POST --data-binary @file.yaml http://localhost:8080/scan`. The response is the same JSON
+        as the CLI output.'
+      command:
+        executable: curl
+        strictness: permissive
+        positionals:
+        - index: 0
+          value: http://localhost:8080/scan
+        flags:
+        - name: data-binary
+          required: true
+          value: '@/root/webapp-pod.yaml'
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Same engine, three front ends: binary (`kubesec scan file`), container (`docker run -i kubesec/kubesec:v2 scan /dev/stdin < file`) and HTTP (`kubesec http 8080`, POST to `/scan`). Do not send
+        manifests with real secrets to a public instance such as v2.kubesec.io.
+    - type: references
+      links:
+      - url: https://kubesec.io/
+        text: kubesec.io
 - title: 'Capstone: Review a Directory'
   category: Capstone
   hintsEnabled: true
