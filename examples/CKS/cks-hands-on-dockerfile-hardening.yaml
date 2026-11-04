@@ -201,6 +201,7 @@ scenarios:
       expected:
       - from:
           image: nginx
+          tag: 1.27.3
           digest: true
       cel:
       - name: Digest matches
@@ -308,8 +309,10 @@ scenarios:
     question:
       questionType: dockerfile
       header: 'Rewrite it as a two-stage build: a stage named `build` that compiles with the `golang:1.22` image, and a final
-        stage that contains only the compiled binary `/app` copied from the first stage.'
-      hint: Name a stage with the AS keyword and copy from it with a flag on COPY.
+        stage that starts from a different, smaller base image (use `debian:12`) and contains only the compiled binary `/app`
+        copied from the first stage.'
+      hint: Name a stage with the AS keyword and copy from it with a flag on COPY. The final stage must not start from `golang`
+        again, otherwise the toolchain ships anyway.
       correctAnswerInfo: Only the files copied with `COPY --from=build` end up in the final image. Everything else in the
         first stage, including the compiler, is discarded.
       initialContent: |
@@ -326,14 +329,21 @@ scenarios:
         instructions:
         - instruction: RUN
           contains: go build
-      - instructions:
+      - from:
+          image: debian
+          tag: '12'
+        instructions:
         - instruction: COPY
           flags:
             from: build
       cel:
       - name: Final stage has no toolchain
         expression: dockerfile.stages.size() == 2 && dockerfile.stages[1].from.image != 'golang'
-        message: The runtime stage must not start from the build image
+        message: The runtime stage must start from a smaller base image than golang, use debian:12
+      - name: Only the binary is copied
+        expression: >-
+          dockerfile.stages[1].instructions.filter(i, i.name == 'COPY').all(i, i.flags.exists(k, k == 'from') && i.args[0] == '/app')
+        message: The final stage may only copy the compiled binary /app from the build stage
   explanation:
     elements:
     - type: context
@@ -389,8 +399,12 @@ scenarios:
           != ''
         message: Pin the runtime image
       - name: Starts the binary
-        expression: dockerfile.stages[1].instructions.exists(i, (i.name == 'CMD' || i.name == 'ENTRYPOINT') && i.args == ['/app'])
-        message: The container must start the compiled binary
+        expression: dockerfile.stages[1].instructions.exists(i, (i.name == 'CMD' || i.name == 'ENTRYPOINT') && i.form == 'exec' && i.args == ['/app'])
+        message: The container must start the compiled binary in the exec form
+      - name: Only the binary is copied
+        expression: >-
+          dockerfile.stages[1].instructions.filter(i, i.name == 'COPY').all(i, i.flags.exists(k, k == 'from') && i.args[0] == '/app')
+        message: The final stage may only copy the compiled binary /app from the build stage
   explanation:
     elements:
     - type: context
@@ -449,6 +463,18 @@ scenarios:
       - name: Lists removed
         expression: dockerfile.stages[0].instructions.exists(i, i.name == 'RUN' && i.text.contains('/var/lib/apt/lists'))
         message: Package lists must not stay in the layer
+      - name: Installs curl
+        expression: >-
+          dockerfile.stages[0].instructions.exists(i, i.name == 'RUN' && i.text.matches('apt-get install[^&;|]* curl'))
+        message: The instruction must install curl
+      - name: Non-interactive install
+        expression: >-
+          dockerfile.stages[0].instructions.exists(i, i.name == 'RUN' && i.text.matches('apt-get install[^&;|]*( -[a-z]*y|--yes)'))
+        message: apt-get install needs -y, otherwise the build waits for a confirmation
+      - name: Cleanup comes last
+        expression: >-
+          dockerfile.stages[0].instructions.exists(i, i.name == 'RUN' && i.text.indexOf('apt-get update') >= 0 && i.text.indexOf('apt-get update') < i.text.indexOf('apt-get install') && i.text.indexOf('apt-get install') < i.text.indexOf('/var/lib/apt/lists'))
+        message: 'Order the commands: update, install, then remove the lists'
   explanation:
     elements:
     - type: context
@@ -521,6 +547,10 @@ scenarios:
       - name: No remote ADD
         expression: '!dockerfile.stages[0].instructions.exists(i, i.name == ''ADD'')'
         message: Fetching remote content at build time is not allowed
+      - name: Key not hidden elsewhere
+        expression: >-
+          !answer.contains('sk_live')
+        message: The key must be gone from the file, not just moved to another instruction
   - type: question
     question:
       questionType: single-line
@@ -577,9 +607,13 @@ scenarios:
       - name: Start command kept
         expression: dockerfile.stages[0].instructions.exists(i, i.name == 'CMD' && i.args == ['/opt/app/run'])
         message: The start command must stay
+      - name: Instruction order kept
+        expression: >-
+          dockerfile.stages[0].instructions.map(i, i.name).size() == 4 && dockerfile.stages[0].instructions[0].name == 'USER' && dockerfile.stages[0].instructions[1].name == 'ENV' && dockerfile.stages[0].instructions[2].name in ['ADD', 'COPY'] && dockerfile.stages[0].instructions[3].name == 'CMD'
+        message: 'Edit the existing lines in place: USER, ENV, ADD (or COPY) and CMD keep their positions'
       - name: At least two fixes
-        expression: '[dockerfile.stages[0].from.tag != '''' && dockerfile.stages[0].from.tag != ''latest'', dockerfile.stages[0].instructions.exists(i,
-          i.name == ''USER'' && size(i.args) > 0 && !(i.args[0].split('':'')[0] in [''root'', ''0''])), !dockerfile.stages[0].instructions.exists(i,
+        expression: '[(dockerfile.stages[0].from.tag != '''' && dockerfile.stages[0].from.tag != ''latest'') || dockerfile.stages[0].from.digest != '''', dockerfile.stages[0].instructions.exists(i,
+          i.name == ''USER'' && size(i.args) > 0 && i.args[0].matches(''^[1-9][0-9]*(:[0-9]+)?$'')), !dockerfile.stages[0].instructions.exists(i,
           i.name == ''ENV'' && i.values.exists(k, k.upperAscii().contains(''PASSWORD''))), !dockerfile.stages[0].instructions.exists(i,
           i.name == ''ADD'')].filter(x, x).size() >= 2'
         message: At least two of the four problems must be fixed
@@ -681,8 +715,9 @@ scenarios:
 
       - build stage (named `build`) based on `node:20` that installs dependencies and builds the app,
       - final stage on a pinned `node:20-alpine` image that copies only the built result (`/app/dist`) from the build stage,
-      - non-root user with a numeric ID, and
-      - no secrets or package manager leftovers.
+      - non-root user with a numeric ID,
+      - no secrets or package manager leftovers, and
+      - a start command that runs `node` directly in the exec form (not through `npm`).
   - type: manifest
     header: Dockerfile to harden
     content: |
@@ -738,9 +773,18 @@ scenarios:
       - name: Dist copied
         expression: dockerfile.stages[1].instructions.exists(i, i.name == 'COPY' && i.flags.exists(k, k == 'from') && i.text.contains('/app/dist'))
         message: The final stage must contain the build output
+      - name: Only build output copied
+        expression: dockerfile.stages[1].instructions.filter(i, i.name == 'COPY').all(i, i.flags.exists(k, k == 'from'))
+        message: The final stage may only copy files from the build stage, not the whole build context
+      - name: No ADD
+        expression: '!dockerfile.stages.exists(s, s.instructions.exists(i, i.name == ''ADD''))'
+        message: Use COPY, ADD fetches URLs and unpacks archives implicitly
       - name: Exec form start
         expression: dockerfile.stages[1].instructions.exists(i, (i.name == 'CMD' || i.name == 'ENTRYPOINT') && i.form == 'exec')
         message: Start the app so that it receives signals directly
+      - name: Starts node directly
+        expression: dockerfile.stages[1].instructions.exists(i, (i.name == 'CMD' || i.name == 'ENTRYPOINT') && i.form == 'exec' && i.args[0] == 'node')
+        message: Run node directly, not through npm, so the process receives signals and no package manager is needed at runtime
   explanation:
     elements:
     - type: context
