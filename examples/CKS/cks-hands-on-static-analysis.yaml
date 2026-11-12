@@ -179,7 +179,11 @@ scenarios:
           command:
             executable: jq
             strictness: permissive
-      cel: pipes[0].positionals.exists(p, p.contains('.score'))
+      cel:
+      - name: Score of the first result
+        expression: >-
+          answer.matches('\\|\\s*jq\\s+(-[A-Za-z-]+\\s+)*[\'"]?\\.\\[0\\]\\s*(\\|\\s*)?\\.score[\'"]?\\s*$')
+        message: The scan result is an array, so select the first element before reading its score (for example .[0].score)
   - type: question
     question:
       questionType: single-line
@@ -205,14 +209,14 @@ scenarios:
   elements:
   - type: context
     text: |
-      Rewrite the Pod so that the three critical findings disappear. In addition, the team wants the container to run as non-root, with a
+      Below is the Pod from the first scan, with all its findings. Rewrite it so that the three critical findings disappear. In addition, the team wants the container to run as non-root, with a
       read-only root filesystem and memory limits set, and the image tag must not be `latest`. Keep the Pod name `webapp` in `shop`
       and the container name `web`; use `nginx:1.27.3` as the image.
   - type: question
     question:
       questionType: manifest
       header: Write the corrected Pod manifest.
-      hint: Remove the three risky settings, then add what the advisories ask for.
+      hint: Remove the three risky settings (and the volume mount that belongs to the socket), then add what the advisories ask for.
       correctAnswerInfo: Non-root nginx needs an unprivileged image variant or a writable emptyDir for its cache and PID paths;
         this exercise focuses on the manifest. In practice test the changed Pod.
       manifestDefinitionId: pod-v1
@@ -223,8 +227,19 @@ scenarios:
           name: webapp
           namespace: shop
         spec:
+          hostNetwork: true
           containers:
             - name: web
+              image: nginx:latest
+              securityContext:
+                privileged: true
+              volumeMounts:
+                - name: sock
+                  mountPath: /var/run/docker.sock
+          volumes:
+            - name: sock
+              hostPath:
+                path: /var/run/docker.sock
       expectedFields:
       - path: metadata.name
         expectedValue: webapp
@@ -243,6 +258,9 @@ scenarios:
       - name: No host paths
         expression: '!has(manifest.spec.volumes) || manifest.spec.volumes.all(v, !has(v.hostPath))'
         message: The runtime socket must not be mounted
+      - name: No socket mount left
+        expression: manifest.spec.containers.all(c, !has(c.volumeMounts) || c.volumeMounts.all(m, !m.mountPath.contains('docker.sock')))
+        message: Remove the volumeMount of the socket as well, not only the volume
       - name: Non-root
         expression: manifest.spec.containers.all(c, (has(c.securityContext) && has(c.securityContext.runAsNonRoot) && c.securityContext.runAsNonRoot
           == true) || (has(manifest.spec.securityContext) && has(manifest.spec.securityContext.runAsNonRoot) && manifest.spec.securityContext.runAsNonRoot
