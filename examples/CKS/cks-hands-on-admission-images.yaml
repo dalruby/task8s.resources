@@ -132,9 +132,7 @@ scenarios:
       correctAnswerInfo: Add a `hostPath` volume for `/etc/kubernetes/admission` and a `volumeMount` of the same path (readOnly
         is fine). Without it, the API server fails at startup with "no such file or directory".
       expectedAnswer: volume and volumeMount
-      cel: answer.trim().lowerAscii() in ["volume and volumemount", "volumes and volumemounts", "volume, volumemount", "hostpath
-        volume and volumemount", "volumemount and volume", "volume and volumemounts", "volumes and volumemounts", "hostpath
-        volume and volume mount", "volume and volume mount"]
+      cel: answer.lowerAscii().contains('volume') && answer.lowerAscii().matches('mount')
   explanation:
     elements:
     - type: context
@@ -178,10 +176,19 @@ scenarios:
                 denyTTL: 20
                 retryBackoff: 500
                 defaultAllow: false
-      cel: 'answer.contains(''kind: AdmissionConfiguration'') && answer.contains(''name: ImagePolicyWebhook'') && answer.contains(''imagePolicy:'')
-        && answer.contains(''kubeConfigFile: /etc/kubernetes/admission/kubeconfig.yaml'') && answer.matches(''allowTTL: *60\\b'')
-        && answer.matches(''denyTTL: *20\\b'') && answer.matches(''retryBackoff: *500\\b'') && answer.matches(''defaultAllow:
-        *false'')'
+      cel:
+      - name: AdmissionConfiguration
+        expression: answer.matches('kind:\\s*AdmissionConfiguration') && answer.matches('name:\\s*[\"\']?ImagePolicyWebhook')
+        message: The file must be an AdmissionConfiguration with a plugin entry named ImagePolicyWebhook
+      - name: Webhook kubeconfig
+        expression: answer.contains('imagePolicy:') && answer.matches('kubeConfigFile:\\s*[\"\']?/etc/kubernetes/admission/kubeconfig\\.yaml')
+        message: imagePolicy.kubeConfigFile must point to the webhook kubeconfig
+      - name: Cache and backoff
+        expression: answer.matches('allowTTL:\\s*60\\b') && answer.matches('denyTTL:\\s*20\\b') && answer.matches('retryBackoff:\\s*500\\b')
+        message: allowTTL 60, denyTTL 20 and retryBackoff 500 are required
+      - name: Fail closed
+        expression: answer.matches('defaultAllow:\\s*false')
+        message: Pods must be rejected when the webhook is unreachable
   - type: question
     question:
       questionType: single-line
@@ -238,10 +245,17 @@ scenarios:
               cluster: image-checker
               user: api-server
         current-context: image-checker
-      cel: 'answer.contains(''kind: Config'') && answer.contains(''certificate-authority: /etc/kubernetes/admission/ca.crt'')
-        && answer.contains(''server: https://image-bouncer.kube-system.svc:1323/image_policy'') && answer.contains(''client-certificate:
-        /etc/kubernetes/admission/apiserver-client.crt'') && answer.contains(''client-key: /etc/kubernetes/admission/apiserver-client.key'')
-        && answer.contains(''current-context:'') && answer.contains(''contexts:'') && answer.contains(''clusters:'') && answer.contains(''users:'')'
+      cel:
+      - name: Kubeconfig structure
+        expression: answer.matches('kind:\\s*Config') && answer.contains('clusters:') && answer.contains('users:') && answer.contains('contexts:')
+          && answer.matches('current-context:\\s*\\S')
+        message: A kubeconfig needs clusters, users, contexts and a current-context
+      - name: Server and CA
+        expression: answer.matches('server:\\s*[\"\']?https://image-bouncer\\.kube-system\\.svc:1323/image_policy') && answer.matches('certificate-authority:\\s*[\"\']?/etc/kubernetes/admission/ca\\.crt')
+        message: The cluster entry needs the service URL and the CA file
+      - name: Client certificate
+        expression: answer.matches('client-certificate:\\s*[\"\']?/etc/kubernetes/admission/apiserver-client\\.crt') && answer.matches('client-key:\\s*[\"\']?/etc/kubernetes/admission/apiserver-client\\.key')
+        message: The user entry needs the client certificate and key
   explanation:
     elements:
     - type: context
@@ -323,8 +337,7 @@ scenarios:
       header: 'Which part of the static Pod manifest is most likely missing or wrong for this error? '
       hint: The file exists on the host. Why can the container not see it?
       expectedAnswer: volume
-      cel: answer.trim().lowerAscii() in ["volume", "volumes", "volumemount", "volumemounts", "volume mount", "the volume",
-        "a volume"]
+      cel: answer.lowerAscii().contains('volume') || answer.lowerAscii().contains('mount') || answer.lowerAscii().contains('hostpath')
   explanation:
     elements:
     - type: context
@@ -367,14 +380,16 @@ scenarios:
         expectedValue: Fail
       cel:
       - name: Targets pods
-        expression: has(manifest.spec.matchConstraints) && manifest.spec.matchConstraints.resourceRules.exists(r, 'pods' in
-          r.resources && '' in r.apiGroups && 'CREATE' in r.operations && 'UPDATE' in r.operations)
+        expression: has(manifest.spec.matchConstraints) && manifest.spec.matchConstraints.resourceRules.exists(r, ('pods'
+          in r.resources || '*' in r.resources) && ('' in r.apiGroups || '*' in r.apiGroups) && ('*' in r.operations || ('CREATE'
+          in r.operations && 'UPDATE' in r.operations)))
         message: The policy must match Pod creation and updates
       - name: Registry check
-        expression: manifest.spec.validations.exists(v, v.expression.contains('startsWith') && v.expression.contains('registry.local/'))
-        message: A validation must require the company registry prefix on containers
+        expression: manifest.spec.validations.exists(v, (v.expression.contains('startsWith') || v.expression.contains('matches'))
+          && v.expression.contains('registry.local/'))
+        message: A validation must require the company registry prefix (with the trailing slash) on containers
       - name: Message
-        expression: manifest.spec.validations.exists(v, has(v.message) && size(v.message) > 0)
+        expression: manifest.spec.validations.exists(v, (has(v.message) && size(v.message) > 0) || has(v.messageExpression))
         message: The user needs an explanation when the request is denied
   - type: manifest
     header: A complete policy, also covering init and ephemeral containers
@@ -437,9 +452,13 @@ scenarios:
         expectedValue: allowed-registries-prod
       - path: spec.policyName
         expectedValue: allowed-registries
-      - path: spec.matchResources.namespaceSelector.matchLabels.env
-        expectedValue: prod
       cel:
+      - name: Only env=prod namespaces
+        expression: has(manifest.spec.matchResources) && has(manifest.spec.matchResources.namespaceSelector) && ((has(manifest.spec.matchResources.namespaceSelector.matchLabels)
+          && 'env' in manifest.spec.matchResources.namespaceSelector.matchLabels && manifest.spec.matchResources.namespaceSelector.matchLabels['env']
+          == 'prod') || (has(manifest.spec.matchResources.namespaceSelector.matchExpressions) && manifest.spec.matchResources.namespaceSelector.matchExpressions.exists(e,
+          e.key == 'env' && e.operator == 'In' && e.values == ['prod'])))
+        message: The binding must select only namespaces labeled env=prod
       - name: Deny action
         expression: '''Deny'' in manifest.spec.validationActions'
         message: Violations must be rejected
@@ -453,7 +472,12 @@ scenarios:
         strictness: permissive
         subcommands:
         - name: get
-      cel: positionals.exists(p, p.contains('validatingadmissionpolic') && p.contains('validatingadmissionpolicybinding'))
+      cel:
+      - name: Both resource types
+        expression: positionals.exists(p, p.lowerAscii().split(',').exists(x, x in ['validatingadmissionpolicy', 'validatingadmissionpolicies',
+          'validatingadmissionpolicy.admissionregistration.k8s.io', 'validatingadmissionpolicies.admissionregistration.k8s.io'])
+          && p.lowerAscii().split(',').exists(x, x.startsWith('validatingadmissionpolicybinding')))
+        message: 'Name both resource types, separated by a comma: the policies and the bindings'
   explanation:
     elements:
     - type: context
@@ -585,10 +609,12 @@ scenarios:
         expectedValue: require-digest
       cel:
       - name: Targets pods
-        expression: manifest.spec.matchConstraints.resourceRules.exists(r, 'pods' in r.resources && 'CREATE' in r.operations)
+        expression: has(manifest.spec.matchConstraints) && manifest.spec.matchConstraints.resourceRules.exists(r, ('pods'
+          in r.resources || '*' in r.resources) && ('' in r.apiGroups || '*' in r.apiGroups) && ('*' in r.operations || 'CREATE'
+          in r.operations))
         message: The policy must match Pod creation
       - name: Digest rule
-        expression: manifest.spec.validations.exists(v, v.expression.contains('@sha256:'))
+        expression: manifest.spec.validations.exists(v, v.expression.contains('@sha256:') || v.expression.contains('sha256'))
         message: A validation must require a sha256 digest in the image reference
       - name: Init containers
         expression: manifest.spec.validations.exists(v, v.expression.contains('initContainers')) || (has(manifest.spec.variables)
@@ -651,8 +677,9 @@ scenarios:
         expression: manifest.spec.validations.exists(v, v.expression.contains('@sha256:'))
         message: A validation must require digests
       - name: Pods
-        expression: manifest.spec.matchConstraints.resourceRules.exists(r, 'pods' in r.resources && 'CREATE' in r.operations
-          && 'UPDATE' in r.operations)
+        expression: has(manifest.spec.matchConstraints) && manifest.spec.matchConstraints.resourceRules.exists(r, ('pods'
+          in r.resources || '*' in r.resources) && ('' in r.apiGroups || '*' in r.apiGroups) && ('*' in r.operations || ('CREATE'
+          in r.operations && 'UPDATE' in r.operations)))
         message: The policy must match Pod creation and updates
       - name: Init containers
         expression: manifest.spec.validations.exists(v, v.expression.contains('initContainers')) || (has(manifest.spec.variables)
@@ -676,7 +703,8 @@ scenarios:
         expectedValue: image-gate
       cel:
       - name: Excludes kube-system
-        expression: manifest.spec.matchResources.namespaceSelector.matchExpressions.exists(e, e.key == 'kubernetes.io/metadata.name'
+        expression: has(manifest.spec.matchResources) && has(manifest.spec.matchResources.namespaceSelector) && has(manifest.spec.matchResources.namespaceSelector.matchExpressions)
+          && manifest.spec.matchResources.namespaceSelector.matchExpressions.exists(e, e.key == 'kubernetes.io/metadata.name'
           && e.operator == 'NotIn' && 'kube-system' in e.values)
         message: The system namespace must not be selected
       - name: Deny
@@ -706,7 +734,7 @@ scenarios:
   - type: manifest
     header: The request is rejected
     content: |
-      Error from server (Invalid): pods "probe" is invalid: : ValidatingAdmissionPolicy 'image-gate' with binding 'image-gate-binding' denied request: Images must come from registry.local
+      The pods "probe" is invalid: : ValidatingAdmissionPolicy 'image-gate' with binding 'image-gate-binding' denied request: Images must come from registry.local
   - type: question
     question:
       questionType: single-line
