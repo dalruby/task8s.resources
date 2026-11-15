@@ -4,6 +4,98 @@ k8sVersion: 1.34.0
 timing:
   enabled: true
   limitSeconds: 7200
+manifestDefinitions:
+- id: pod-v1
+  kind: Pod
+  apiVersion: v1
+  autoLoad: true
+- id: namespace-v1
+  kind: Namespace
+  apiVersion: v1
+  autoLoad: true
+- id: deployment-v1
+  kind: Deployment
+  apiVersion: apps/v1
+  autoLoad: true
+- id: admission-config-v1
+  kind: AdmissionConfiguration
+  apiVersion: apiserver.config.k8s.io/v1
+  schema:
+    type: object
+    additionalProperties: false
+    properties:
+      apiVersion:
+        type: string
+      kind:
+        type: string
+      plugins:
+        type: array
+        items:
+          type: object
+          additionalProperties: false
+          properties:
+            name:
+              type: string
+            path:
+              type: string
+            configuration:
+              type: object
+              additionalProperties: false
+              properties:
+                apiVersion:
+                  type: string
+                kind:
+                  type: string
+                defaults:
+                  type: object
+                  additionalProperties: false
+                  properties:
+                    enforce:
+                      type: string
+                      enum:
+                      - privileged
+                      - baseline
+                      - restricted
+                    audit:
+                      type: string
+                      enum:
+                      - privileged
+                      - baseline
+                      - restricted
+                    warn:
+                      type: string
+                      enum:
+                      - privileged
+                      - baseline
+                      - restricted
+                    enforce-version:
+                      type: string
+                    audit-version:
+                      type: string
+                    warn-version:
+                      type: string
+                exemptions:
+                  type: object
+                  additionalProperties: false
+                  properties:
+                    usernames:
+                      type: array
+                      items:
+                        type: string
+                    runtimeClasses:
+                      type: array
+                      items:
+                        type: string
+                    namespaces:
+                      type: array
+                      items:
+                        type: string
+          required:
+          - name
+    required:
+    - apiVersion
+    - kind
+    - plugins
 introduction:
   elements:
   - type: context
@@ -36,19 +128,6 @@ introduction:
       text: Enforce Pod Security Standards with Namespace Labels
     - url: https://training.linuxfoundation.org/certification/certified-kubernetes-security-specialist-cks/
       text: CKS Domains and Competencies
-manifestDefinitions:
-- id: pod-v1
-  kind: Pod
-  apiVersion: v1
-  autoLoad: true
-- id: namespace-v1
-  kind: Namespace
-  apiVersion: v1
-  autoLoad: true
-- id: deployment-v1
-  kind: Deployment
-  apiVersion: apps/v1
-  autoLoad: true
 scenarios:
 - title: Run as a Specific User and Group
   category: securityContext
@@ -988,12 +1067,59 @@ scenarios:
       - all versions are `latest`
   - type: question
     question:
-      questionType: multiline
+      questionType: manifest
       header: Write the AdmissionConfiguration.
       hint: 'Two levels of nesting: the plugin entry, then its own configuration object with defaults and exemptions.'
       correctAnswerInfo: Per-namespace labels still win over the defaults. `exemptions` can also list usernames and RuntimeClass
         names whose Pods skip the checks.
-      expectedAnswer: |
+      manifestDefinitionId: admission-config-v1
+      initialContent: |
+        apiVersion: apiserver.config.k8s.io/v1
+        kind: AdmissionConfiguration
+        plugins:
+      cel:
+      - name: PodSecurity plugin
+        expression: manifest.plugins.exists(p, p.name == 'PodSecurity' && has(p.configuration) && p.configuration.kind ==
+          'PodSecurityConfiguration' && p.configuration.apiVersion.startsWith('pod-security.admission.config.k8s.io/'))
+        message: The plugins list needs a PodSecurity entry whose configuration is a PodSecurityConfiguration
+      - name: Defaults
+        expression: manifest.plugins.exists(p, p.name == 'PodSecurity' && has(p.configuration) && has(p.configuration.defaults)
+          && p.configuration.defaults.enforce == 'baseline' && p.configuration.defaults.audit == 'restricted' && p.configuration.defaults.warn
+          == 'restricted')
+        message: Defaults must enforce baseline and audit and warn restricted
+      - name: Latest versions
+        expression: manifest.plugins.exists(p, p.name == 'PodSecurity' && has(p.configuration) && has(p.configuration.defaults)
+          && (!('enforce-version' in p.configuration.defaults) || p.configuration.defaults['enforce-version'] == 'latest')
+          && (!('audit-version' in p.configuration.defaults) || p.configuration.defaults['audit-version'] == 'latest') &&
+          (!('warn-version' in p.configuration.defaults) || p.configuration.defaults['warn-version'] == 'latest'))
+        message: All three versions must be latest
+      - name: Exemptions
+        expression: manifest.plugins.exists(p, p.name == 'PodSecurity' && has(p.configuration) && has(p.configuration.exemptions)
+          && has(p.configuration.exemptions.namespaces) && 'kube-system' in p.configuration.exemptions.namespaces && 'monitoring'
+          in p.configuration.exemptions.namespaces)
+        message: kube-system and monitoring must be exempt namespaces
+  - type: question
+    question:
+      questionType: single-line
+      header: Which kube-apiserver flag references this file?
+      hint: The same flag as for other admission plugin configuration.
+      correctAnswerInfo: 'As for ImagePolicyWebhook: mount the file into the static Pod with a hostPath volume. PodSecurity
+        has been enabled by default since 1.23 (GA in 1.25), so `--enable-admission-plugins` is not needed. The API server
+        accepts only one `--admission-control-config-file`: if ImagePolicyWebhook is configured too, both plugins go into
+        the same AdmissionConfiguration under `plugins:`.'
+      expectedAnswer: --admission-control-config-file
+      cel: answer.trim().lowerAscii() in ["--admission-control-config-file", "admission-control-config-file"]
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Cluster defaults are the safety net for new namespaces; namespace labels are the precise control. Keep the exemption list short and review it: an exempted
+        namespace is a hole in the policy.
+    - type: context
+      text: |
+        Reference solution for "Write the AdmissionConfiguration":
+
+        ```yaml
         apiVersion: apiserver.config.k8s.io/v1
         kind: AdmissionConfiguration
         plugins:
@@ -1012,27 +1138,7 @@ scenarios:
                 usernames: []
                 runtimeClasses: []
                 namespaces: [kube-system, monitoring]
-      cel: 'answer.contains(''kind: AdmissionConfiguration'') && answer.contains(''name: PodSecurity'') && answer.contains(''kind:
-        PodSecurityConfiguration'') && answer.matches(''enforce: *"?baseline'') && answer.matches(''audit: *"?restricted'')
-        && answer.matches(''warn: *"?restricted'') && answer.contains(''kube-system'') && answer.contains(''monitoring'')
-        && answer.contains(''exemptions:'') && answer.contains(''defaults:'')'
-  - type: question
-    question:
-      questionType: single-line
-      header: Which kube-apiserver flag references this file?
-      hint: The same flag as for other admission plugin configuration.
-      correctAnswerInfo: 'As for ImagePolicyWebhook: mount the file into the static Pod with a hostPath volume. PodSecurity
-        has been enabled by default since 1.23 (GA in 1.25), so `--enable-admission-plugins` is not needed. The API server
-        accepts only one `--admission-control-config-file`: if ImagePolicyWebhook is configured too, both plugins go into
-        the same AdmissionConfiguration under `plugins:`.'
-      expectedAnswer: --admission-control-config-file
-      cel: answer.trim().lowerAscii() in ["--admission-control-config-file", "admission-control-config-file"]
-  explanation:
-    elements:
-    - type: context
-      text: |
-        Cluster defaults are the safety net for new namespaces; namespace labels are the precise control. Keep the exemption list short and review it: an exempted
-        namespace is a hole in the policy.
+        ```
     - type: references
       links:
       - url: https://kubernetes.io/docs/tasks/configure-pod-container/enforce-standards-admission-controller/

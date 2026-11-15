@@ -4,6 +4,162 @@ k8sVersion: 1.34.0
 timing:
   enabled: true
   limitSeconds: 7200
+manifestDefinitions:
+- id: vap-v1
+  kind: ValidatingAdmissionPolicy
+  apiVersion: admissionregistration.k8s.io/v1
+  autoLoad: true
+- id: vapb-v1
+  kind: ValidatingAdmissionPolicyBinding
+  apiVersion: admissionregistration.k8s.io/v1
+  autoLoad: true
+- id: admission-config-v1
+  kind: AdmissionConfiguration
+  apiVersion: apiserver.config.k8s.io/v1
+  schema:
+    type: object
+    additionalProperties: false
+    properties:
+      apiVersion:
+        type: string
+      kind:
+        type: string
+      plugins:
+        type: array
+        items:
+          type: object
+          additionalProperties: false
+          properties:
+            name:
+              type: string
+            path:
+              type: string
+            configuration:
+              type: object
+              additionalProperties: false
+              properties:
+                imagePolicy:
+                  type: object
+                  additionalProperties: false
+                  properties:
+                    kubeConfigFile:
+                      type: string
+                    allowTTL:
+                      type: integer
+                    denyTTL:
+                      type: integer
+                    retryBackoff:
+                      type: integer
+                    defaultAllow:
+                      type: boolean
+                  required:
+                  - kubeConfigFile
+          required:
+          - name
+    required:
+    - apiVersion
+    - kind
+    - plugins
+- id: kubeconfig-v1
+  kind: Config
+  apiVersion: v1
+  schema:
+    type: object
+    additionalProperties: false
+    properties:
+      apiVersion:
+        type: string
+      kind:
+        type: string
+      preferences:
+        type: object
+      current-context:
+        type: string
+      clusters:
+        type: array
+        items:
+          type: object
+          additionalProperties: false
+          properties:
+            name:
+              type: string
+            cluster:
+              type: object
+              additionalProperties: false
+              properties:
+                server:
+                  type: string
+                certificate-authority:
+                  type: string
+                certificate-authority-data:
+                  type: string
+                insecure-skip-tls-verify:
+                  type: boolean
+                tls-server-name:
+                  type: string
+              required:
+              - server
+          required:
+          - name
+          - cluster
+      users:
+        type: array
+        items:
+          type: object
+          additionalProperties: false
+          properties:
+            name:
+              type: string
+            user:
+              type: object
+              additionalProperties: false
+              properties:
+                client-certificate:
+                  type: string
+                client-key:
+                  type: string
+                client-certificate-data:
+                  type: string
+                client-key-data:
+                  type: string
+                token:
+                  type: string
+                tokenFile:
+                  type: string
+          required:
+          - name
+          - user
+      contexts:
+        type: array
+        items:
+          type: object
+          additionalProperties: false
+          properties:
+            name:
+              type: string
+            context:
+              type: object
+              additionalProperties: false
+              properties:
+                cluster:
+                  type: string
+                user:
+                  type: string
+                namespace:
+                  type: string
+              required:
+              - cluster
+              - user
+          required:
+          - name
+          - context
+    required:
+    - apiVersion
+    - kind
+    - clusters
+    - users
+    - contexts
+    - current-context
 introduction:
   elements:
   - type: context
@@ -35,15 +191,6 @@ introduction:
       text: Common Expression Language in Kubernetes
     - url: https://training.linuxfoundation.org/certification/certified-kubernetes-security-specialist-cks/
       text: CKS Domains and Competencies
-manifestDefinitions:
-- id: vap-v1
-  kind: ValidatingAdmissionPolicy
-  apiVersion: admissionregistration.k8s.io/v1
-  autoLoad: true
-- id: vapb-v1
-  kind: ValidatingAdmissionPolicyBinding
-  apiVersion: admissionregistration.k8s.io/v1
-  autoLoad: true
 scenarios:
 - title: Where Image Policy Is Enforced
   category: Admission Basics
@@ -158,36 +305,34 @@ scenarios:
       - when the webhook cannot be reached, Pods must be **rejected**
   - type: question
     question:
-      questionType: multiline
+      questionType: manifest
       header: Write the content of the file.
       hint: The plugin is configured under plugins/configuration/imagePolicy. The "fail closed" setting is a boolean named
         after the default decision.
       correctAnswerInfo: '`defaultAllow: false` is fail-closed: if the service is unreachable the request is denied. `true`
         would silently let every image through during an outage, which defeats the control.'
-      expectedAnswer: |
+      manifestDefinitionId: admission-config-v1
+      initialContent: |
         apiVersion: apiserver.config.k8s.io/v1
         kind: AdmissionConfiguration
         plugins:
-          - name: ImagePolicyWebhook
-            configuration:
-              imagePolicy:
-                kubeConfigFile: /etc/kubernetes/admission/kubeconfig.yaml
-                allowTTL: 60
-                denyTTL: 20
-                retryBackoff: 500
-                defaultAllow: false
       cel:
-      - name: AdmissionConfiguration
-        expression: answer.matches('kind:\\s*AdmissionConfiguration') && answer.matches('name:\\s*[\"\']?ImagePolicyWebhook')
-        message: The file must be an AdmissionConfiguration with a plugin entry named ImagePolicyWebhook
+      - name: ImagePolicyWebhook plugin
+        expression: manifest.plugins.exists(p, p.name == 'ImagePolicyWebhook')
+        message: The plugins list needs an entry named ImagePolicyWebhook
       - name: Webhook kubeconfig
-        expression: answer.contains('imagePolicy:') && answer.matches('kubeConfigFile:\\s*[\"\']?/etc/kubernetes/admission/kubeconfig\\.yaml')
-        message: imagePolicy.kubeConfigFile must point to the webhook kubeconfig
+        expression: manifest.plugins.exists(p, p.name == 'ImagePolicyWebhook' && has(p.configuration) && has(p.configuration.imagePolicy)
+          && p.configuration.imagePolicy.kubeConfigFile == '/etc/kubernetes/admission/kubeconfig.yaml')
+        message: configuration.imagePolicy.kubeConfigFile must point to the webhook kubeconfig
       - name: Cache and backoff
-        expression: answer.matches('allowTTL:\\s*60\\b') && answer.matches('denyTTL:\\s*20\\b') && answer.matches('retryBackoff:\\s*500\\b')
+        expression: manifest.plugins.exists(p, p.name == 'ImagePolicyWebhook' && has(p.configuration) && has(p.configuration.imagePolicy)
+          && has(p.configuration.imagePolicy.allowTTL) && p.configuration.imagePolicy.allowTTL == 60 && has(p.configuration.imagePolicy.denyTTL)
+          && p.configuration.imagePolicy.denyTTL == 20 && has(p.configuration.imagePolicy.retryBackoff) && p.configuration.imagePolicy.retryBackoff
+          == 500)
         message: allowTTL 60, denyTTL 20 and retryBackoff 500 are required
       - name: Fail closed
-        expression: answer.matches('defaultAllow:\\s*false')
+        expression: manifest.plugins.exists(p, p.name == 'ImagePolicyWebhook' && has(p.configuration) && has(p.configuration.imagePolicy)
+          && has(p.configuration.imagePolicy.defaultAllow) && p.configuration.imagePolicy.defaultAllow == false)
         message: Pods must be rejected when the webhook is unreachable
   - type: question
     question:
@@ -203,6 +348,23 @@ scenarios:
       text: |
         `allowTTL` and `denyTTL` cache decisions per image set so the webhook is not called for every replica. `retryBackoff` is the wait between
         retries when the call fails. The exam's trap is `defaultAllow`: the secure value is `false`.
+    - type: context
+      text: |
+        Reference solution for "Write the content of the file":
+
+        ```yaml
+        apiVersion: apiserver.config.k8s.io/v1
+        kind: AdmissionConfiguration
+        plugins:
+          - name: ImagePolicyWebhook
+            configuration:
+              imagePolicy:
+                kubeConfigFile: /etc/kubernetes/admission/kubeconfig.yaml
+                allowTTL: 60
+                denyTTL: 20
+                retryBackoff: 500
+                defaultAllow: false
+        ```
     - type: references
       links:
       - url: https://kubernetes.io/docs/reference/access-authn-authz/admission-controllers/#imagepolicywebhook
@@ -220,13 +382,42 @@ scenarios:
       - the API server authenticates with `/etc/kubernetes/admission/apiserver-client.crt` and `/etc/kubernetes/admission/apiserver-client.key`
   - type: question
     question:
-      questionType: multiline
+      questionType: manifest
       header: Write the webhook kubeconfig (`/etc/kubernetes/admission/kubeconfig.yaml`) with one cluster, one user and one
         context that is current.
       hint: 'It is a regular kubeconfig: clusters, users, contexts and a current-context that ties them together.'
       correctAnswerInfo: The paths are as seen from inside the API server container (hence the volume mount). The URL path
         (`/image_policy`) is defined by the service; the API server POSTs an ImageReview there.
-      expectedAnswer: |
+      manifestDefinitionId: kubeconfig-v1
+      initialContent: |
+        apiVersion: v1
+        kind: Config
+      cel:
+      - name: Server and CA
+        expression: manifest.clusters.exists(c, c.cluster.server == 'https://image-bouncer.kube-system.svc:1323/image_policy'
+          && 'certificate-authority' in c.cluster && c.cluster['certificate-authority'] == '/etc/kubernetes/admission/ca.crt')
+        message: A cluster entry needs the service URL and the CA file
+      - name: Client certificate
+        expression: manifest.users.exists(u, 'client-certificate' in u.user && u.user['client-certificate'] == '/etc/kubernetes/admission/apiserver-client.crt'
+          && 'client-key' in u.user && u.user['client-key'] == '/etc/kubernetes/admission/apiserver-client.key')
+        message: A user entry needs the client certificate and key
+      - name: Current context
+        expression: manifest.contexts.exists(x, x.name == manifest['current-context'] && manifest.clusters.exists(c, c.name
+          == x.context.cluster && c.cluster.server.startsWith('https://image-bouncer')) && manifest.users.exists(u, u.name
+          == x.context.user && 'client-certificate' in u.user))
+        message: current-context must name a context that ties the image service cluster to the API server user
+  explanation:
+    elements:
+    - type: context
+      text: |
+        The webhook receives an `ImageReview` object (the Pod's container images, namespace and annotations) and answers `allowed: true/false` with
+        a reason. Pod annotations beginning with `*.image-policy.k8s.io/` are passed to the service, which is how an exception such as
+        `break-glass` can be requested if the service supports it.
+    - type: context
+      text: |
+        Reference solution for "Write the webhook kubeconfig (`/etc/kubernetes/admission/kubeconfig.yaml`) with ":
+
+        ```yaml
         apiVersion: v1
         kind: Config
         clusters:
@@ -245,24 +436,7 @@ scenarios:
               cluster: image-checker
               user: api-server
         current-context: image-checker
-      cel:
-      - name: Kubeconfig structure
-        expression: answer.matches('kind:\\s*Config') && answer.contains('clusters:') && answer.contains('users:') && answer.contains('contexts:')
-          && answer.matches('current-context:\\s*\\S')
-        message: A kubeconfig needs clusters, users, contexts and a current-context
-      - name: Server and CA
-        expression: answer.matches('server:\\s*[\"\']?https://image-bouncer\\.kube-system\\.svc:1323/image_policy') && answer.matches('certificate-authority:\\s*[\"\']?/etc/kubernetes/admission/ca\\.crt')
-        message: The cluster entry needs the service URL and the CA file
-      - name: Client certificate
-        expression: answer.matches('client-certificate:\\s*[\"\']?/etc/kubernetes/admission/apiserver-client\\.crt') && answer.matches('client-key:\\s*[\"\']?/etc/kubernetes/admission/apiserver-client\\.key')
-        message: The user entry needs the client certificate and key
-  explanation:
-    elements:
-    - type: context
-      text: |
-        The webhook receives an `ImageReview` object (the Pod's container images, namespace and annotations) and answers `allowed: true/false` with
-        a reason. Pod annotations beginning with `*.image-policy.k8s.io/` are passed to the service, which is how an exception such as
-        `break-glass` can be requested if the service supports it.
+        ```
     - type: references
       links:
       - url: https://kubernetes.io/docs/reference/access-authn-authz/admission-controllers/#imagepolicywebhook

@@ -4,6 +4,66 @@ k8sVersion: 1.34.0
 timing:
   enabled: true
   limitSeconds: 7200
+manifestDefinitions:
+- id: kubelet-config
+  kind: KubeletConfiguration
+  apiVersion: kubelet.config.k8s.io/v1beta1
+  schema:
+    type: object
+    additionalProperties: true
+    properties:
+      apiVersion:
+        type: string
+      kind:
+        type: string
+      authentication:
+        type: object
+        additionalProperties: false
+        properties:
+          anonymous:
+            type: object
+            additionalProperties: false
+            properties:
+              enabled:
+                type: boolean
+          webhook:
+            type: object
+            additionalProperties: false
+            properties:
+              enabled:
+                type: boolean
+              cacheTTL:
+                type: string
+          x509:
+            type: object
+            additionalProperties: false
+            properties:
+              clientCAFile:
+                type: string
+      authorization:
+        type: object
+        additionalProperties: false
+        properties:
+          mode:
+            type: string
+            enum:
+            - AlwaysAllow
+            - Webhook
+          webhook:
+            type: object
+            additionalProperties: false
+            properties:
+              cacheAuthorizedTTL:
+                type: string
+              cacheUnauthorizedTTL:
+                type: string
+      readOnlyPort:
+        type: integer
+      protectKernelDefaults:
+        type: boolean
+    required:
+    - apiVersion
+    - kind
 introduction:
   elements:
   - type: context
@@ -33,7 +93,6 @@ introduction:
       text: CIS Kubernetes Benchmark
     - url: https://training.linuxfoundation.org/certification/certified-kubernetes-security-specialist-cks/
       text: CKS Domains and Competencies
-manifestDefinitions: []
 scenarios:
 - title: Run kube-bench on the Control Plane
   category: Running kube-bench
@@ -553,21 +612,27 @@ scenarios:
       cel: answer.trim() in ["/var/lib/kubelet/config.yaml"]
   - type: question
     question:
-      questionType: multiline
-      header: 'Write the KubeletConfiguration fragments that fix 4.2.1, 4.2.2 and 4.2.4: anonymous authentication off, authorization
-        mode Webhook, read-only port disabled (add only the needed fields, YAML).'
+      questionType: manifest
+      header: 'Add the KubeletConfiguration fields that fix 4.2.1, 4.2.2 and 4.2.4: anonymous authentication off, authorization
+        mode Webhook, read-only port disabled.'
       hint: authentication.anonymous.enabled, authorization.mode and readOnlyPort are top-level fields of the file.
       correctAnswerInfo: 'kubeadm clusters already set anonymous false and Webhook by default in recent versions; the exercise
         state is a mis-configured node. `readOnlyPort: 0` disables the unauthenticated 10255 port.'
-      expectedAnswer: |
-        authentication:
-          anonymous:
-            enabled: false
-        authorization:
-          mode: Webhook
-        readOnlyPort: 0
-      cel: 'answer.matches(''enabled: *false'') && answer.contains(''anonymous:'') && answer.matches(''mode: *Webhook'') &&
-        answer.matches(''readOnlyPort: *0'') && answer.contains(''authentication:'') && answer.contains(''authorization:'')'
+      manifestDefinitionId: kubelet-config
+      initialContent: |
+        apiVersion: kubelet.config.k8s.io/v1beta1
+        kind: KubeletConfiguration
+      cel:
+      - name: Anonymous off
+        expression: has(manifest.authentication) && has(manifest.authentication.anonymous) && has(manifest.authentication.anonymous.enabled)
+          && manifest.authentication.anonymous.enabled == false
+        message: authentication.anonymous.enabled must be false (4.2.1)
+      - name: Webhook authorization
+        expression: has(manifest.authorization) && has(manifest.authorization.mode) && manifest.authorization.mode == 'Webhook'
+        message: authorization.mode must be Webhook (4.2.2)
+      - name: Read-only port off
+        expression: has(manifest.readOnlyPort) && manifest.readOnlyPort == 0
+        message: readOnlyPort must be 0 (4.2.4)
   - type: question
     question:
       questionType: command
@@ -603,6 +668,18 @@ scenarios:
       text: |
         The kubelet reads its config file at start, so after editing: `systemctl restart kubelet` (and `systemctl daemon-reload` only if you changed a unit
         file). Verify with `systemctl status kubelet` and by re-running the check. The kubelet authentication details are the subject of the host and API hardening set.
+    - type: context
+      text: |
+        Reference solution for "Add the KubeletConfiguration fields that fix 4.2.1, 4.2.2 and 4.2.4: anonymous a":
+
+        ```yaml
+        authentication:
+          anonymous:
+            enabled: false
+        authorization:
+          mode: Webhook
+        readOnlyPort: 0
+        ```
     - type: references
       links:
       - url: https://kubernetes.io/docs/reference/config-api/kubelet-config.v1beta1/
