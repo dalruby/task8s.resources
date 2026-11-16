@@ -83,7 +83,7 @@ scenarios:
     question:
       questionType: single-line
       header: Which sandbox runs each Pod inside a lightweight virtual machine with its own guest kernel?
-      hint: Named after the Greek word for "below"... the VM-based one.
+      hint: Its name comes from a Greek word for "trust"; it is the VM-based one.
       expectedAnswer: Kata Containers
       cel: answer.trim().lowerAscii() in ["kata containers", "kata", "kata containers", "kata-containers", "katacontainers"]
   explanation:
@@ -203,6 +203,10 @@ scenarios:
         expectedValue: tenant-job
       - path: spec.runtimeClassName
         expectedValue: gvisor
+      - path: metadata.namespace
+        expectedValue: tenants
+      - path: spec.containers.0.image
+        expectedValue: registry.local/tenants/job:1.0
   - type: question
     question:
       questionType: command
@@ -272,7 +276,16 @@ scenarios:
           short: n
           required: true
           value: tenants
-      cel: answer.trim().endsWith(' dmesg')
+        - name: stdin
+          short: i
+          boolean: true
+        - name: tty
+          short: t
+          boolean: true
+      cel:
+      - name: Runs dmesg
+        expression: answer.matches('--\\s+dmesg\\s*$')
+        message: 'Put the command after a double dash: -- dmesg'
   - type: manifest
     header: Output
     content: |
@@ -292,8 +305,7 @@ scenarios:
       correctAnswerInfo: In runc containers `dmesg` is normally blocked (`Operation not permitted`) or exposes the host kernel
         ring buffer if `kernel.dmesg_restrict` is 0 and the capability is present; the gVisor banner is unmistakable.
       expectedAnswer: it is forbidden
-      cel: answer.trim().lowerAscii() in ["it is forbidden", "permission denied", "forbidden", "operation not permitted",
-        "not permitted", "denied", "nothing", "error", "host kernel messages", "host kernel"]
+      cel: answer.lowerAscii().matches('denied|permitted|forbidden|blocked|refused|fail|error|nothing|empty|host')
   - type: question
     question:
       questionType: command
@@ -312,7 +324,16 @@ scenarios:
           short: n
           required: true
           value: tenants
-      cel: answer.contains('uname -r')
+        - name: stdin
+          short: i
+          boolean: true
+        - name: tty
+          short: t
+          boolean: true
+      cel:
+      - name: Runs uname -r
+        expression: answer.matches('--\\s+uname\\s+(-r|--kernel-release)\\s*$')
+        message: 'Put the command after a double dash and print only the kernel release: -- uname -r'
   - type: table
     style: terminal
     columns:
@@ -348,7 +369,13 @@ scenarios:
       expectedAnswer: |
         [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runsc]
           runtime_type = "io.containerd.runsc.v1"
-      cel: answer.contains('containerd.runtimes.runsc]') && answer.matches('runtime_type *= *["\']io.containerd.runsc.v1["\']')
+      cel:
+      - name: Runtime section
+        expression: answer.matches('\\[plugins\\.[\"\']io\\.containerd\\.(grpc\\.v1\\.cri|cri\\.v1\\.runtime)[\"\']\\.containerd\\.runtimes\\.runsc\\]')
+        message: The section header must register a runtime named runsc under the CRI plugin of containerd
+      - name: Runtime type
+        expression: answer.matches('runtime_type\\s*=\\s*[\"\']io\\.containerd\\.runsc\\.v1[\"\']')
+        message: runtime_type must be the gVisor shim io.containerd.runsc.v1
   - type: question
     question:
       questionType: command
@@ -360,7 +387,9 @@ scenarios:
         - name: restart
         positionals:
         - index: 0
-          value: containerd
+          oneOf:
+          - containerd
+          - containerd.service
   - type: question
     question:
       questionType: command
@@ -372,7 +401,9 @@ scenarios:
         - name: status
         positionals:
         - index: 0
-          value: containerd
+          oneOf:
+          - containerd
+          - containerd.service
   explanation:
     elements:
     - type: context
@@ -391,7 +422,7 @@ scenarios:
   elements:
   - type: context
     text: |
-      Two Pods use `runtimeClassName: untrusted`. `job-a` was admitted and is stuck; creating `job-b` was refused:
+      Two Pods in namespace `tenants` were submitted. `job-a` uses `runtimeClassName: untrusted`; it was admitted and is stuck. `job-b` uses `runtimeClassName: sandboxed`; creating it was refused:
   - type: table
     style: terminal
     columns:
@@ -437,26 +468,23 @@ scenarios:
       header: Where is the problem?
       hint: The kubelet found the class and the handler name, then asked containerd.
       expectedAnswer: the container runtime configuration of the node
-      cel: answer.trim().lowerAscii() in ["the container runtime configuration of the node", "node", "containerd", "runtime
-        configuration", "container runtime", "container runtime configuration", "on the node", "node configuration", "containerd
-        config", "containerd configuration", "the node", "runtime config"]
+      cel: answer.lowerAscii().matches('node|containerd|runtime|handler|config\.toml')
   - type: manifest
     header: Creating job-b
     content: |
-      Error from server (Forbidden): error when creating "job-b.yaml": pods "job-b" is forbidden: pod rejected: RuntimeClass "untrusted" not found
+      Error from server (Forbidden): error when creating "job-b.yaml": pods "job-b" is forbidden: pod rejected: RuntimeClass "sandboxed" not found
   - type: question
     question:
       questionType: single-line
-      header: What must exist in the cluster so that job-b is admitted?
+      header: What must exist in the cluster so that job-b is admitted? (object type)
       hint: The message names the object type.
       expectedAnswer: RuntimeClass
-      cel: answer.trim().lowerAscii() in ["runtimeclass", "a runtimeclass", "runtime class", "the runtimeclass", "runtimeclass
-        untrusted"]
+      cel: answer.lowerAscii().replace(' ', '').contains('runtimeclass')
   explanation:
     elements:
     - type: context
       text: |
-        Two distinct failures: **admission** error "RuntimeClass not found" (the API object is missing) and **kubelet** error "no runtime for X is configured"
+        Two distinct failures: **admission** error "RuntimeClass not found" (no RuntimeClass object with that name exists) and **kubelet** error "no runtime for X is configured"
         (the node lacks the handler). The first is fixed with `kubectl create`, the second on the node.
     - type: references
       links:
@@ -499,8 +527,10 @@ scenarios:
         expectedValue: 250m
       cel:
       - name: Tolerates taint
-        expression: manifest.scheduling.tolerations.exists(t, t.key == 'sandbox' && t.value == 'gvisor' && t.effect == 'NoSchedule')
-        message: The class must add a toleration for the sandbox taint
+        expression: has(manifest.scheduling) && has(manifest.scheduling.tolerations) && manifest.scheduling.tolerations.exists(t,
+          has(t.key) && t.key == 'sandbox' && (!has(t.effect) || t.effect == 'NoSchedule') && ((has(t.operator) && t.operator
+          == 'Exists') || (has(t.value) && t.value == 'gvisor')))
+        message: The class must add a toleration for the taint sandbox=gvisor:NoSchedule
   explanation:
     elements:
     - type: context
@@ -535,15 +565,18 @@ scenarios:
       expectedFields:
       - path: metadata.name
         expectedValue: require-gvisor
-      - path: spec.failurePolicy
-        expectedValue: Fail
       cel:
       - name: Targets pods
-        expression: manifest.spec.matchConstraints.resourceRules.exists(r, 'pods' in r.resources && 'CREATE' in r.operations)
-        message: The policy must match Pod creation
+        expression: has(manifest.spec.matchConstraints) && manifest.spec.matchConstraints.resourceRules.exists(r, ('pods'
+          in r.resources || '*' in r.resources) && ('' in r.apiGroups || '*' in r.apiGroups) && ('*' in r.operations || ('CREATE'
+          in r.operations && 'UPDATE' in r.operations)))
+        message: The policy must match Pod creation and updates
       - name: Checks the class
         expression: manifest.spec.validations.exists(v, v.expression.contains('runtimeClassName') && v.expression.contains('gvisor'))
-        message: A validation must require the sandbox class
+        message: A validation must require the gvisor runtime class
+      - name: Fails closed
+        expression: '!has(manifest.spec.failurePolicy) || manifest.spec.failurePolicy == ''Fail'''
+        message: 'failurePolicy must not be Ignore: an evaluation error must reject the Pod (Fail is the default)'
   - type: question
     question:
       questionType: single-line
@@ -589,6 +622,8 @@ scenarios:
       expectedFields:
       - path: metadata.name
         expectedValue: renderer
+      - path: metadata.namespace
+        expectedValue: tenants
       - path: spec.replicas
         expectedValue: 2
       - path: spec.template.spec.runtimeClassName
@@ -612,7 +647,8 @@ scenarios:
   - type: question
     question:
       questionType: command
-      header: 'Audit the cluster: list the Pods of all namespaces with columns for the Pod name and the runtime class.'
+      header: 'Audit the cluster: list the Pods of all namespaces with custom columns for the namespace, the Pod name and
+        the runtime class.'
       hint: Custom columns with the runtime class field as a path.
       command:
         executable: kubectl
