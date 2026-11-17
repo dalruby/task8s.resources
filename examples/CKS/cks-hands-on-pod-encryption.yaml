@@ -494,10 +494,15 @@ scenarios:
         - name: reuse-values
           required: true
           boolean: true
+        - name: version
         - name: set
           required: true
           repeatable: true
-      cel: flags.set.size() == 2 && 'encryption.enabled=true' in flags.set && 'encryption.type=wireguard' in flags.set
+      cel:
+      - name: WireGuard values
+        expression: '(type(flags.set) == list ? flags.set.join('','') : flags.set).split('','').size() == 2 && [''encryption.enabled=true'',
+          ''encryption.type=wireguard''].all(v, v in (type(flags.set) == list ? flags.set.join('','') : flags.set).split('',''))'
+        message: Set exactly the two encryption values that enable encryption and select WireGuard
   - type: question
     question:
       questionType: command
@@ -510,13 +515,27 @@ scenarios:
         - name: restart
         positionals:
         - index: 0
-          value: daemonset/cilium
+          oneOf:
+          - daemonset/cilium
+          - ds/cilium
+          - daemonsets/cilium
+          - daemonset.apps/cilium
+          - daemonset
+          - ds
+          - daemonsets
+          - daemonset.apps
+        - index: 1
+          required: false
+          value: cilium
         flags:
         - name: namespace
           short: n
           required: true
           value: kube-system
-      cel: positionals[0] in ['daemonset/cilium', 'ds/cilium', 'daemonsets/cilium', 'daemonset.apps/cilium']
+      cel:
+      - name: The cilium DaemonSet
+        expression: '(positionals.size() == 1 && positionals[0].contains(''/cilium'')) || (positionals.size() == 2 && !positionals[0].contains(''/''))'
+        message: Name the DaemonSet either as type/name or as type and name
   - type: question
     question:
       questionType: single-line
@@ -535,8 +554,9 @@ scenarios:
     elements:
     - type: context
       text: |
-        WireGuard encrypts traffic **between nodes** (Pod-to-Pod on different nodes, including node-to-Pod traffic to remote Pods). Traffic
-        between Pods on the *same* node never leaves the host. Settings apply per cluster, not per namespace.
+        WireGuard encrypts Pod traffic **between nodes** (Pod-to-Pod on different nodes); traffic that the nodes themselves originate is
+        only included with `encryption.nodeEncryption=true`. Traffic between Pods on the *same* node never leaves the host. Settings apply per
+        cluster, not per namespace.
     - type: references
       links:
       - url: https://docs.cilium.io/en/stable/security/network/encryption-wireguard/
@@ -565,7 +585,13 @@ scenarios:
           short: n
           required: true
           value: kube-system
-      cel: answer.contains('cilium-dbg status') || answer.contains('cilium status')
+      cel:
+      - name: Agent Pod
+        expression: answer.matches('\\s((ds|daemonsets?|daemonset\\.apps)/cilium|(pods?/)?cilium-[a-z0-9]{5})\\s')
+        message: Target the Cilium DaemonSet or one of its agent Pods
+      - name: Status command
+        expression: answer.matches('--\\s+cilium(-dbg)?\\s+status(\\s|$)')
+        message: Put the agent status command after a double dash
   - type: manifest
     header: Output (shortened)
     content: |
@@ -653,7 +679,7 @@ scenarios:
   - type: question
     question:
       questionType: command
-      header: Create the empty Secret `cilium-ipsec-keys` in `kube-system` with the literal `keys=3+ rfc4106(gcm(aes)) 0123456789abcdef0123456789abcdef01234567
+      header: Create the Secret `cilium-ipsec-keys` in `kube-system` with the literal `keys=3+ rfc4106(gcm(aes)) 0123456789abcdef0123456789abcdef01234567
         128`.
       hint: A generic Secret created from a literal.
       correctAnswerInfo: In real use generate the hexadecimal key from `/dev/urandom`; a key that appears in a shell history
@@ -699,7 +725,8 @@ scenarios:
     text: |
       Encrypted tunnels protect the wire, but any Pod on a node may still *try* to reach `ledger`. With Cilium **mutual authentication**,
       traffic that a policy marks as requiring authentication is allowed only after both workloads proved their identity with
-      SPIFFE certificates (issued by SPIRE). Transport keys are then bound to that handshake.
+      SPIFFE certificates (issued by SPIRE). The handshake does not encrypt the traffic itself; that remains the job of
+      WireGuard or IPsec.
   - type: question
     question:
       questionType: single-line
@@ -707,7 +734,8 @@ scenarios:
         Cilium and Istio?
       hint: Secure Production Identity Framework For Everyone.
       expectedAnswer: SPIFFE
-      cel: answer.trim().lowerAscii() in ["spiffe", "spiffe/spire", "spire"]
+      correctAnswerInfo: SPIFFE is the standard; SPIRE is its reference implementation, which issues the SVIDs.
+      cel: answer.lowerAscii().contains('spiffe') || answer.lowerAscii().contains('secure production identity framework')
   - type: question
     question:
       questionType: manifest
@@ -727,15 +755,19 @@ scenarios:
       expectedFields:
       - path: metadata.name
         expectedValue: ledger-mutual
+      - path: metadata.namespace
+        expectedValue: payments
       - path: spec.endpointSelector.matchLabels.app
         expectedValue: ledger
       cel:
-      - name: Peer selected
-        expression: manifest.spec.ingress.exists(r, r.fromEndpoints.exists(e, e.matchLabels.app == 'payments-api'))
-        message: Ingress must come from the payments API Pods
-      - name: Authentication required
-        expression: manifest.spec.ingress.exists(r, has(r.authentication) && r.authentication.mode == 'required')
-        message: The ingress rule must demand mutual authentication
+      - name: Authenticated rule for the API Pods
+        expression: has(manifest.spec.ingress) && manifest.spec.ingress.exists(r, has(r.fromEndpoints) && r.fromEndpoints.exists(e,
+          has(e.matchLabels) && 'app' in e.matchLabels && e.matchLabels.app == 'payments-api') && has(r.authentication) && r.authentication.mode
+          == 'required')
+        message: One ingress rule must allow the payments API Pods and demand mutual authentication for them
+      - name: No unauthenticated access
+        expression: manifest.spec.ingress.all(r, has(r.authentication) && r.authentication.mode == 'required')
+        message: Traffic must only be allowed after mutual authentication
   - type: question
     question:
       questionType: single-line
@@ -828,8 +860,7 @@ scenarios:
       header: Why does READY now show 2/2 instead of 1/1?
       hint: What did the webhook add to each Pod?
       expectedAnswer: sidecar
-      cel: answer.trim().lowerAscii() in ["sidecar", "istio-proxy", "envoy", "the sidecar", "a sidecar container", "the istio
-        sidecar", "proxy", "sidecar proxy", "second container", "an extra container", "istio proxy", "sidecar container"]
+      cel: answer.lowerAscii().matches('sidecar|proxy|envoy|(second|extra|additional|another) container')
   explanation:
     elements:
     - type: context
@@ -921,6 +952,10 @@ scenarios:
           namespace: shop
         spec:
       expectedFields:
+      - path: metadata.name
+        expectedValue: legacy-importer
+      - path: metadata.namespace
+        expectedValue: shop
       - path: spec.selector.matchLabels.app
         expectedValue: legacy-importer
       - path: spec.mtls.mode
@@ -931,8 +966,7 @@ scenarios:
       header: Which of the two policies applies to this workload?
       hint: The most specific policy applies.
       expectedAnswer: workload-level
-      cel: answer.trim().lowerAscii() in ["workload-level", "workload", "the workload", "workload level", "permissive", "workload-specific",
-        "the workload-level one", "workload specific"]
+      cel: answer.lowerAscii().matches('workload|legacy-importer|permissive|selector|specific')
   explanation:
     elements:
     - type: context
@@ -969,7 +1003,16 @@ scenarios:
           short: n
           required: true
           value: legacy
-      cel: answer.contains('curl') && answer.contains('payments.shop') && answer.contains(':8080/health')
+      cel:
+      - name: curl after the double dash
+        expression: answer.matches('--\\s+curl\\s')
+        message: Run curl inside the Pod, after a double dash
+      - name: Silent mode
+        expression: answer.matches('\\scurl\\s(.*\\s)?(-[a-zA-Z]*s[a-zA-Z]*|--silent)(\\s|$)')
+        message: curl must run in silent mode
+      - name: Service URL
+        expression: answer.matches('(https?://)?payments\\.shop(\\.svc(\\.cluster\\.local)?)?:8080/health')
+        message: Address the Service in the other namespace by its DNS name, on its port, with the health path
   - type: manifest
     header: Result
     content: |
@@ -981,9 +1024,7 @@ scenarios:
       header: Why was the plaintext request refused?
       hint: The destination sidecar only accepts one kind of connection now.
       expectedAnswer: strict mtls
-      cel: answer.trim().lowerAscii() in ["strict mtls", "mtls", "mtls required", "strict", "peerauthentication", "the sidecar
-        requires mtls", "sidecar requires mtls", "because of strict mtls", "peer authentication", "requires mtls", "strict
-        mode", "strict mtls mode"]
+      cel: answer.lowerAscii().matches('mtls|mutual tls|strict|peer ?authentication')
   - type: question
     question:
       questionType: single-line
@@ -991,9 +1032,7 @@ scenarios:
         to each other to prove the identity of their workloads in mTLS?
       hint: mTLS means both sides present something.
       expectedAnswer: certificates
-      cel: answer.trim().lowerAscii() in ["certificates", "certificate", "x509 certificates", "x.509 certificates", "x509
-        certs", "certs", "spiffe certificates", "client and server certificates", "tls certificates", "workload certificates",
-        "spiffe identities", "identities"]
+      cel: answer.lowerAscii().matches('cert|svid|x\\.?509')
   explanation:
     elements:
     - type: context
@@ -1028,12 +1067,24 @@ scenarios:
           namespace: shop
         spec:
       expectedFields:
+      - path: metadata.name
+        expectedValue: payments-from-frontend
+      - path: metadata.namespace
+        expectedValue: shop
       - path: spec.selector.matchLabels.app
         expectedValue: payments
       cel:
+      - name: Allow policy
+        expression: '!has(manifest.spec.action) || manifest.spec.action == ''ALLOW'''
+        message: The policy must allow the listed callers
       - name: Principal
-        expression: manifest.spec.rules.exists(r, r.from.exists(f, 'cluster.local/ns/shop/sa/frontend' in f.source.principals))
-        message: Only the frontend identity may be allowed
+        expression: has(manifest.spec.rules) && manifest.spec.rules.exists(r, has(r.from) && r.from.exists(f, has(f.source)
+          && has(f.source.principals) && 'cluster.local/ns/shop/sa/frontend' in f.source.principals))
+        message: The frontend identity must be allowed
+      - name: Only the frontend
+        expression: manifest.spec.rules.all(r, has(r.from) && r.from.all(f, has(f.source) && has(f.source.principals) && f.source.principals.all(p,
+          p == 'cluster.local/ns/shop/sa/frontend')))
+        message: No rule may allow any other caller
   - type: question
     question:
       questionType: single-line
@@ -1117,6 +1168,10 @@ scenarios:
         expectedValue: payments
       - path: spec.mtls.mode
         expectedValue: STRICT
+      cel:
+      - name: No selector
+        expression: '!has(manifest.spec.selector)'
+        message: A namespace-wide policy has no workload selector
   - type: question
     question:
       questionType: command

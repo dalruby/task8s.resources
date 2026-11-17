@@ -111,7 +111,7 @@ scenarios:
       correctAnswerInfo: A row with an empty Fixed Version means the distribution has not published a repair (status `affected`
         or `will_not_fix`). Rebuilding the image will not make those findings go away.
       expectedAnswer: Fixed Version
-      cel: answer.trim().lowerAscii() in ["fixed version", "fixed version", "fixedversion"]
+      cel: answer.trim().lowerAscii().replace(' ', '').replace('_', '') == 'fixedversion'
   - type: question
     question:
       questionType: single-line
@@ -120,7 +120,7 @@ scenarios:
       correctAnswerInfo: The levels are UNKNOWN, LOW, MEDIUM, HIGH and CRITICAL, taken from the vulnerability source (distribution
         advisory or NVD CVSS score).
       expectedAnswer: CRITICAL
-      cel: answer.trim().lowerAscii() in ["critical", "critical"]
+      cel: answer.trim().lowerAscii() == 'critical'
   explanation:
     elements:
     - type: context
@@ -188,8 +188,7 @@ scenarios:
       hint: Compare how the levels are printed in the report.
       correctAnswerInfo: 'Severity names are matched in upper case: UNKNOWN, LOW, MEDIUM, HIGH, CRITICAL.'
       expectedAnswer: uppercase
-      cel: answer.trim().lowerAscii() in ["uppercase", "upper case", "capital letters", "capitals", "upper-case", "use uppercase",
-        "capital", "caps"]
+      cel: answer.lowerAscii().matches('upper|capital|caps|high')
   explanation:
     elements:
     - type: context
@@ -345,15 +344,15 @@ scenarios:
   - type: question
     question:
       questionType: command
-      header: 'Count how many vulnerability records there are in total: run `jq` on the file to print the length of the `Vulnerabilities`
-        array of the first result.'
+      header: 'Count the OS package findings: run `jq` on the file to print the length of the `Vulnerabilities` array of the
+        first result.'
       hint: jq takes a filter first and a file second. The first element of Results holds the OS package findings.
       correctAnswerInfo: In JSON reports the findings are under `.Results[]`, one entry per target (the OS layer, a language
         lockfile, ...), each with its own `Vulnerabilities` array. A target without findings has no such key.
       command:
         executable: jq
         strictness: permissive
-      cel: answer.contains('.Results[0].Vulnerabilities') && answer.contains('length') && answer.contains('/root/nginx-scan.json')
+      cel: answer.matches('\\.Results\\[0\\](\\s*\\|\\s*)?\\.Vulnerabilities') && answer.contains('length') && answer.contains('/root/nginx-scan.json')
   - type: question
     question:
       questionType: command
@@ -396,7 +395,8 @@ scenarios:
       header: List the images of all containers of all Pods in all namespaces using JSONPath output.
       hint: JSONPath has a recursive descent operator that finds a field wherever it is.
       correctAnswerInfo: '`-o jsonpath=''{.items[*].spec.containers[*].image}''` is the explicit form; `{..image}` is the
-        shortcut that finds every `image` field (init containers and ephemeral containers included only if they set one).'
+        shortcut that finds every `image` field, including init containers and the resolved names in `status.containerStatuses`,
+        which is why images appear twice.'
       command:
         executable: kubectl
         subcommands:
@@ -419,7 +419,8 @@ scenarios:
     columns:
     - IMAGES
     rows:
-    - - nginx:1.25.0 redis:6.2 registry.local/shop/api:2.4 python:3.9-slim busybox:1.28 k8s.gcr.io/pause:3.9 ...
+    - - nginx:1.25.0 docker.io/library/nginx:1.25.0 redis:6.2 docker.io/library/redis:6.2 registry.local/shop/api:2.4 registry.local/shop/api:2.4
+        python:3.9-slim docker.io/library/python:3.9-slim busybox:1.28 docker.io/library/busybox:1.28 ...
   - type: context
     text: |
       That is one long line and contains duplicates. Next, find which Pods run `python:3.9-slim`. Pods in the `payments` namespace
@@ -499,8 +500,7 @@ scenarios:
       hint: Look at the last column and count the rows that are not 0.
       correctAnswerInfo: Both `gateway` and `batch-export` have fixable CRITICAL findings; `ledger` is clean.
       expectedAnswer: gateway,batch-export
-      cel: answer.trim().lowerAscii() in ["gateway,batch-export", "gateway, batch-export", "batch-export,gateway", "batch-export,
-        gateway", "gateway and batch-export", "batch-export and gateway"]
+      cel: answer.lowerAscii().contains('gateway') && answer.lowerAscii().contains('batch-export') && !answer.lowerAscii().contains('ledger')
   - type: question
     question:
       questionType: command
@@ -612,8 +612,8 @@ scenarios:
       questionType: command
       header: Scan the image for both vulnerabilities and secrets.
       hint: There is a flag that selects which kinds of checks run; the names of the checks are short words.
-      correctAnswerInfo: '`--scanners vuln,secret` (also `misconfig` and `license`). Since Trivy 0.4x the default for `image`
-        is `vuln,secret`.'
+      correctAnswerInfo: '`--scanners vuln,secret` (also `misconfig` and `license`). In current Trivy versions `vuln,secret`
+        is already the default for `image`; writing it out makes the intent explicit.'
       command:
         executable: trivy
         strictness: permissive
@@ -636,8 +636,8 @@ scenarios:
       questionType: command
       header: Scan the directory `/srv/deploy` for misconfigurations of infrastructure files.
       hint: One subcommand scans IaC and configuration files such as Dockerfiles, Kubernetes YAML, Terraform.
-      correctAnswerInfo: '`trivy config <dir>` checks the files against built-in policies (formerly "misconfig"). `trivy fs
-        <dir>` scans a project for vulnerable dependencies (and can add `--scanners misconfig`).'
+      correctAnswerInfo: '`trivy config <dir>` runs the misconfiguration scanner on the files against built-in checks.
+        `trivy fs <dir>` scans a project for vulnerable dependencies (and can add `--scanners misconfig`).'
       command:
         executable: trivy
         strictness: permissive
@@ -725,7 +725,7 @@ scenarios:
   elements:
   - type: context
     text: |
-      The `web` Deployment in `shop` runs `nginx:1.19.0`. A scan with `--severity CRITICAL` shows nine findings. Searching the
+      The `web` Deployment in `shop` runs `nginx:1.19.0`. A scan with `--severity CRITICAL` shows eleven findings. Searching the
       registry you find these candidate tags, with the number of fixable CRITICAL findings from a scan of each:
   - type: table
     style: terminal
@@ -784,13 +784,16 @@ scenarios:
         - name: status
         positionals:
         - index: 0
-          value: deployment/web
+          oneOf:
+          - deployment/web
+          - deploy/web
+          - deployments/web
+          - deployment.apps/web
         flags:
         - name: namespace
           short: n
           required: true
           value: shop
-      cel: positionals[0] in ['deployment/web', 'deploy/web', 'deployments/web']
   explanation:
     elements:
     - type: context

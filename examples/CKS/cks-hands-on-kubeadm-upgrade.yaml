@@ -115,8 +115,7 @@ scenarios:
       header: Which group of nodes is upgraded first?
       hint: The newest component must be at the top.
       expectedAnswer: control plane
-      cel: answer.trim().lowerAscii() in ["control plane", "control plane nodes", "the control plane", "control-plane", "control
-        plane first", "master"]
+      cel: answer.lowerAscii().matches('control.?plane|master') && !answer.lowerAscii().contains('worker')
   explanation:
     elements:
     - type: context
@@ -184,6 +183,13 @@ scenarios:
         executable: kubeadm
         subcommands:
         - name: version
+        flags:
+        - name: output
+          short: o
+          oneOf:
+          - short
+          - yaml
+          - json
   - type: question
     question:
       questionType: command
@@ -247,7 +253,9 @@ scenarios:
     question:
       questionType: command
       header: Create the snapshot.
-      hint: etcdctl snapshot subcommand, the file as the argument, the four connection flags.
+      hint: etcdctl snapshot subcommand, the file as the argument, the TLS flags for the CA, client certificate and key.
+      correctAnswerInfo: '`--endpoints https://127.0.0.1:2379` is the usual explicit form; 127.0.0.1:2379 is also the default
+        endpoint of etcdctl.'
       command:
         executable: etcdctl
         subcommands:
@@ -258,8 +266,7 @@ scenarios:
           value: /opt/backup/etcd-pre-upgrade.db
         flags:
         - name: endpoints
-          required: true
-          value: https://127.0.0.1:2379
+          regex: ^(https://)?(127\.0\.0\.1|localhost):2379$
         - name: cacert
           required: true
           value: /etc/kubernetes/pki/etcd/ca.crt
@@ -274,7 +281,8 @@ scenarios:
       questionType: command
       header: 'Check the snapshot file: print its status as a table (hash, revision, total keys, size).'
       hint: A status subcommand with an output format flag.
-      correctAnswerInfo: In etcd 3.6 `snapshot status` moved to `etcdutl`; both give the same information.
+      correctAnswerInfo: '`etcdctl snapshot status` is deprecated since etcd 3.5 and removed in 3.6; there, run `etcdutl
+        snapshot status` with the same arguments.'
       command:
         executable: etcdctl
         subcommands:
@@ -303,7 +311,7 @@ scenarios:
   elements:
   - type: context
     text: |
-      Target: `v1.33.7`. The package repository offers the package version string `1.33.7-1.1`. The packages `kubeadm`, `kubelet` and `kubectl` are on hold, so a plain system
+      Target: `v1.33.7`. The package repository offers the package version string `1.33.7-1.1` and the package index was refreshed with `apt-get update`. The packages `kubeadm`, `kubelet` and `kubectl` are on hold, so a plain system
       update cannot move them accidentally.
   - type: question
     question:
@@ -320,7 +328,7 @@ scenarios:
   - type: question
     question:
       questionType: command
-      header: Install exactly version `1.33.7-1.1` of kubeadm.
+      header: Install exactly version `1.33.7-1.1` of kubeadm with `apt-get`.
       hint: Package name, equals sign, version string.
       command:
         executable: apt-get
@@ -382,7 +390,8 @@ scenarios:
       header: Upgrade the control plane components of this node to `v1.33.7`. Confirm automatically.
       hint: The apply subcommand takes the target version as its argument.
       correctAnswerInfo: This rewrites the static Pod manifests of the API server, controller manager and scheduler, upgrades
-        etcd if the version changed, updates CoreDNS and kube-proxy and renews certificates that are about to expire.
+        etcd if the version changed, updates CoreDNS and kube-proxy and renews all certificates that kubeadm manages on this
+        node.
       command:
         executable: kubeadm
         subcommands:
@@ -390,7 +399,9 @@ scenarios:
         - name: apply
         positionals:
         - index: 0
-          value: v1.33.7
+          oneOf:
+          - v1.33.7
+          - 1.33.7
         flags:
         - name: 'yes'
           short: y
@@ -461,13 +472,18 @@ scenarios:
         - name: unhold
         positionals:
         - index: 0
-          value: kubelet
+          oneOf:
+          - kubelet
+          - kubectl
         - index: 1
-          value: kubectl
+          oneOf:
+          - kubelet
+          - kubectl
+      cel: '''kubelet'' in positionals && ''kubectl'' in positionals'
   - type: question
     question:
       questionType: command
-      header: Install kubelet and kubectl in version `1.33.7-1.1`.
+      header: Install kubelet and kubectl in version `1.33.7-1.1` with `apt-get`.
       hint: Two package=version arguments.
       command:
         executable: apt-get
@@ -475,13 +491,18 @@ scenarios:
         - name: install
         positionals:
         - index: 0
-          value: kubelet=1.33.7-1.1
+          oneOf:
+          - kubelet=1.33.7-1.1
+          - kubectl=1.33.7-1.1
         - index: 1
-          value: kubectl=1.33.7-1.1
+          oneOf:
+          - kubelet=1.33.7-1.1
+          - kubectl=1.33.7-1.1
         flags:
         - name: 'yes'
           short: y
           boolean: true
+      cel: '''kubelet=1.33.7-1.1'' in positionals && ''kubectl=1.33.7-1.1'' in positionals'
   - type: question
     question:
       questionType: command
@@ -493,9 +514,14 @@ scenarios:
         - name: hold
         positionals:
         - index: 0
-          value: kubelet
+          oneOf:
+          - kubelet
+          - kubectl
         - index: 1
-          value: kubectl
+          oneOf:
+          - kubelet
+          - kubectl
+      cel: '''kubelet'' in positionals && ''kubectl'' in positionals'
   - type: question
     question:
       questionType: command
@@ -716,11 +742,14 @@ scenarios:
   elements:
   - type: context
     text: |
-      `kubectl drain worker-2 --ignore-daemonsets` stops with an error:
+      `kubectl drain worker-2 --ignore-daemonsets` does not finish; it keeps repeating:
   - type: manifest
     header: Output
     content: |
-      error when evicting pods/"cache-0" -n shop (will retry after 5s): Cannot evict pod as it would violate the pod's disruption budget.
+      evicting pod shop/cache-0
+      error when evicting pods/"cache-0" -n "shop" (will retry after 5s): Cannot evict pod as it would violate the pod's disruption budget.
+      evicting pod shop/cache-0
+      error when evicting pods/"cache-0" -n "shop" (will retry after 5s): Cannot evict pod as it would violate the pod's disruption budget.
   - type: question
     question:
       questionType: single-line
@@ -750,7 +779,7 @@ scenarios:
   - type: question
     question:
       questionType: single-line
-      header: A Pod without any controller (created directly) blocks the drain with the message "cannot delete Pods declare
+      header: A Pod without any controller (created directly) blocks the drain with the message "cannot delete Pods that declare
         no controller". Which flag lets the drain delete such Pods?
       hint: A flag whose name says "no questions asked".
       expectedAnswer: --force
@@ -823,27 +852,39 @@ scenarios:
       - 364d
       - etcd-ca
       - 'no'
+  - type: table
+    style: terminal
+    columns:
+    - CERTIFICATE AUTHORITY
+    - EXPIRES
+    - RESIDUAL TIME
+    - EXTERNALLY MANAGED
+    rows:
     - - ca
-      - Nov 01, 2035 08:00 UTC
+      - Jul 06, 2036 08:00 UTC
       - 9y
-      - ''
       - 'no'
+    - - etcd-ca
+      - Jul 06, 2036 08:00 UTC
+      - 9y
+      - 'no'
+  - type: context
+    text: |
+      The cluster is 120 days old, yet every leaf certificate has a fresh one-year lifetime: `kubeadm upgrade apply` renews all certificates it manages by default. The CAs keep their ten-year lifetime.
   - type: question
     question:
       questionType: single-line
-      header: 'Why did the leaf certificates get a fresh one-year lifetime? (answer: upgrade renews them)'
-      hint: What does kubeadm do with certificates during `upgrade apply` by default?
-      correctAnswerInfo: Use `--certificate-renewal=false` to prevent it. The CA certificates are not renewed by upgrades
-        (10-year lifetime).
-      expectedAnswer: kubeadm upgrade renews certificates
-      cel: answer.trim().lowerAscii() in ["kubeadm upgrade renews certificates", "upgrade renews them", "because the upgrade
-        renewed them", "they were renewed", "renewed by the upgrade", "kubeadm upgrade renews them", "upgrade renews certificates",
-        "renewal", "the upgrade renewed them", "kubeadm renews them during upgrade", "renewed during the upgrade", "renewed"]
+      header: A team that rotates certificates with its own tooling wants upgrades to leave them alone. Which `kubeadm upgrade
+        apply` flag and value turn the renewal off?
+      hint: The flag name describes the renewal of certificates; it takes a boolean value.
+      correctAnswerInfo: '`--certificate-renewal=false` exists on both `kubeadm upgrade apply` and `kubeadm upgrade node`.
+        Without automatic renewal, run `kubeadm certs renew` before the certificates expire.'
+      expectedAnswer: --certificate-renewal=false
+      cel: answer.trim().matches('^(--)?certificate-renewal(=|\\s+)false$')
   - type: question
     question:
       questionType: command
-      header: 'Finally, check that a Pod can still be scheduled: list all Pods in all namespaces that are NOT in Running status
-        using a field selector.'
+      header: 'Finally, look for problems: list the Pods of all namespaces whose phase is not `Running`, using a field selector.'
       hint: A selector on the phase field.
       command:
         executable: kubectl
@@ -884,7 +925,7 @@ scenarios:
   - type: question
     question:
       questionType: command
-      header: Install kubeadm in the target version (assume the package hold was lifted).
+      header: Install kubeadm in the target version with `apt-get` (assume the package hold was lifted).
       hint: Package=version.
       command:
         executable: apt-get
@@ -911,7 +952,7 @@ scenarios:
     question:
       questionType: command
       header: Apply the upgrade to the control plane.
-      hint: Version with the leading v.
+      hint: The target version is the argument.
       command:
         executable: kubeadm
         subcommands:
@@ -919,7 +960,9 @@ scenarios:
         - name: apply
         positionals:
         - index: 0
-          value: v1.33.7
+          oneOf:
+          - v1.33.7
+          - 1.33.7
         flags:
         - name: 'yes'
           short: y
@@ -945,20 +988,24 @@ scenarios:
   - type: question
     question:
       questionType: command
-      header: Install kubelet in the target version.
+      header: Install kubelet (and kubectl, if you like) in the target version with `apt-get`.
       hint: Package=version.
       command:
         executable: apt-get
         strictness: permissive
         subcommands:
         - name: install
-        positionals:
-        - index: 0
-          value: kubelet=1.33.7-1.1
         flags:
         - name: 'yes'
           short: y
           boolean: true
+      cel:
+      - name: kubelet in the target version
+        expression: '''kubelet=1.33.7-1.1'' in positionals'
+        message: The kubelet package must be pinned to the target package version
+      - name: Only target versions
+        expression: positionals.all(p, p in ['kubelet=1.33.7-1.1', 'kubectl=1.33.7-1.1'])
+        message: Install only the node packages, pinned to the target package version
   - type: question
     question:
       questionType: command

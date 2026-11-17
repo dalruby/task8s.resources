@@ -56,9 +56,9 @@ scenarios:
       header: Create the key and the self-signed certificate with a single openssl command.
       hint: req with a flag that outputs a certificate instead of a request; other flags choose key size, lifetime, files
         and subject.
-      correctAnswerInfo: '`-x509` makes `req` output a self-signed certificate. `-nodes` ("no DES") leaves the key unencrypted.
-        Modern clients require the host name in the **subjectAltName**, not just the CN; add `-addext "subjectAltName=DNS:shop.example.com"`
-        for that.'
+      correctAnswerInfo: '`-x509` makes `req` output a self-signed certificate. `-nodes` ("no DES"; `-noenc` in OpenSSL 3)
+        leaves the key unencrypted. Modern clients require the host name in the **subjectAltName**, not just the CN; add
+        `-addext "subjectAltName=DNS:shop.example.com"` for that.'
       command:
         executable: openssl
         strictness: permissive
@@ -70,6 +70,8 @@ scenarios:
           required: true
           boolean: true
         - name: nodes
+          aliases:
+          - noenc
           singleDash: true
           required: true
           boolean: true
@@ -119,8 +121,17 @@ scenarios:
           boolean: true
         - name: dates
           singleDash: true
-          required: true
           boolean: true
+        - name: startdate
+          singleDash: true
+          boolean: true
+        - name: enddate
+          singleDash: true
+          boolean: true
+      cel:
+      - name: Validity dates
+        expression: '''dates'' in flags || (''startdate'' in flags && ''enddate'' in flags)'
+        message: Print both the start and the end of the validity period
   - type: table
     style: terminal
     columns:
@@ -195,8 +206,7 @@ scenarios:
       header: Which two data keys must it have?
       hint: Named after the files.
       expectedAnswer: tls.crt,tls.key
-      cel: answer.trim().lowerAscii() in ["tls.crt,tls.key", "tls.crt, tls.key", "tls.key, tls.crt", "tls.key,tls.crt", "tls.crt
-        and tls.key", "tls.key and tls.crt"]
+      cel: answer.lowerAscii().contains('tls.crt') && answer.lowerAscii().contains('tls.key')
   - type: question
     question:
       questionType: command
@@ -285,6 +295,8 @@ scenarios:
         spec:
       expectedFields:
       - path: metadata.name
+        expectedValue: shop
+      - path: metadata.namespace
         expectedValue: shop
       - path: spec.ingressClassName
         expectedValue: nginx
@@ -400,10 +412,13 @@ scenarios:
         - name: cacert
           required: true
           value: tls.crt
+        - name: insecure
+          short: k
+          forbidden: true
   - type: question
     question:
       questionType: command
-      header: Show the TLS handshake and certificate details with a verbose request (headers only, certificate check skipped).
+      header: Show the TLS handshake and certificate details with a verbose request (certificate check skipped).
       hint: There is a verbose flag.
       command:
         executable: curl
@@ -435,9 +450,11 @@ scenarios:
   - type: question
     question:
       questionType: single-line
-      header: Which line shows that the served certificate is the self-signed one you created rather than a default one? (answer
-        with the field name that equals the subject)
+      header: The subject shows that this is your certificate. Which other field has the same value, proving that the certificate
+        is self-signed? (field name)
       hint: A self-signed certificate is its own authority.
+      correctAnswerInfo: Issuer equal to subject means self-signed. The controller's fallback certificate is self-signed
+        too, so only the subject (CN=shop.example.com) tells the two apart.
       expectedAnswer: issuer
       cel: answer.trim().lowerAscii() in ["issuer"]
   explanation:
@@ -465,9 +482,7 @@ scenarios:
       header: What does the controller do when it cannot load the Secret named in `spec.tls`?
       hint: The title of the scenario says what it serves.
       expectedAnswer: serves its default fake certificate
-      cel: answer.trim().lowerAscii() in ["serves its default fake certificate", "default certificate", "it serves the default
-        certificate", "default cert", "fake certificate", "serves the fake certificate", "uses the default fake certificate",
-        "serves a default certificate", "fake cert", "default fake certificate", "its default certificate"]
+      cel: answer.lowerAscii().matches('default|fake|fallback|self-signed')
   - type: question
     question:
       questionType: command
@@ -508,17 +523,19 @@ scenarios:
   - type: question
     question:
       questionType: single-line
-      header: 'Name two other common causes of the fake certificate: a Secret of the wrong type, or a certificate whose names
-        do not match the Ingress host. Which Secret type is required? (type string)'
-      hint: Opaque is not enough.
-      expectedAnswer: kubernetes.io/tls
-      cel: answer.trim() in ["kubernetes.io/tls"]
+      header: 'Another common cause: the certificate does not cover the host the client asks for. Which certificate extension
+        should list the host name? (name or abbreviation)'
+      hint: The CN alone is legacy; the extension holds alternative names.
+      correctAnswerInfo: ingress-nginx checks the certificate against the host of the rule and serves the fake certificate
+        if neither the subjectAltName nor (deprecated) the CN matches.
+      expectedAnswer: subjectAltName
+      cel: answer.lowerAscii().replace(' ', '').matches('^(subjectalt(ernative)?names?|san)$')
   explanation:
     elements:
     - type: context
       text: |
-        Troubleshooting checklist for TLS Ingress: (1) Secret exists in the Ingress namespace, (2) type `kubernetes.io/tls` with both keys, (3) certificate subject/SAN covers the host, (4) `tls.hosts` lists the
-        same host as the rule, (5) controller logs (`kubectl logs -n ingress-nginx deploy/ingress-nginx-controller`) show the error ("secret not found", "unexpected error storing fake SSL Cert").
+        Troubleshooting checklist for TLS Ingress: (1) Secret exists in the Ingress namespace, (2) it holds the keys `tls.crt` and `tls.key` (a `kubernetes.io/tls` Secret guarantees that; a generic Secret made from `cert.pem` does not), (3) certificate SAN covers the host, (4) `tls.hosts` lists the
+        same host as the rule, (5) controller logs (`kubectl logs -n ingress-nginx deploy/ingress-nginx-controller`) show the error (for example `local SSL certificate shop/shop-tls was not found. Using default certificate`).
     - type: references
       links:
       - url: https://kubernetes.github.io/ingress-nginx/user-guide/tls/
@@ -552,6 +569,9 @@ scenarios:
           short: I
           required: true
           boolean: true
+        - name: location
+          short: L
+          forbidden: true
   - type: table
     style: terminal
     columns:
@@ -608,6 +628,8 @@ scenarios:
       expectedFields:
       - path: metadata.name
         expectedValue: sites
+      - path: metadata.namespace
+        expectedValue: shop
       - path: spec.ingressClassName
         expectedValue: nginx
       cel:
@@ -696,11 +718,14 @@ scenarios:
               short: f
               required: true
               value: '-'
+            - name: namespace
+              short: n
+              value: shop
   - type: question
     question:
       questionType: command
-      header: 'Check the new expiry date that clients see: show the certificate dates in the Secret by decoding `tls.crt`.
-        Use jsonpath, base64 decode and openssl x509 for the dates.'
+      header: 'Check the new expiry date that clients see: decode `tls.crt` from the Secret and print the end of its validity.
+        Use jsonpath, base64 decode and openssl x509.'
       hint: The same three-stage pipeline as the verification before, with a different openssl output option.
       command:
         executable: kubectl
@@ -745,8 +770,14 @@ scenarios:
               boolean: true
             - name: enddate
               singleDash: true
-              required: true
               boolean: true
+            - name: dates
+              singleDash: true
+              boolean: true
+      cel:
+      - name: Expiry date
+        expression: '''enddate'' in pipes[1].flags || ''dates'' in pipes[1].flags'
+        message: openssl must print the end of the validity period
   explanation:
     elements:
     - type: context
@@ -782,6 +813,8 @@ scenarios:
           required: true
           boolean: true
         - name: nodes
+          aliases:
+          - noenc
           singleDash: true
           required: true
           boolean: true
@@ -804,7 +837,7 @@ scenarios:
         - name: subj
           singleDash: true
           required: true
-          value: /CN=docs.example.com
+          regex: ^/CN=docs\.example\.com(/.*)?$
         - name: addext
           singleDash: true
   - type: question
@@ -848,6 +881,8 @@ scenarios:
       expectedFields:
       - path: metadata.name
         expectedValue: docs
+      - path: metadata.namespace
+        expectedValue: docs
       - path: spec.ingressClassName
         expectedValue: nginx
       - path: spec.tls.0.secretName
@@ -880,6 +915,9 @@ scenarios:
         - name: cacert
           required: true
           value: docs.crt
+        - name: insecure
+          short: k
+          forbidden: true
   explanation:
     elements:
     - type: context
