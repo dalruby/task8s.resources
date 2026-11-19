@@ -585,9 +585,10 @@ scenarios:
         Which boolean flag makes it use the database already on disk?
       hint: The flag name says what is skipped.
       correctAnswerInfo: '`--skip-db-update` uses the existing local database. For fully offline use, also add `--offline-scan`
-        (no API calls for package metadata) and make sure the database was copied to the cache directory (`--cache-dir`).'
+        (no API calls for package metadata) and make sure the database was copied to the cache directory (`--cache-dir`).
+        The old name `--skip-update` is deprecated and no longer documented; use `--skip-db-update`.'
       expectedAnswer: --skip-db-update
-      cel: answer.trim().lowerAscii() in ["--skip-db-update", "skip-db-update", "--skip-db-update", "--skip-update"]
+      cel: answer.trim().lowerAscii() in ["--skip-db-update", "skip-db-update"]
   explanation:
     elements:
     - type: context
