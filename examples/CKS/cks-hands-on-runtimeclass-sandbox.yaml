@@ -364,10 +364,11 @@ scenarios:
       header: Write the TOML section that registers a runtime named `runsc` with the runtime type of gVisor (the containerd
         shim `io.containerd.runsc.v1`). Use the section header syntax of your containerd version.
       hint: The handler name is the last element of the section header; the runtime type is the shim identifier.
-      correctAnswerInfo: containerd 2.x uses the header `[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runsc]`.
-        Both forms are accepted here. The handler name `runsc` must equal `handler:` in the RuntimeClass.
+      correctAnswerInfo: containerd 1.x used the header `[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runsc]`.
+        Kubernetes 1.35 is the last release that supports containerd 1.x, so current clusters use the 2.x form; both are accepted
+        here. The handler name `runsc` must equal `handler:` in the RuntimeClass.
       expectedAnswer: |
-        [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runsc]
+        [plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runsc]
           runtime_type = "io.containerd.runsc.v1"
       cel:
       - name: Runtime section

@@ -267,3 +267,13 @@ sets:
       - SBOM
       - Hands-On
       - Hard
+  - name: "CKS (Hands-On): Image Signing with cosign"
+    filename: cks-hands-on-cosign.yaml
+    description: "No multiple choice. Sign and validate artifacts with cosign (2.x or 3.x): create key pairs (files, prefix, Kubernetes Secret), sign images by digest with annotations in an air-gapped lab, verify with the public key, tell unsigned from wrongly signed images, pin a Deployment to the verified digest, verify Kubernetes release images and binaries keylessly, sign files with bundles, and attach and verify a signed SBOM attestation."
+    tags:
+      - cosign
+      - Sigstore
+      - Image Signing
+      - Supply Chain Security
+      - Hands-On
+      - Hard

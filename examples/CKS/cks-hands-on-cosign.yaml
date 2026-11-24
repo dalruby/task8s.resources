@@ -1,0 +1,989 @@
+apiVersion: v1alpha1
+name: 'CKS (Hands-On): Image Signing with cosign'
+k8sVersion: 1.34.0
+timing:
+  enabled: true
+  limitSeconds: 5400
+introduction:
+  elements:
+  - type: context
+    text: |
+      Hands-on practice for the CKS competency *Secure your supply chain: permitted registries, **sign and validate
+      artifacts***. The curriculum names no tool; cosign (Sigstore) is the de facto standard and the one practice
+      simulators use. Typical tasks: create a key pair, sign an image **by digest**, verify it with the public key,
+      find the workload whose image is not signed and fix it, verify Kubernetes release binaries and images, and
+      attach a signed SBOM. There is no multiple choice.
+
+      **Lab environment**
+
+      - You are `root` on `controlplane` of a kubeadm cluster (Kubernetes 1.34, containerd). cosign is installed; run
+        `cosign version` first on a real task, because the exam does not publish which version it ships.
+      - Images live in the private registry `registry.local`. The lab is **air-gapped**: there is no public Sigstore
+        (no Fulcio, no Rekor transparency log). Key-based signatures are therefore **not uploaded to the transparency
+        log** and are verified without it. Scenarios that need the internet say so and run on the `workstation` host.
+      - The working directory is `/root/signing`. The private key password is in the environment variable that cosign
+        reads, so commands do not prompt.
+
+      **cosign 2 or 3?**
+
+      Every command in this set works the same in cosign **2.x and 3.x**: `generate-key-pair`, `sign`/`verify` with
+      `--key`, `-y`, `--tlog-upload=false`, `--insecure-ignore-tlog`, `-a`, keyless verification with
+      `--certificate-identity`/`--certificate-oidc-issuer`, `sign-blob`/`verify-blob`, `attest`/`verify-attestation`
+      and `tree`. The differences are under the hood:
+
+      | | cosign 2.x | cosign 3.x |
+      |---|---|---|
+      | where a new image signature is stored | tag `sha256-<digest>.sig` | Sigstore bundle as an OCI 1.1 referrer |
+      | `--tlog-upload=false` | supported | still works, deprecated in favour of a signing config |
+      | `cosign verify` | reads the old format | reads both formats |
+
+      Tutorials written for cosign 1.x (`COSIGN_EXPERIMENTAL=1`, keyless verification without identity flags) are out
+      of date for both.
+
+      **How answers are checked**
+
+      - *Commands* are checked structurally where possible. For cosign's boolean options, both `--flag` and
+        `--flag=true` are accepted. Flag order is free.
+      - *Manifests* are validated against the Kubernetes schema, then for what they mean.
+
+      Exam content is under NDA: this is practice for the common patterns, not a prediction.
+  - type: references
+    links:
+    - url: https://docs.sigstore.dev/cosign/signing/signing_with_containers/
+      text: 'Sigstore: Signing containers'
+    - url: https://docs.sigstore.dev/cosign/verifying/verify/
+      text: 'Sigstore: Verifying signatures'
+    - url: https://github.com/sigstore/cosign/tree/main/doc
+      text: cosign command reference
+    - url: https://kubernetes.io/docs/tasks/administer-cluster/verify-signed-artifacts/
+      text: Verify Signed Kubernetes Artifacts
+    - url: https://training.linuxfoundation.org/certification/certified-kubernetes-security-specialist-cks/
+      text: CKS Domains and Competencies
+manifestDefinitions:
+- id: deployment-v1
+  kind: Deployment
+  apiVersion: apps/v1
+  autoLoad: true
+scenarios:
+- title: What a Signature Proves
+  category: Basics
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The platform team wants proof that the images running in the cluster are the ones the CI pipeline built, and
+      that nobody changed them in the registry afterwards.
+  - type: question
+    question:
+      questionType: single-line
+      header: An image signature covers one immutable identifier of the image. Which one, the tag or the digest?
+      hint: One of them can be moved to different content at any time.
+      correctAnswerInfo: The signature is over the manifest digest. A tag is a mutable pointer, so a signature check on a tag
+        only means that whatever the tag points to now was signed.
+      expectedAnswer: digest
+      cel: answer.trim().lowerAscii() in ['digest', 'the digest', 'manifest digest', 'sha256 digest', 'image digest']
+  - type: question
+    question:
+      questionType: single-line
+      header: Which Sigstore service is the public transparency log where signatures are recorded?
+      hint: Its name is Greek for record.
+      correctAnswerInfo: Rekor is the transparency log. Fulcio is the certificate authority that issues short-lived
+        certificates for keyless signing. With your own key pair you need neither, but then nobody else can audit when you
+        signed.
+      expectedAnswer: Rekor
+      cel: answer.trim().lowerAscii() == 'rekor'
+  - type: question
+    question:
+      questionType: single-line
+      header: Which Sigstore service issues the short-lived code-signing certificates used for keyless signing?
+      hint: Its name is Latin for support.
+      expectedAnswer: Fulcio
+      cel: answer.trim().lowerAscii() == 'fulcio'
+  explanation:
+    elements:
+    - type: context
+      text: |
+        | Mode | What signs | What verifies | Needs |
+        |---|---|---|---|
+        | key pair | `cosign.key` (private) | `cosign.pub` | nothing else; works air-gapped |
+        | keyless | short-lived cert from Fulcio, bound to an OIDC identity | `--certificate-identity` + `--certificate-oidc-issuer` | Fulcio, Rekor, internet |
+
+        A signature proves **integrity** (the content is unchanged) and **origin** (who held the key or identity). It
+        says nothing about vulnerabilities: scanning and SBOMs are separate steps.
+    - type: references
+      links:
+      - url: https://docs.sigstore.dev/about/overview/
+        text: Sigstore overview
+- title: Create a Key Pair
+  category: Keys
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The team signs with its own key pair. In `/root/signing`, create one.
+  - type: question
+    question:
+      questionType: command
+      header: Generate a cosign key pair with the default file names.
+      hint: A cosign subcommand whose name says exactly what it does.
+      command:
+        executable: cosign
+        subcommands:
+        - name: generate-key-pair
+  - type: table
+    style: terminal
+    columns:
+    - OUTPUT
+    rows:
+    - - Private key written to cosign.key
+    - - Public key written to cosign.pub
+  - type: question
+    question:
+      questionType: single-line
+      header: Which environment variable supplies the private key password, so that cosign does not prompt?
+      hint: It starts with the tool's name in capitals.
+      correctAnswerInfo: COSIGN_PASSWORD is read by generate-key-pair, sign, attest and sign-blob. An empty value means a key
+        without a password, which is acceptable only for practice.
+      expectedAnswer: COSIGN_PASSWORD
+      cel: answer.trim() in ['COSIGN_PASSWORD', '$COSIGN_PASSWORD']
+  - type: question
+    question:
+      questionType: command
+      header: A second team needs its own pair named release.key and release.pub. Generate it.
+      hint: A flag sets the prefix of both file names.
+      command:
+        executable: cosign
+        subcommands:
+        - name: generate-key-pair
+        flags:
+        - name: output-key-prefix
+          required: true
+          value: release
+  - type: question
+    question:
+      questionType: single-line
+      header: Which of the two files of the first pair do you hand to everyone who must verify, and which do you keep secret?
+        Name the file to hand out.
+      hint: Verification never needs the secret.
+      expectedAnswer: cosign.pub
+      cel: answer.trim() == 'cosign.pub'
+  - type: question
+    question:
+      questionType: command
+      header: Instead of files, create a key pair stored as the Kubernetes Secret signing-key in namespace cosign-system.
+      hint: cosign accepts a URI with a Kubernetes scheme in place of a file.
+      correctAnswerInfo: cosign writes cosign.key, cosign.pub and cosign.password into the Secret. Sign with --key
+        k8s://cosign-system/signing-key; anyone with get on that Secret can sign, so restrict it with RBAC.
+      command:
+        executable: cosign
+        subcommands:
+        - name: generate-key-pair
+        positionals:
+        - index: 0
+          value: k8s://cosign-system/signing-key
+  explanation:
+    elements:
+    - type: context
+      text: |
+        | Command | Result |
+        |---|---|
+        | `cosign generate-key-pair` | `cosign.key`, `cosign.pub` |
+        | `cosign generate-key-pair --output-key-prefix release` | `release.key`, `release.pub` |
+        | `cosign generate-key-pair k8s://<ns>/<name>` | Secret with the key, the public key and the password |
+
+        The private key is encrypted with the password. Keep both out of Git and out of container images.
+    - type: references
+      links:
+      - url: https://github.com/sigstore/cosign/blob/main/doc/cosign_generate-key-pair.md
+        text: cosign generate-key-pair
+- title: Sign an Image by Digest
+  category: Signing
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      CI pushed `registry.local/shop/api:1.4`. The push reported:
+  - type: manifest
+    header: push output
+    content: |
+      1.4: digest: sha256:cf987ab6e98f03dbd52490019b9516330b4e9307b22b236736419cf684a2b3d7 size: 1573
+  - type: question
+    question:
+      questionType: command
+      header: Sign the image with cosign.key, by digest, without a confirmation prompt and without uploading to the transparency
+        log (the lab has none).
+      hint: Image reference with @ and the digest; one flag for the key, one to skip the prompt, one for the log.
+      correctAnswerInfo: --tlog-upload=false still works in cosign 3.1 but is deprecated; the replacement is a --signing-config
+        file without transparency log services. In a connected setup you would leave the log on.
+      command:
+        executable: cosign
+        strictness: permissive
+        subcommands:
+        - name: sign
+        flags:
+        - name: key
+          required: true
+          value: cosign.key
+      cel:
+      - name: Signs by digest
+        expression: answer.matches('(\\s|^)registry\\.local/shop/api@sha256:cf987ab6e98f03dbd52490019b9516330b4e9307b22b236736419cf684a2b3d7(\\s|$)')
+        message: Sign registry.local/shop/api by its digest, not by its tag
+      - name: No prompt
+        expression: answer.matches('(\\s)(-y|--yes(=true)?)(\\s|$)')
+        message: Skip the confirmation prompt
+      - name: No transparency log upload
+        expression: answer.matches('(\\s)--tlog-upload=false(\\s|$)')
+        message: Do not upload to the transparency log
+  - type: question
+    question:
+      questionType: single-line
+      header: A colleague signs registry.local/shop/api:1.4 by tag instead. Why is that risky? (a few words)
+      hint: What happens between reading the tag and signing?
+      correctAnswerInfo: cosign resolves the tag to a digest when it signs. If the tag was moved in between, you sign content
+        you never checked. cosign's documentation tells you to sign by digest for that reason.
+      expectedAnswer: The tag can point to a different image
+      cel: answer.lowerAscii().matches('mutable|move|moved|change|different|point|race|replace|overwrit|tamper')
+  - type: question
+    question:
+      questionType: command
+      header: 'Sign the same digest again, this time adding the claims env=prod and team=shop to the signed payload.'
+      hint: The flag for extra key=value pairs can be repeated.
+      command:
+        executable: cosign
+        strictness: permissive
+        subcommands:
+        - name: sign
+        flags:
+        - name: key
+          required: true
+          value: cosign.key
+        - name: annotations
+          short: a
+          required: true
+          repeatable: true
+          minCount: 2
+      cel:
+      - name: Signs by digest
+        expression: answer.contains('registry.local/shop/api@sha256:cf987ab6e98f03dbd52490019b9516330b4e9307b22b236736419cf684a2b3d7')
+        message: Sign by digest
+      - name: Both annotations
+        expression: answer.matches('(-a|--annotations)(\\s+|=)env=prod(\\s|$)') && answer.matches('(-a|--annotations)(\\s+|=)team=shop(\\s|$)')
+        message: Add env=prod and team=shop
+      - name: No transparency log upload
+        expression: answer.matches('(\\s)--tlog-upload=false(\\s|$)')
+        message: The lab has no transparency log
+  explanation:
+    elements:
+    - type: context
+      text: |
+        The command to know by heart:
+
+        ```
+        cosign sign --key cosign.key --tlog-upload=false -y registry.local/shop/api@sha256:<digest>
+        ```
+
+        | Option | Why |
+        |---|---|
+        | `@sha256:...` | sign exactly the content you checked |
+        | `-y` | the prompt asks you to accept that data goes to the public log |
+        | `--tlog-upload=false` | no Rekor reachable (air-gapped, private) |
+        | `-a key=value` | signed claims that `verify -a` can require |
+
+        Where the digest comes from: the push output, `docker inspect --format '{{index .RepoDigests 0}}' <image>`,
+        `crane digest <image>`, or `kubectl get pod -o jsonpath='{..imageID}'` for a running image.
+    - type: references
+      links:
+      - url: https://github.com/sigstore/cosign/blob/main/doc/cosign_sign.md
+        text: cosign sign
+      - url: https://docs.sigstore.dev/cosign/signing/signing_with_containers/
+        text: 'Sigstore: Signing containers'
+- title: Verify with the Public Key
+  category: Verifying
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Before the image goes to production, verify the signature from the previous scenario with `cosign.pub`.
+  - type: question
+    question:
+      questionType: command
+      header: Verify registry.local/shop/api by digest with cosign.pub. The signature is not in any transparency log.
+      hint: Without a flag, cosign also looks for the transparency log entry and fails.
+      correctAnswerInfo: Without --insecure-ignore-tlog the check fails, because cosign wants proof that the signature is in
+        Rekor. The option name is a reminder that you give up the audit trail of the log.
+      command:
+        executable: cosign
+        strictness: permissive
+        subcommands:
+        - name: verify
+        flags:
+        - name: key
+          required: true
+          value: cosign.pub
+      cel:
+      - name: Verifies the digest
+        expression: answer.contains('registry.local/shop/api@sha256:cf987ab6e98f03dbd52490019b9516330b4e9307b22b236736419cf684a2b3d7')
+        message: Verify the image by digest
+      - name: No transparency log check
+        expression: answer.matches('(\\s)--insecure-ignore-tlog(=true)?(\\s|$)')
+        message: Skip the transparency log check; there is no log in this lab
+  - type: manifest
+    header: stderr
+    content: |
+      Verification for registry.local/shop/api@sha256:cf987ab6e98f03dbd52490019b9516330b4e9307b22b236736419cf684a2b3d7 --
+      The following checks were performed on each of these signatures:
+        - The cosign claims were validated
+        - The signatures were verified against the specified public key
+  - type: question
+    question:
+      questionType: single-line
+      header: What exit code does cosign verify return when the verification succeeds?
+      hint: The usual success code of any Unix command.
+      correctAnswerInfo: Any failure (no signature, wrong key, missing annotation) gives a non-zero exit code, which is what
+        CI scripts and admission backends test.
+      expectedAnswer: '0'
+      cel: answer.trim() == '0'
+  - type: question
+    question:
+      questionType: command
+      header: Verify the same digest again and also require the signed claim env=prod.
+      hint: The verify command has the same annotations flag as sign.
+      command:
+        executable: cosign
+        strictness: permissive
+        subcommands:
+        - name: verify
+        flags:
+        - name: key
+          required: true
+          value: cosign.pub
+        - name: annotations
+          short: a
+          required: true
+          value: env=prod
+      cel:
+      - name: Verifies the digest
+        expression: answer.contains('registry.local/shop/api@sha256:cf987ab6e98f03dbd52490019b9516330b4e9307b22b236736419cf684a2b3d7')
+        message: Verify the image by digest
+      - name: No transparency log check
+        expression: answer.matches('(\\s)--insecure-ignore-tlog(=true)?(\\s|$)')
+        message: Skip the transparency log check
+  - type: manifest
+    header: stderr
+    content: |
+      Verification for registry.local/shop/api@sha256:cf987ab6e98f03dbd52490019b9516330b4e9307b22b236736419cf684a2b3d7 --
+      The following checks were performed on each of these signatures:
+        - The specified annotations were verified.
+        - The cosign claims were validated
+        - The signatures were verified against the specified public key
+  explanation:
+    elements:
+    - type: context
+      text: |
+        ```
+        cosign verify --key cosign.pub --insecure-ignore-tlog registry.local/shop/api@sha256:<digest>
+        ```
+
+        The check lines go to stderr. stdout gets the verified payloads as JSON (`-o text` for plain text), so
+        `cosign verify ... | jq .` works. In a connected setup, drop `--insecure-ignore-tlog`; the output then also
+        reports that the claims were found in the transparency log.
+
+        Verification by tag is allowed: cosign resolves the tag and checks that digest. That is fine for checking what
+        will run now, but write the digest into the Deployment so that it cannot change afterwards.
+    - type: references
+      links:
+      - url: https://github.com/sigstore/cosign/blob/main/doc/cosign_verify.md
+        text: cosign verify
+      - url: https://docs.sigstore.dev/cosign/verifying/verify/
+        text: 'Sigstore: Verifying signatures'
+- title: Which Image Is Not Signed?
+  category: Verifying
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Namespace `shop` runs three Deployments. Policy says every image must be signed with the team key `cosign.pub`.
+      You ran the same verify command for each image:
+  - type: manifest
+    header: '$ cosign verify --key cosign.pub --insecure-ignore-tlog registry.local/shop/api@sha256:eb9dc7...'
+    content: |
+      Verification for registry.local/shop/api@sha256:eb9dc712384370f94e6c52adf1ec8bc088ea61e3c03d9396633d3598f9f8b01a --
+      The following checks were performed on each of these signatures:
+        - The cosign claims were validated
+        - The signatures were verified against the specified public key
+  - type: manifest
+    header: '$ cosign verify --key cosign.pub --insecure-ignore-tlog registry.local/shop/worker@sha256:8ca469...'
+    content: |
+      Error: no matching signatures: invalid signature when validating ASN.1 encoded signature
+  - type: manifest
+    header: '$ cosign verify --key cosign.pub --insecure-ignore-tlog registry.local/shop/report@sha256:e3e958...'
+    content: |
+      Error: no signatures found
+  - type: question
+    question:
+      questionType: single-line
+      header: Which image has a signature, but one made with a different key?
+      hint: One error means nothing was found at all; the other means something was found that does not verify.
+      correctAnswerInfo: "no matching signatures: signatures exist, but none verifies with this public key (another key, or
+        a modified image). no signatures found: the image was never signed (or the signature was deleted)."
+      expectedAnswer: worker
+      cel: answer.trim().lowerAscii() in ['worker', 'registry.local/shop/worker', 'shop/worker']
+  - type: question
+    question:
+      questionType: single-line
+      header: Which image was never signed?
+      hint: Read the second error.
+      expectedAnswer: report
+      cel: answer.trim().lowerAscii() in ['report', 'registry.local/shop/report', 'shop/report']
+  - type: question
+    question:
+      questionType: single-line
+      header: How many of the three images comply with the policy? (a number)
+      hint: Only a successful verification counts.
+      expectedAnswer: '1'
+      cel: answer.trim() in ['1', 'one']
+  explanation:
+    elements:
+    - type: context
+      text: |
+        | Message | Meaning | Typical cause |
+        |---|---|---|
+        | `no signatures found` | nothing attached to this digest | never signed; signed by tag before the tag moved |
+        | `no matching signatures` | signatures exist, none verifies | other key; content changed after signing |
+        | missing annotation | signature valid, claim absent | signed without `-a`, or with another value |
+
+        Running images: `kubectl get pods -n shop -o jsonpath='{range .items[*]}{.spec.containers[*].image}{"\n"}{end}'`
+        gives the references, `{..imageID}` the digests that actually run.
+    - type: references
+      links:
+      - url: https://docs.sigstore.dev/cosign/verifying/verify/
+        text: 'Sigstore: Verifying signatures'
+- title: Run Only the Verified Digest
+  category: Verifying
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Deployment `api` in namespace `shop` (container `api`) runs `registry.local/shop/api:1.5`. You verified the digest
+      `sha256:eb9dc712384370f94e6c52adf1ec8bc088ea61e3c03d9396633d3598f9f8b01a` of that tag in the previous scenario.
+      A tag can be moved later; the Deployment must run exactly the verified content.
+  - type: question
+    question:
+      questionType: command
+      header: Change the image of container api to the verified digest with one imperative command.
+      hint: kubectl has a command that sets the image of named containers.
+      correctAnswerInfo: Any reference form with @sha256 is pinned. A form with both tag and digest (api:1.5@sha256:...) is
+        accepted too; the runtime then pulls by digest and ignores the tag.
+      command:
+        executable: kubectl
+        strictness: permissive
+        subcommands:
+        - name: set
+        - name: image
+        flags:
+        - name: namespace
+          short: n
+          required: true
+          value: shop
+      cel:
+      - name: The Deployment
+        expression: positionals.exists(p, p in ['deployment/api', 'deploy/api', 'deployments/api', 'deployment.apps/api']) ||
+          (positionals.exists(p, p in ['deployment', 'deploy', 'deployments']) && positionals.exists(p, p == 'api'))
+        message: Change Deployment api
+      - name: Pinned image
+        expression: positionals.exists(p, p.matches('^api=registry\\.local/shop/api(:1\\.5)?@sha256:eb9dc712384370f94e6c52adf1ec8bc088ea61e3c03d9396633d3598f9f8b01a$'))
+        message: Set container api to registry.local/shop/api pinned by the verified digest
+  - type: manifest
+    header: Output
+    content: |
+      deployment.apps/api image updated
+  - type: question
+    question:
+      questionType: single-line
+      header: Does Kubernetes itself check cosign signatures when it creates the Pod? (yes/no)
+      hint: Think about which components exist in a plain kubeadm cluster.
+      correctAnswerInfo: Neither the API server nor the kubelet knows cosign. Enforcing signatures at admission needs an
+        external component, for example an ImagePolicyWebhook backend or a policy engine that runs cosign verification.
+        Without one, verification is a step in your pipeline or your hands.
+      expectedAnswer: 'no'
+      cel: answer.trim().lowerAscii() in ['no', 'n']
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Verify, then pin. The two steps together guarantee that what runs is what you checked:
+
+        ```
+        cosign verify --key cosign.pub --insecure-ignore-tlog registry.local/shop/api@sha256:<digest>
+        kubectl set image deployment/api api=registry.local/shop/api@sha256:<digest> -n shop
+        ```
+
+        If a task says the unsigned workload must not run, scale it to zero or remove the container, as the task asks.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/concepts/containers/images/#image-names
+        text: 'Images: image names and digests'
+      - url: https://kubernetes.io/docs/reference/kubectl/generated/kubectl_set/kubectl_set_image/
+        text: kubectl set image
+- title: Verify Kubernetes Release Images
+  category: Keyless Verification
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      On `workstation` (with internet access), check that the API server image of the version you are about to deploy
+      was signed by the Kubernetes release process. Kubernetes signs keylessly: there is no public key, only an
+      **identity** in a Fulcio certificate.
+  - type: question
+    question:
+      questionType: command
+      header: 'Verify registry.k8s.io/kube-apiserver-amd64:v1.34.0. The signer identity is krel-trust@k8s-releng-prod.iam.gserviceaccount.com,
+        issued by https://accounts.google.com.'
+      hint: Keyless verification needs two flags, one for who signed and one for who vouched for that identity.
+      correctAnswerInfo: Since cosign 2.0 both flags are mandatory for keyless verification. Without them anyone with any
+        Sigstore certificate could have signed. Tools from the cosign 1.x era needed COSIGN_EXPERIMENTAL=1 instead.
+      command:
+        executable: cosign
+        subcommands:
+        - name: verify
+        positionals:
+        - index: 0
+          value: registry.k8s.io/kube-apiserver-amd64:v1.34.0
+        flags:
+        - name: certificate-identity
+          required: true
+          value: krel-trust@k8s-releng-prod.iam.gserviceaccount.com
+        - name: certificate-oidc-issuer
+          required: true
+          value: https://accounts.google.com
+  - type: manifest
+    header: stderr
+    content: |
+      Verification for registry.k8s.io/kube-apiserver-amd64:v1.34.0 --
+      The following checks were performed on each of these signatures:
+        - The cosign claims were validated
+        - Existence of the claims in the transparency log was verified offline
+        - The code-signing certificate was verified using trusted certificate authority certificates
+  - type: question
+    question:
+      questionType: single-line
+      header: Compared with the key-based check, which line proves that the signature is recorded in Rekor?
+      hint: Look for the transparency log.
+      expectedAnswer: Existence of the claims in the transparency log was verified offline
+      cel: answer.lowerAscii().contains('transparency log')
+  explanation:
+    elements:
+    - type: context
+      text: |
+        | Signing mode | Verify flags |
+        |---|---|
+        | key pair | `--key cosign.pub` |
+        | keyless | `--certificate-identity <who>` and `--certificate-oidc-issuer <issuer>` (or the `-regexp` variants) |
+
+        The Kubernetes project documents the identities: `krel-trust@k8s-releng-prod.iam.gserviceaccount.com` for images on
+        registry.k8s.io and `krel-staging@k8s-releng-prod.iam.gserviceaccount.com` for binaries and SBOMs, both issued by
+        `https://accounts.google.com`. The exam does not expect you to remember them; the task or the docs give them.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/tasks/administer-cluster/verify-signed-artifacts/
+        text: Verify Signed Kubernetes Artifacts
+- title: Verify a Release Binary
+  category: Keyless Verification
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      This is the curriculum item *Verify platform binaries before deploying* with signatures instead of checksums.
+      On `workstation` you downloaded these files from `https://dl.k8s.io/release/v1.34.0/bin/linux/amd64/`:
+  - type: manifest
+    header: $ ls
+    content: |
+      kubectl  kubectl.cert  kubectl.sig
+  - type: question
+    question:
+      questionType: command
+      header: 'Verify kubectl with its signature and certificate files. The signer identity is krel-staging@k8s-releng-prod.iam.gserviceaccount.com,
+        issued by https://accounts.google.com.'
+      hint: A file that is not an image is a blob for cosign.
+      correctAnswerInfo: The .sig file holds the signature and the .cert file the Fulcio certificate. Artifacts published as
+        a single Sigstore bundle (.sigstore.json) are verified with --bundle instead of both flags.
+      command:
+        executable: cosign
+        subcommands:
+        - name: verify-blob
+        positionals:
+        - index: 0
+          value: kubectl
+        flags:
+        - name: signature
+          required: true
+          value: kubectl.sig
+        - name: certificate
+          required: true
+          value: kubectl.cert
+        - name: certificate-identity
+          required: true
+          value: krel-staging@k8s-releng-prod.iam.gserviceaccount.com
+        - name: certificate-oidc-issuer
+          required: true
+          value: https://accounts.google.com
+  - type: table
+    style: terminal
+    columns:
+    - OUTPUT
+    rows:
+    - - Verified OK
+  - type: question
+    question:
+      questionType: single-line
+      header: 'Checksum or signature: which of the two also proves who published the binary?'
+      hint: A checksum file can be replaced together with the binary.
+      correctAnswerInfo: A checksum only proves that the file matches the checksum file. If an attacker controls the download
+        location, they replace both. A signature is bound to an identity the attacker does not control.
+      expectedAnswer: signature
+      cel: answer.trim().lowerAscii() in ['signature', 'the signature', 'sig']
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Two ways to verify a platform binary, both in scope:
+
+        | Method | Command |
+        |---|---|
+        | checksum | `echo "$(cat kubectl.sha256)  kubectl" \| sha256sum --check` |
+        | signature | `cosign verify-blob kubectl --signature kubectl.sig --certificate kubectl.cert --certificate-identity ... --certificate-oidc-issuer ...` |
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/tasks/administer-cluster/verify-signed-artifacts/#verifying-binary-signatures
+        text: Verifying binary signatures
+      - url: https://github.com/sigstore/cosign/blob/main/doc/cosign_verify-blob.md
+        text: cosign verify-blob
+- title: Sign and Verify a File with Your Key
+  category: Blobs
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      CI also publishes the Helm chart archive `shop-1.4.tgz`. Sign it with `cosign.key` and keep everything needed for
+      verification in one **bundle** file, `shop-1.4.tgz.sigstore.json`. No transparency log in this lab.
+  - type: question
+    question:
+      questionType: command
+      header: Sign the archive and write the bundle.
+      hint: The blob counterpart of cosign sign, with an output file for the bundle.
+      command:
+        executable: cosign
+        strictness: permissive
+        subcommands:
+        - name: sign-blob
+        positionals:
+        - index: 0
+          value: shop-1.4.tgz
+        flags:
+        - name: key
+          required: true
+          value: cosign.key
+        - name: bundle
+          required: true
+          value: shop-1.4.tgz.sigstore.json
+      cel:
+      - name: No transparency log upload
+        expression: answer.matches('(\\s)--tlog-upload=false(\\s|$)')
+        message: Do not upload to the transparency log
+  - type: question
+    question:
+      questionType: command
+      header: Verify the archive with cosign.pub and the bundle.
+      hint: Same bundle flag, and the same option as for images because the log has no entry.
+      command:
+        executable: cosign
+        strictness: permissive
+        subcommands:
+        - name: verify-blob
+        positionals:
+        - index: 0
+          value: shop-1.4.tgz
+        flags:
+        - name: key
+          required: true
+          value: cosign.pub
+        - name: bundle
+          required: true
+          value: shop-1.4.tgz.sigstore.json
+      cel:
+      - name: No transparency log check
+        expression: answer.matches('(\\s)--insecure-ignore-tlog(=true)?(\\s|$)')
+        message: Skip the transparency log check
+  - type: table
+    style: terminal
+    columns:
+    - OUTPUT
+    rows:
+    - - Verified OK
+  explanation:
+    elements:
+    - type: context
+      text: |
+        A bundle contains the signature, the verification material and, if there is one, the transparency log entry. It
+        is the preferred input of `verify-blob` in cosign 3. The older pair of files (`--output-signature`,
+        `--output-certificate` when signing; `--signature`, `--certificate` when verifying) is still accepted.
+    - type: references
+      links:
+      - url: https://github.com/sigstore/cosign/blob/main/doc/cosign_sign-blob.md
+        text: cosign sign-blob
+      - url: https://github.com/sigstore/cosign/blob/main/doc/cosign_verify-blob.md
+        text: cosign verify-blob
+- title: A Signed SBOM for the Image
+  category: Attestations
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      An SBOM in SPDX JSON format, `api.spdx.json`, was generated for
+      `registry.local/shop/api@sha256:cf987ab6e98f03dbd52490019b9516330b4e9307b22b236736419cf684a2b3d7`. Attach it to the
+      image as a **signed attestation**, so that consumers can trust it as much as the image.
+  - type: question
+    question:
+      questionType: command
+      header: Create the attestation with cosign.key. Use the predicate type for SPDX JSON, and no transparency log.
+      hint: The attest subcommand takes the document as the predicate and a type that names its format.
+      correctAnswerInfo: Other types are cyclonedx, slsaprovenance, vuln, openvex and custom (the default). The attestation
+        is an in-toto statement whose subject is the image digest.
+      command:
+        executable: cosign
+        strictness: permissive
+        subcommands:
+        - name: attest
+        flags:
+        - name: key
+          required: true
+          value: cosign.key
+        - name: predicate
+          required: true
+          value: api.spdx.json
+        - name: type
+          required: true
+          value: spdxjson
+      cel:
+      - name: The image by digest
+        expression: answer.contains('registry.local/shop/api@sha256:cf987ab6e98f03dbd52490019b9516330b4e9307b22b236736419cf684a2b3d7')
+        message: Attest the image by digest
+      - name: No transparency log upload
+        expression: answer.matches('(\\s)--tlog-upload=false(\\s|$)')
+        message: Do not upload to the transparency log
+  - type: question
+    question:
+      questionType: command
+      header: Verify that an SPDX JSON attestation signed with cosign.pub exists for the image.
+      hint: verify has a sibling for attestations; tell it which predicate type you expect.
+      correctAnswerInfo: cosign verify checks image signatures only; it does not look at attestations. verify-attestation
+        checks the attestation signature and can also evaluate a CUE or Rego policy against its content with --policy.
+      command:
+        executable: cosign
+        strictness: permissive
+        subcommands:
+        - name: verify-attestation
+        flags:
+        - name: key
+          required: true
+          value: cosign.pub
+        - name: type
+          required: true
+          value: spdxjson
+      cel:
+      - name: The image by digest
+        expression: answer.contains('registry.local/shop/api@sha256:cf987ab6e98f03dbd52490019b9516330b4e9307b22b236736419cf684a2b3d7')
+        message: Verify the image by digest
+      - name: No transparency log check
+        expression: answer.matches('(\\s)--insecure-ignore-tlog(=true)?(\\s|$)')
+        message: Skip the transparency log check
+  - type: question
+    question:
+      questionType: command
+      header: List everything attached to the image (signatures and attestations).
+      hint: A cosign subcommand shows the supply chain artifacts of an image as a tree.
+      command:
+        executable: cosign
+        subcommands:
+        - name: tree
+        positionals:
+        - index: 0
+          regex: ^registry\.local/shop/api(:1\.4|@sha256:cf987ab6e98f03dbd52490019b9516330b4e9307b22b236736419cf684a2b3d7)$
+  - type: question
+    question:
+      questionType: single-line
+      header: cosign 2 stored a signature under a tag derived from the digest. What was the tag for sha256:cf987ab6...? Write
+        it with the full digest replaced by <digest>.
+      hint: The algorithm, a dash instead of the colon, the digest, and a suffix for signatures.
+      correctAnswerInfo: Attestations used the suffix .att and SBOMs .sbom. cosign 3 stores new signatures as OCI 1.1 referrers
+        instead, which do not show up as tags; cosign tree lists both kinds.
+      expectedAnswer: sha256-<digest>.sig
+      cel: answer.trim() in ['sha256-<digest>.sig', 'sha256-cf987ab6e98f03dbd52490019b9516330b4e9307b22b236736419cf684a2b3d7.sig']
+  explanation:
+    elements:
+    - type: context
+      text: |
+        | Command | Checks |
+        |---|---|
+        | `cosign verify` | signatures of the image |
+        | `cosign verify-attestation --type <t>` | signed attestations of type `t` (`spdxjson`, `cyclonedx`, `slsaprovenance`, `vuln`, `custom`, ...) |
+        | `cosign tree` | lists what is attached, verifies nothing |
+
+        Together with the SBOM set: generate the SBOM (`bom`, `trivy`), attest it here, and consumers verify both the
+        image and the SBOM with the same public key.
+    - type: references
+      links:
+      - url: https://github.com/sigstore/cosign/blob/main/doc/cosign_attest.md
+        text: cosign attest
+      - url: https://github.com/sigstore/cosign/blob/main/doc/cosign_verify-attestation.md
+        text: cosign verify-attestation
+      - url: https://github.com/sigstore/cosign/blob/main/doc/cosign_tree.md
+        text: cosign tree
+- title: 'Capstone: Sign, Verify and Pin a Release'
+  category: Capstone
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Ticket SEC-311, on `controlplane`, in `/root/signing`, air-gapped:
+
+      1. Create a key pair named `shop.key` / `shop.pub`.
+      2. Sign `registry.local/shop/report` at digest `sha256:e3e9585ceb50e03d7e992098c6d9dae9b30db5c005b193f0eeb08a98424fc60b`
+         with the claim `approved=sec-311`.
+      3. Verify the signature and that claim.
+      4. Make Deployment `report` in namespace `shop` (container `report`, label `app=report`, 2 replicas) run exactly that
+         digest.
+  - type: question
+    question:
+      questionType: sequence
+      header: Steps 1 to 3.
+      hint: Key prefix, then sign with an annotation, then verify with the same annotation. Remember the lab has no log.
+      steps:
+      - questionType: command
+        header: Create the key pair shop.key and shop.pub.
+        command:
+          executable: cosign
+          subcommands:
+          - name: generate-key-pair
+          flags:
+          - name: output-key-prefix
+            required: true
+            value: shop
+      - questionType: command
+        header: Sign the digest with the claim, without a prompt and without the transparency log.
+        command:
+          executable: cosign
+          strictness: permissive
+          subcommands:
+          - name: sign
+          flags:
+          - name: key
+            required: true
+            value: shop.key
+          - name: annotations
+            short: a
+            required: true
+            value: approved=sec-311
+        cel:
+        - name: Signs by digest
+          expression: answer.contains('registry.local/shop/report@sha256:e3e9585ceb50e03d7e992098c6d9dae9b30db5c005b193f0eeb08a98424fc60b')
+          message: Sign registry.local/shop/report by digest
+        - name: No prompt
+          expression: answer.matches('(\\s)(-y|--yes(=true)?)(\\s|$)')
+          message: Skip the confirmation prompt
+        - name: No transparency log upload
+          expression: answer.matches('(\\s)--tlog-upload=false(\\s|$)')
+          message: Do not upload to the transparency log
+      - questionType: command
+        header: Verify the signature and the claim.
+        command:
+          executable: cosign
+          strictness: permissive
+          subcommands:
+          - name: verify
+          flags:
+          - name: key
+            required: true
+            value: shop.pub
+          - name: annotations
+            short: a
+            required: true
+            value: approved=sec-311
+        cel:
+        - name: Verifies the digest
+          expression: answer.contains('registry.local/shop/report@sha256:e3e9585ceb50e03d7e992098c6d9dae9b30db5c005b193f0eeb08a98424fc60b')
+          message: Verify by digest
+        - name: No transparency log check
+          expression: answer.matches('(\\s)--insecure-ignore-tlog(=true)?(\\s|$)')
+          message: Skip the transparency log check
+  - type: question
+    question:
+      questionType: manifest
+      header: Step 4. Write the Deployment.
+      hint: The image reference carries the digest.
+      manifestDefinitionId: deployment-v1
+      initialContent: |
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: report
+          namespace: shop
+        spec:
+      expectedFields:
+      - path: metadata.name
+        expectedValue: report
+      - path: metadata.namespace
+        expectedValue: shop
+      - path: spec.replicas
+        expectedValue: 2
+      - path: spec.template.spec.containers.0.name
+        expectedValue: report
+      cel:
+      - name: Pinned to the verified digest
+        expression: manifest.spec.template.spec.containers[0].image.matches('^registry\\.local/shop/report(:[A-Za-z0-9._-]+)?@sha256:e3e9585ceb50e03d7e992098c6d9dae9b30db5c005b193f0eeb08a98424fc60b$')
+        message: The container must run registry.local/shop/report pinned to the signed digest
+      - name: Selector matches labels
+        expression: manifest.spec.selector.matchLabels.app == 'report' && manifest.spec.template.metadata.labels.app == 'report'
+        message: The selector must match the Pod template label app=report
+  - type: manifest
+    header: Solution
+    content: |
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: report
+        namespace: shop
+      spec:
+        replicas: 2
+        selector:
+          matchLabels:
+            app: report
+        template:
+          metadata:
+            labels:
+              app: report
+          spec:
+            containers:
+            - name: report
+              image: registry.local/shop/report@sha256:e3e9585ceb50e03d7e992098c6d9dae9b30db5c005b193f0eeb08a98424fc60b
+  explanation:
+    elements:
+    - type: context
+      text: |
+        The whole flow in five lines:
+
+        ```
+        cosign generate-key-pair --output-key-prefix shop
+        cosign sign --key shop.key -a approved=sec-311 --tlog-upload=false -y registry.local/shop/report@sha256:<digest>
+        cosign verify --key shop.pub -a approved=sec-311 --insecure-ignore-tlog registry.local/shop/report@sha256:<digest>
+        kubectl set image deployment/report report=registry.local/shop/report@sha256:<digest> -n shop
+        kubectl rollout status deployment/report -n shop
+        ```
+
+        On a connected system, drop `--tlog-upload=false` and `--insecure-ignore-tlog`.
+    - type: references
+      links:
+      - url: https://docs.sigstore.dev/cosign/signing/signing_with_containers/
+        text: 'Sigstore: Signing containers'
+      - url: https://docs.sigstore.dev/cosign/verifying/verify/
+        text: 'Sigstore: Verifying signatures'

@@ -15,6 +15,9 @@ introduction:
 
       - You are `root` on the control-plane node of a kubeadm cluster (Kubernetes 1.34, containerd). `kubectl`, `openssl` and `curl` are available. The NGINX ingress controller
         (IngressClass `nginx`) publishes HTTP on NodePort `30080` and HTTPS on `30443` of node `10.0.0.21`.
+      - The ingress-nginx project was retired in March 2026 (no further releases or security fixes), and Gateway API is its
+        successor. The CKS list of allowed documentation still includes the NGINX ingress controller docs, so the exam can
+        still use it. The Ingress object and the TLS Secret are standard Kubernetes and work with every controller.
       - Namespaces `shop` and `docs` hold the applications; host names such as `shop.example.com` have no DNS records, so tests use `curl --resolve`.
 
       **How answers are checked**
