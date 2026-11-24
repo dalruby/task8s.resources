@@ -256,3 +256,14 @@ sets:
       - Cluster Hardening
       - Hands-On
       - Hard
+  - name: "CKS (Hands-On): Gap Pack"
+    filename: cks-hands-on-exam-gaps.yaml
+    description: "No multiple choice. The exam tasks the other hands-on sets only touch on, in one set: remove a user from the docker group, make the Docker socket root-owned and drop a TCP listener, disable token automount and mount a read-only projected token, write a Falco rule for /dev/mem and scale the offending Deployment to zero, combine Cilium mutual authentication with unauthenticated host access, run an image as nobody under a Deployment securityContext, and find the image that ships libcrypto3 with bom and remove its container."
+    tags:
+      - Docker
+      - ServiceAccounts
+      - Falco
+      - Cilium
+      - SBOM
+      - Hands-On
+      - Hard

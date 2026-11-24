@@ -1,0 +1,1686 @@
+apiVersion: v1alpha1
+name: 'CKS (Hands-On): Gap Pack'
+k8sVersion: 1.34.0
+timing:
+  enabled: true
+  limitSeconds: 5400
+introduction:
+  elements:
+  - type: context
+    text: |
+      One set for the exam tasks that the other hands-on sets only touch on. Work through it in one go after the
+      main sets:
+
+      - **Docker daemon**: a user in the `docker` group, socket ownership, the Docker API on a TCP port
+      - **ServiceAccount tokens**: automount off, then a token mounted by hand as a read-only projected volume
+      - **Falco**: a rule for `/dev/mem`, from the alert to the Pod, then scale its Deployment to zero
+      - **Cilium**: one policy with mutual authentication for Pods and an unauthenticated rule for the host
+      - **Image and Pod user**: `USER nobody` in the Dockerfile and a Deployment that overrides it
+      - **SBOM**: find the image that ships a library, remove its container from a multi-container Deployment
+
+      **Lab environment**
+
+      - You are `root` on `controlplane` of a kubeadm cluster (Kubernetes 1.34, containerd). Each scenario names the node
+        it runs on: `node01` runs Falco **0.45** as the systemd service `falco-modern-bpf`, and `build-node` is a CI host
+        with Docker Engine installed from the docker-ce packages.
+      - Cilium is the CNI. It was installed with mutual authentication enabled (SPIRE).
+      - `bom` and `kubectl` are on `controlplane`.
+
+      **How answers are checked**
+
+      - *Manifests* are validated against the Kubernetes schema, then for what they mean (key order and style are free).
+      - *Commands* are checked structurally (flag order is free).
+      - *Config snippets* (systemd units, Falco rules) are checked for the required lines and values.
+
+      Exam content is under NDA: this is practice for the common patterns, not a prediction.
+  - type: references
+    links:
+    - url: https://training.linuxfoundation.org/certification/certified-kubernetes-security-specialist-cks/
+      text: CKS Domains and Competencies
+    - url: https://docs.docker.com/engine/security/
+      text: Docker Engine security
+    - url: https://kubernetes.io/docs/concepts/storage/projected-volumes/
+      text: Projected Volumes
+    - url: https://falco.org/docs/concepts/rules/
+      text: Falco rules
+    - url: https://docs.cilium.io/en/stable/network/servicemesh/mutual-authentication/mutual-authentication/
+      text: 'Cilium: Mutual Authentication'
+    - url: https://github.com/kubernetes-sigs/bom
+      text: kubernetes-sigs/bom
+manifestDefinitions:
+- id: pod-v1
+  kind: Pod
+  apiVersion: v1
+  autoLoad: true
+- id: serviceaccount-v1
+  kind: ServiceAccount
+  apiVersion: v1
+  autoLoad: true
+- id: deployment-v1
+  kind: Deployment
+  apiVersion: apps/v1
+  autoLoad: true
+- id: cnp-v2
+  kind: CiliumNetworkPolicy
+  apiVersion: cilium.io/v2
+  schema:
+    type: object
+    required:
+    - apiVersion
+    - kind
+    - metadata
+    - spec
+    additionalProperties: false
+    properties:
+      apiVersion:
+        type: string
+      kind:
+        type: string
+      metadata:
+        type: object
+      spec:
+        type: object
+        additionalProperties: false
+        properties:
+          description:
+            type: string
+          endpointSelector:
+            type: object
+            additionalProperties: false
+            properties:
+              matchLabels:
+                type: object
+                additionalProperties:
+                  type: string
+              matchExpressions:
+                type: array
+                items:
+                  type: object
+          enableDefaultDeny:
+            type: object
+            additionalProperties: false
+            properties:
+              ingress:
+                type: boolean
+              egress:
+                type: boolean
+          ingress:
+            type: array
+            items:
+              type: object
+              additionalProperties: false
+              properties:
+                description:
+                  type: string
+                toPorts:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: false
+                    properties:
+                      ports:
+                        type: array
+                        items:
+                          type: object
+                          additionalProperties: false
+                          required:
+                          - port
+                          properties:
+                            port:
+                              type: string
+                            endPort:
+                              type: integer
+                            protocol:
+                              type: string
+                              enum:
+                              - TCP
+                              - UDP
+                              - SCTP
+                              - ANY
+                      rules:
+                        type: object
+                fromEndpoints:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: false
+                    properties:
+                      matchLabels:
+                        type: object
+                        additionalProperties:
+                          type: string
+                      matchExpressions:
+                        type: array
+                        items:
+                          type: object
+                fromEntities:
+                  type: array
+                  items:
+                    type: string
+                    enum:
+                    - all
+                    - world
+                    - cluster
+                    - host
+                    - remote-node
+                    - kube-apiserver
+                    - ingress
+                    - init
+                    - health
+                    - unmanaged
+                fromCIDR:
+                  type: array
+                  items:
+                    type: string
+                authentication: &id001
+                  type: object
+                  additionalProperties: false
+                  properties:
+                    mode:
+                      type: string
+                      enum:
+                      - disabled
+                      - required
+                      - test-always-fail
+          ingressDeny:
+            type: array
+            items:
+              type: object
+              additionalProperties: false
+              properties:
+                description:
+                  type: string
+                toPorts:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: false
+                    properties:
+                      ports:
+                        type: array
+                        items:
+                          type: object
+                          additionalProperties: false
+                          required:
+                          - port
+                          properties:
+                            port:
+                              type: string
+                            endPort:
+                              type: integer
+                            protocol:
+                              type: string
+                              enum:
+                              - TCP
+                              - UDP
+                              - SCTP
+                              - ANY
+                      rules:
+                        type: object
+                fromEndpoints:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: false
+                    properties:
+                      matchLabels:
+                        type: object
+                        additionalProperties:
+                          type: string
+                      matchExpressions:
+                        type: array
+                        items:
+                          type: object
+                fromEntities:
+                  type: array
+                  items:
+                    type: string
+                    enum:
+                    - all
+                    - world
+                    - cluster
+                    - host
+                    - remote-node
+                    - kube-apiserver
+                    - ingress
+                    - init
+                    - health
+                    - unmanaged
+                fromCIDR:
+                  type: array
+                  items:
+                    type: string
+          egress:
+            type: array
+            items:
+              type: object
+              additionalProperties: false
+              properties:
+                description:
+                  type: string
+                toPorts:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: false
+                    properties:
+                      ports:
+                        type: array
+                        items:
+                          type: object
+                          additionalProperties: false
+                          required:
+                          - port
+                          properties:
+                            port:
+                              type: string
+                            endPort:
+                              type: integer
+                            protocol:
+                              type: string
+                              enum:
+                              - TCP
+                              - UDP
+                              - SCTP
+                              - ANY
+                      rules:
+                        type: object
+                toEndpoints:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: false
+                    properties:
+                      matchLabels:
+                        type: object
+                        additionalProperties:
+                          type: string
+                      matchExpressions:
+                        type: array
+                        items:
+                          type: object
+                toEntities:
+                  type: array
+                  items:
+                    type: string
+                    enum:
+                    - all
+                    - world
+                    - cluster
+                    - host
+                    - remote-node
+                    - kube-apiserver
+                    - ingress
+                    - init
+                    - health
+                    - unmanaged
+                toCIDR:
+                  type: array
+                  items:
+                    type: string
+                toFQDNs:
+                  type: array
+                  items:
+                    type: object
+                authentication: *id001
+          egressDeny:
+            type: array
+            items:
+              type: object
+              additionalProperties: false
+              properties:
+                description:
+                  type: string
+                toPorts:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: false
+                    properties:
+                      ports:
+                        type: array
+                        items:
+                          type: object
+                          additionalProperties: false
+                          required:
+                          - port
+                          properties:
+                            port:
+                              type: string
+                            endPort:
+                              type: integer
+                            protocol:
+                              type: string
+                              enum:
+                              - TCP
+                              - UDP
+                              - SCTP
+                              - ANY
+                      rules:
+                        type: object
+                toEndpoints:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: false
+                    properties:
+                      matchLabels:
+                        type: object
+                        additionalProperties:
+                          type: string
+                      matchExpressions:
+                        type: array
+                        items:
+                          type: object
+                toEntities:
+                  type: array
+                  items:
+                    type: string
+                    enum:
+                    - all
+                    - world
+                    - cluster
+                    - host
+                    - remote-node
+                    - kube-apiserver
+                    - ingress
+                    - init
+                    - health
+                    - unmanaged
+                toCIDR:
+                  type: array
+                  items:
+                    type: string
+                toFQDNs:
+                  type: array
+                  items:
+                    type: object
+scenarios:
+- title: Who Is Root Through the Docker Socket?
+  category: Docker Daemon
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      On `build-node`, the security team found that the user `developer` can start containers without `sudo`. Anyone who
+      can talk to the Docker daemon can run `docker run -v /:/host --privileged ...` and own the node.
+  - type: question
+    question:
+      questionType: command
+      header: Show the entry of the docker group, with its members, from the system's group database.
+      hint: A generic tool that queries NSS databases by name.
+      command:
+        executable: getent
+        positionals:
+        - index: 0
+          value: group
+        - index: 1
+          value: docker
+  - type: table
+    style: terminal
+    columns:
+    - OUTPUT
+    rows:
+    - - docker:x:998:developer,ci-runner
+  - type: question
+    question:
+      questionType: single-line
+      header: Membership of this group gives the same power on the node as which account?
+      hint: The daemon runs with full privileges and does whatever its clients ask.
+      correctAnswerInfo: The Docker daemon runs as root. Whoever can write to its socket can start a privileged container
+        with the host filesystem mounted, which is root on the node.
+      expectedAnswer: root
+      cel: answer.trim().lowerAscii() in ['root', 'root user', 'the root user', 'uid 0', '0']
+  - type: question
+    question:
+      questionType: single-line
+      header: Remove `developer` from the docker group. Leave its other group memberships untouched.
+      hint: The tool that administers /etc/group has an option to delete one member from one group.
+      correctAnswerInfo: gpasswd -d developer docker works on every distribution; deluser developer docker is the Debian and
+        Ubuntu wrapper. Do not use usermod -G, which replaces the whole list of supplementary groups.
+      expectedAnswer: gpasswd -d developer docker
+      cel: answer.trim().matches('^(sudo\\s+)?(gpasswd\\s+(-d|--delete)\\s+developer\\s+docker|deluser\\s+developer\\s+docker)$')
+  - type: question
+    question:
+      questionType: single-line
+      header: '`developer` still has an SSH session open from before the change. Can that session still use the Docker daemon?
+        (yes/no)'
+      hint: When does a process get its list of supplementary groups?
+      correctAnswerInfo: Supplementary groups are set at login and inherited by every child process. Running sessions keep
+        the docker group until they end, so kill them (for example with pkill -u developer) if the access must stop now.
+      expectedAnswer: 'yes'
+      cel: answer.trim().lowerAscii() in ['yes', 'y']
+  - type: question
+    question:
+      questionType: command
+      header: Verify the change by listing the groups of `developer`.
+      hint: A short command that prints a user's UID, GID and groups.
+      command:
+        executable: id
+        positionals:
+        - index: 0
+          value: developer
+  - type: table
+    style: terminal
+    columns:
+    - OUTPUT
+    rows:
+    - - uid=1001(developer) gid=1001(developer) groups=1001(developer),27(sudo)
+  explanation:
+    elements:
+    - type: context
+      text: |
+        The `docker` group is a root-equivalent group. The Docker documentation says so explicitly: only trusted users
+        may be in it. Options to remove the risk:
+
+        | Action | Command |
+        |---|---|
+        | remove a member | `gpasswd -d <user> docker` (or `deluser <user> docker`) |
+        | check the members | `getent group docker`, `id <user>` |
+        | end sessions that still carry the group | `pkill -u <user>`, or log the user out |
+
+        A non-root user who must run containers is better served by rootless Docker or Podman.
+    - type: references
+      links:
+      - url: https://docs.docker.com/engine/security/#docker-daemon-attack-surface
+        text: 'Docker: Docker daemon attack surface'
+      - url: https://docs.docker.com/engine/install/linux-postinstall/
+        text: 'Docker: Linux post-installation steps (the docker group)'
+- title: The Socket Must Belong to root
+  category: Docker Daemon
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The task on `build-node`: the Docker socket `/var/run/docker.sock` must be **owned by user `root` and group
+      `root`**. Right now it looks like this:
+  - type: manifest
+    header: $ ls -l /var/run/docker.sock
+    content: |
+      srw-rw---- 1 developer docker 0 Nov 24 09:12 /var/run/docker.sock
+  - type: question
+    question:
+      questionType: command
+      header: Change the owner and group of the socket to root right away.
+      hint: One command sets user and group together with a colon.
+      correctAnswerInfo: This fixes the file that exists now. systemd creates the socket again with the settings of its socket
+        unit every time docker.socket starts, so the change is lost at the next restart or reboot.
+      command:
+        executable: chown
+        positionals:
+        - index: 0
+          oneOf:
+          - root:root
+          - root.root
+        - index: 1
+          oneOf:
+          - /var/run/docker.sock
+          - /run/docker.sock
+  - type: context
+    text: |
+      To make the fix permanent, look at the systemd unit that creates the socket, `/lib/systemd/system/docker.socket`:
+  - type: manifest
+    header: /lib/systemd/system/docker.socket
+    content: |
+      [Unit]
+      Description=Docker Socket for the API
+
+      [Socket]
+      ListenStream=/run/docker.sock
+      SocketMode=0660
+      SocketUser=developer
+      SocketGroup=docker
+
+      [Install]
+      WantedBy=sockets.target
+  - type: question
+    question:
+      questionType: multiline
+      header: Write the corrected [Socket] section. Keep the path and the mode.
+      hint: Two lines in this section set the owner of the socket file.
+      correctAnswerInfo: /var/run is a symlink to /run on current systems, so ListenStream=/run/docker.sock is the same file as
+        /var/run/docker.sock. With group root, only root can use the socket; members of the docker group lose access.
+      expectedAnswer: |
+        [Socket]
+        ListenStream=/run/docker.sock
+        SocketMode=0660
+        SocketUser=root
+        SocketGroup=root
+      cel:
+      - name: Section header
+        expression: answer.matches('(^|\\n)\\s*\\[Socket\\]\\s*(\\n|$)')
+        message: Start with the [Socket] section header
+      - name: Path kept
+        expression: answer.matches('(^|\\n)\\s*ListenStream\\s*=\\s*(/var)?/run/docker\\.sock\\s*(\\n|$)')
+        message: Keep ListenStream pointing to the Docker socket
+      - name: Mode kept
+        expression: answer.matches('(^|\\n)\\s*SocketMode\\s*=\\s*0?660\\s*(\\n|$)')
+        message: Keep SocketMode=0660
+      - name: Owner root
+        expression: answer.matches('(^|\\n)\\s*SocketUser\\s*=\\s*root\\s*(\\n|$)') && !answer.contains('developer')
+        message: The socket must be owned by user root
+      - name: Group root
+        expression: answer.matches('(^|\\n)\\s*SocketGroup\\s*=\\s*root\\s*(\\n|$)') && !answer.matches('SocketGroup\\s*=\\s*docker')
+        message: The socket's group must be root
+  - type: question
+    question:
+      questionType: sequence
+      header: Apply the unit change.
+      hint: systemd must first reread its unit files, then the socket unit must be recreated.
+      correctAnswerInfo: docker.service has Requires=docker.socket, so restarting the socket unit restarts the daemon too. Restarting
+        only docker.service would not recreate the socket file.
+      steps:
+      - questionType: command
+        header: Make systemd reread the changed unit file.
+        command:
+          executable: systemctl
+          subcommands:
+          - name: daemon-reload
+      - questionType: command
+        header: Restart the socket unit so that the socket file is created again.
+        command:
+          executable: systemctl
+          strictness: permissive
+          subcommands:
+          - name: restart
+        cel: positionals.exists(p, p == 'docker.socket') && positionals.all(p, p in ['docker.socket', 'docker', 'docker.service'])
+  - type: manifest
+    header: $ ls -l /var/run/docker.sock
+    content: |
+      srw-rw---- 1 root root 0 Nov 24 09:31 /var/run/docker.sock
+  explanation:
+    elements:
+    - type: context
+      text: |
+        The socket file is created by systemd from `docker.socket`, so its owner comes from `SocketUser=` and
+        `SocketGroup=`. A `chown` alone does not survive a restart.
+
+        Instead of editing the packaged file, you can write a drop-in with `systemctl edit docker.socket` (it runs the
+        daemon-reload for you):
+
+        ```
+        [Socket]
+        SocketUser=root
+        SocketGroup=root
+        ```
+
+        A package upgrade overwrites `/lib/systemd/system/docker.socket`. Drop-ins in `/etc/systemd/system/docker.socket.d/`
+        are kept.
+    - type: references
+      links:
+      - url: https://www.freedesktop.org/software/systemd/man/latest/systemd.socket.html
+        text: systemd.socket (SocketUser=, SocketGroup=, SocketMode=)
+      - url: https://docs.docker.com/engine/security/protect-access/
+        text: 'Docker: Protect the Docker daemon socket'
+- title: The Docker API on a TCP Port
+  category: Docker Daemon
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      A scan reports that `build-node` answers Docker API calls from the network. Find the listener first.
+  - type: question
+    question:
+      questionType: command
+      header: List the listening TCP sockets with numeric ports and the owning process.
+      hint: ss has one-letter flags for TCP, listening state, numeric output and processes.
+      command:
+        executable: ss
+        flags:
+        - name: tcp
+          short: t
+          required: true
+          boolean: true
+        - name: listening
+          short: l
+          required: true
+          boolean: true
+        - name: processes
+          short: p
+          required: true
+          boolean: true
+        - name: numeric
+          short: n
+          required: true
+          boolean: true
+  - type: table
+    style: terminal
+    columns:
+    - State
+    - Local Address:Port
+    - Process
+    rows:
+    - - LISTEN
+      - 0.0.0.0:22
+      - users:(("sshd",pid=801))
+    - - LISTEN
+      - 127.0.0.1:34867
+      - users:(("containerd",pid=702))
+    - - LISTEN
+      - 0.0.0.0:2375
+      - users:(("dockerd",pid=1342))
+  - type: question
+    question:
+      questionType: single-line
+      header: Port 2375 is the plain Docker API port. What does it lack compared with the TLS port 2376? (a few words)
+      hint: Who is allowed to connect, and can anyone read the traffic?
+      correctAnswerInfo: On 2375 there is no TLS and no client authentication. Anyone who can reach the port controls the
+        daemon, so it is remote root on the node.
+      expectedAnswer: TLS and authentication
+      cel: answer.lowerAscii().matches('tls|auth|encrypt|cert|plain')
+  - type: context
+    text: |
+      The daemon's command line comes from the systemd unit `/lib/systemd/system/docker.service`:
+  - type: manifest
+    header: /lib/systemd/system/docker.service (excerpt)
+    content: |
+      [Service]
+      Type=notify
+      ExecStart=/usr/bin/dockerd -H fd:// -H tcp://0.0.0.0:2375 --containerd=/run/containerd/containerd.sock
+      ExecReload=/bin/kill -s HUP $MAINPID
+  - type: question
+    question:
+      questionType: single-line
+      header: Write the corrected ExecStart line, so that dockerd listens only on the socket that systemd hands to it.
+      hint: Remove one option and keep everything else.
+      correctAnswerInfo: -H fd:// tells dockerd to use the socket that systemd passes in from docker.socket. Without the tcp
+        listener the API is reachable only through that local socket.
+      expectedAnswer: ExecStart=/usr/bin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock
+      cel:
+      - name: ExecStart line
+        expression: answer.trim().matches('^ExecStart\\s*=\\s*/usr/bin/dockerd(\\s|$)')
+        message: Write the full ExecStart= line starting dockerd
+      - name: Socket from systemd
+        expression: answer.matches('(-H|--host)(\\s+|=)fd://')
+        message: Keep the listener on the socket from systemd (fd://)
+      - name: containerd kept
+        expression: answer.contains('--containerd=/run/containerd/containerd.sock')
+        message: Keep the --containerd option unchanged
+      - name: No TCP listener
+        expression: '!answer.contains(''tcp://'') && !answer.contains(''2375'')'
+        message: The daemon must not listen on TCP
+  - type: question
+    question:
+      questionType: sequence
+      header: Apply the change.
+      hint: systemd must reread the unit, then the daemon must be restarted.
+      steps:
+      - questionType: command
+        header: Make systemd reread the changed unit file.
+        command:
+          executable: systemctl
+          subcommands:
+          - name: daemon-reload
+      - questionType: command
+        header: Restart the Docker daemon.
+        command:
+          executable: systemctl
+          subcommands:
+          - name: restart
+          positionals:
+          - index: 0
+            oneOf:
+            - docker
+            - docker.service
+  - type: question
+    question:
+      questionType: single-line
+      header: The same listener can also be configured in a JSON file of the Docker daemon. Give its full path.
+      hint: The daemon's configuration directory is below /etc.
+      correctAnswerInfo: 'Look for a "hosts" key in /etc/docker/daemon.json too. If both daemon.json and the command line set
+        hosts, dockerd refuses to start, so remove the setting from one place only after checking both.'
+      expectedAnswer: /etc/docker/daemon.json
+      cel: answer.trim() == '/etc/docker/daemon.json'
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Where a Docker TCP listener can hide, and how to check after the fix:
+
+        | Place | What to look for |
+        |---|---|
+        | `docker.service` (or a drop-in in `/etc/systemd/system/docker.service.d/`) | `-H tcp://...` in `ExecStart` |
+        | `/etc/docker/daemon.json` | `"hosts": ["tcp://..."]` |
+        | check | `ss -tlnp \| grep dockerd` shows nothing, `systemctl cat docker` shows the effective unit |
+
+        In a drop-in, clear the command first with an empty `ExecStart=` line, then set the new one.
+    - type: references
+      links:
+      - url: https://docs.docker.com/engine/daemon/remote-access/
+        text: 'Docker: Configure remote access for Docker daemon'
+      - url: https://docs.docker.com/engine/security/protect-access/
+        text: 'Docker: Protect the Docker daemon socket'
+- title: Automount Off, a Token Mounted by Hand
+  category: ServiceAccount Tokens
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The `metrics-agent` Pod in namespace `monitoring` uses the ServiceAccount `metrics-sa` and calls the Kubernetes API.
+      The requirements:
+
+      - The ServiceAccount must **not** automount API credentials into its Pods.
+      - The Pod still needs a token: mount it by hand with a **projected volume**, file `token`, valid for **one hour**,
+        in the directory `/var/run/secrets/tokens`. The mount must be **read-only**.
+  - type: question
+    question:
+      questionType: manifest
+      header: Write the ServiceAccount.
+      hint: One boolean field at the top level of the object.
+      manifestDefinitionId: serviceaccount-v1
+      initialContent: |
+        apiVersion: v1
+        kind: ServiceAccount
+        metadata:
+          name: metrics-sa
+          namespace: monitoring
+      expectedFields:
+      - path: metadata.name
+        expectedValue: metrics-sa
+      - path: metadata.namespace
+        expectedValue: monitoring
+      - path: automountServiceAccountToken
+        expectedValue: false
+  - type: manifest
+    header: Solution
+    content: |
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: metrics-sa
+        namespace: monitoring
+      automountServiceAccountToken: false
+  - type: question
+    question:
+      questionType: manifest
+      header: Write the Pod `metrics-agent` (image `registry.local/monitoring/agent:2.4`, container name `agent`) with the token
+        mounted as required.
+      hint: A volume type that projects several sources into one directory; one of its sources asks the API server for a
+        ServiceAccount token.
+      correctAnswerInfo: The kubelet requests the token through the TokenRequest API and refreshes the file before it expires
+        (after 80 percent of its lifetime, or 24 hours at most). The token is bound to the Pod and becomes invalid when the
+        Pod is deleted.
+      manifestDefinitionId: pod-v1
+      initialContent: |
+        apiVersion: v1
+        kind: Pod
+        metadata:
+          name: metrics-agent
+          namespace: monitoring
+        spec:
+          containers:
+          - name: agent
+            image: registry.local/monitoring/agent:2.4
+      expectedFields:
+      - path: metadata.name
+        expectedValue: metrics-agent
+      - path: metadata.namespace
+        expectedValue: monitoring
+      - path: spec.serviceAccountName
+        expectedValue: metrics-sa
+      - path: spec.containers.0.image
+        expectedValue: registry.local/monitoring/agent:2.4
+      cel:
+      - name: Projected token source
+        expression: has(manifest.spec.volumes) && manifest.spec.volumes.exists(v, has(v.projected) && has(v.projected.sources)
+          && v.projected.sources.exists(s, has(s.serviceAccountToken) && s.serviceAccountToken.path == 'token'))
+        message: A projected volume must contain a serviceAccountToken source with path token
+      - name: Valid for one hour
+        expression: manifest.spec.volumes.exists(v, has(v.projected) && v.projected.sources.exists(s, has(s.serviceAccountToken)
+          && has(s.serviceAccountToken.expirationSeconds) && s.serviceAccountToken.expirationSeconds == 3600))
+        message: The token must be valid for one hour
+      - name: Read-only mount
+        expression: has(manifest.spec.containers[0].volumeMounts) && manifest.spec.containers[0].volumeMounts.exists(m, m.mountPath
+          in ['/var/run/secrets/tokens', '/var/run/secrets/tokens/'] && has(m.readOnly) && m.readOnly == true && manifest.spec.volumes.exists(v,
+          v.name == m.name && has(v.projected)))
+        message: Mount the projected volume read-only at /var/run/secrets/tokens
+      - name: Automount not switched back on
+        expression: '!has(manifest.spec.automountServiceAccountToken) || manifest.spec.automountServiceAccountToken == false'
+        message: The Pod must not turn automounting back on
+  - type: manifest
+    header: Solution
+    content: |
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: metrics-agent
+        namespace: monitoring
+      spec:
+        serviceAccountName: metrics-sa
+        containers:
+        - name: agent
+          image: registry.local/monitoring/agent:2.4
+          volumeMounts:
+          - name: api-token
+            mountPath: /var/run/secrets/tokens
+            readOnly: true
+        volumes:
+        - name: api-token
+          projected:
+            sources:
+            - serviceAccountToken:
+                path: token
+                expirationSeconds: 3600
+  - type: question
+    question:
+      questionType: single-line
+      header: What is the smallest value the API server accepts for the token lifetime, in seconds?
+      hint: Ten minutes.
+      correctAnswerInfo: expirationSeconds must be at least 600 and defaults to 3600. An optional audience field restricts
+        which service accepts the token; it defaults to the API server.
+      expectedAnswer: '600'
+      cel: answer.trim() in ['600', '600s']
+  - type: question
+    question:
+      questionType: command
+      header: Prove that the automatic mount is gone. List the default token directory inside the Pod.
+      hint: The automatic mount lives under /var/run/secrets, in a directory named after kubernetes.io.
+      command:
+        executable: kubectl
+        strictness: permissive
+        subcommands:
+        - name: exec
+        positionals:
+        - index: 0
+          oneOf:
+          - metrics-agent
+          - pod/metrics-agent
+        flags:
+        - name: namespace
+          short: n
+          required: true
+          value: monitoring
+      cel:
+      - name: Lists the default token directory
+        expression: answer.matches('--\\s+ls(\\s+-[a-zA-Z]+)*\\s+/var/run/secrets/kubernetes\\.io/serviceaccount/?\\s*$')
+        message: 'Run ls on /var/run/secrets/kubernetes.io/serviceaccount after a double dash'
+  - type: table
+    style: terminal
+    columns:
+    - OUTPUT
+    rows:
+    - - 'ls: cannot access ''/var/run/secrets/kubernetes.io/serviceaccount'': No such file or directory'
+    - - 'command terminated with exit code 2'
+  explanation:
+    elements:
+    - type: context
+      text: |
+        The pattern: switch off the automatic credentials, then give the Pod exactly the token it needs.
+
+        | Field | Where | Effect |
+        |---|---|---|
+        | `automountServiceAccountToken: false` | ServiceAccount (default) or Pod spec (wins) | no token at `/var/run/secrets/kubernetes.io/serviceaccount` |
+        | `projected.sources[].serviceAccountToken` | Pod volume | token file with your `path`, `expirationSeconds`, `audience` |
+        | `readOnly: true` | volumeMount | the container cannot change the file |
+
+        The kubelet already mounts projected volumes read-only. Setting `readOnly: true` makes that explicit, and the task
+        asks for it. The automatic mount also projects `ca.crt` and `namespace`. Add a `configMap` source
+        (`kube-root-ca.crt`) and a `downwardAPI` source to the same volume if the client needs them.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/tasks/configure-pod-container/configure-service-account/#launch-a-pod-using-service-account-token-projection
+        text: Launch a Pod using service account token projection
+      - url: https://kubernetes.io/docs/concepts/storage/projected-volumes/#serviceaccounttoken
+        text: 'Projected Volumes: serviceAccountToken'
+- title: Why /dev/mem Is Dangerous
+  category: 'Falco: Device Access'
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      `/dev/mem` is a character device that maps the physical memory of the machine. A process that can read it can look for
+      keys and credentials of every other process on the node, and in the worst case write to kernel memory.
+  - type: question
+    question:
+      questionType: single-line
+      header: In a container started with default settings, is the device /dev/mem present? (yes/no)
+      hint: The runtime creates a short, fixed list of devices in a container's /dev.
+      correctAnswerInfo: A default container gets only null, zero, full, random, urandom, tty, the console and the pty devices.
+        Host devices are not there, and the device cgroup would refuse them anyway.
+      expectedAnswer: 'no'
+      cel: answer.trim().lowerAscii() in ['no', 'n']
+  - type: question
+    question:
+      questionType: single-line
+      header: Which container securityContext field, set to true, gives the container all host devices, /dev/mem included?
+      hint: The field that turns off almost every isolation feature at once.
+      correctAnswerInfo: A privileged container sees the host's /dev and is not limited by the device cgroup. A hostPath volume
+        of /dev is the other way in. Both are refused by the baseline Pod Security Standard.
+      expectedAnswer: privileged
+      cel: "answer.trim().lowerAscii() in ['privileged', 'securitycontext.privileged', 'privileged: true']"
+  explanation:
+    elements:
+    - type: context
+      text: |
+        A Pod that touches `/dev/mem` is either privileged or mounts the host's `/dev`. Both are worth an alert on their
+        own. Falco can watch the access itself, which the next scenario does.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/concepts/security/pod-security-standards/
+        text: Pod Security Standards (privileged containers, hostPath volumes)
+      - url: https://man7.org/linux/man-pages/man4/mem.4.html
+        text: mem(4)
+- title: A Falco Rule for /dev/mem
+  category: 'Falco: Device Access'
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      On `node01`, write a rule named `Container accesses dev mem` with these properties:
+
+      - it fires when a process **in a container opens `/dev/mem`**, for reading or for writing
+      - priority `CRITICAL`
+      - the alert text must contain the **container ID**, the **user name**, the **process name** and the **file name**
+
+      The rule must survive Falco package upgrades.
+  - type: question
+    question:
+      questionType: single-line
+      header: Which file do you put the rule in? Give the full path.
+      hint: The package overwrites one rules file on upgrade and leaves another one alone.
+      correctAnswerInfo: /etc/falco/falco_rules.yaml is replaced by package upgrades. /etc/falco/falco_rules.local.yaml and files
+        in /etc/falco/rules.d/ are loaded after it and kept.
+      expectedAnswer: /etc/falco/falco_rules.local.yaml
+      cel: answer.trim() == '/etc/falco/falco_rules.local.yaml' || answer.trim().matches('^/etc/falco/rules\\.d/[^/]+\\.ya?ml$')
+  - type: question
+    question:
+      questionType: multiline
+      header: Write the rule.
+      hint: Combine an open event, the container macro, and an exact match on the file name.
+      correctAnswerInfo: open_read and open_write are macros from the default rules. Opening /dev/mem with O_RDWR matches both.
+        Without an evt.type restriction in the condition, Falco warns that the rule is evaluated for every event.
+      expectedAnswer: |
+        - rule: Container accesses dev mem
+          desc: A process in a container opened the physical memory device
+          condition: (open_read or open_write) and container and fd.name = /dev/mem
+          output: Process accessed /dev/mem in a container (container_id=%container.id user=%user.name process=%proc.name file=%fd.name)
+          priority: CRITICAL
+      cel:
+      - name: Rule name
+        expression: answer.matches('(^|\\n)\\s*-\\s*rule:\\s*[\'"]?Container accesses dev mem[\'"]?\\s*($|\\n)')
+        message: The rule must be named Container accesses dev mem
+      - name: Description
+        expression: answer.matches('(^|\\n)\\s*desc:\\s*\\S')
+        message: Every rule needs a desc
+      - name: Priority
+        expression: answer.matches('(^|\\n)\\s*priority:\\s*[\'"]?(?i:CRITICAL)[\'"]?\\s*($|\\n|#)')
+        message: The priority must be CRITICAL
+      - name: Open event
+        expression: answer.split('condition:')[1].split('desc:')[0].split('output:')[0].split('priority:')[0].split('tags:')[0].matches('(^|[\\s(])(open_read|open_write)($|[\\s)])|evt\\.type\\s*(in\\s*\\([^)]*open[^)]*\\)|=\\s*open(at2?)?\\b)')
+        message: The condition must restrict the rule to open events
+      - name: In a container
+        expression: answer.split('condition:')[1].split('desc:')[0].split('output:')[0].split('priority:')[0].split('tags:')[0].matches('(^|[\\s(])container($|[\\s)])|container\\.id\\s*!=\\s*host')
+          && !answer.split('condition:')[1].split('desc:')[0].split('output:')[0].split('priority:')[0].split('tags:')[0].matches('(^|[\\s(])not\\s+container($|[\\s)])')
+        message: The condition must match processes in containers only
+      - name: The device
+        expression: answer.split('condition:')[1].split('desc:')[0].split('output:')[0].split('priority:')[0].split('tags:')[0].matches('fd\\.name\\s*(=|==)\\s*[\'"]?/dev/mem[\'"]?(\\s|$|\\))|fd\\.name\\s+in\\s*\\([^)]*/dev/mem')
+        message: The condition must match the file /dev/mem exactly
+      - name: Output fields
+        expression: answer.split('output:')[1].split('desc:')[0].split('condition:')[0].split('priority:')[0].split('tags:')[0].matches('%container\\.id\\b')
+          && answer.split('output:')[1].split('desc:')[0].split('condition:')[0].split('priority:')[0].split('tags:')[0].matches('%user\\.name\\b')
+          && answer.split('output:')[1].split('desc:')[0].split('condition:')[0].split('priority:')[0].split('tags:')[0].matches('%proc\\.name\\b')
+          && answer.split('output:')[1].split('desc:')[0].split('condition:')[0].split('priority:')[0].split('tags:')[0].matches('%fd\\.name\\b')
+        message: The output must contain the container ID, user name, process name and file name
+  - type: question
+    question:
+      questionType: command
+      header: Restart Falco on node01 so that it loads the new rule.
+      hint: The service name encodes the driver.
+      command:
+        executable: systemctl
+        subcommands:
+        - name: restart
+        positionals:
+        - index: 0
+          oneOf:
+          - falco-modern-bpf
+          - falco-modern-bpf.service
+  explanation:
+    elements:
+    - type: context
+      text: |
+        Ways to write the condition, all accepted:
+
+        | Part | Forms |
+        |---|---|
+        | open event | `(open_read or open_write)`, `evt.type in (open, openat, openat2)` |
+        | in a container | `container` (macro: `container.id != host`) |
+        | the device | `fd.name = /dev/mem`, or `fd.name in (/dev/mem, /dev/kmem, /dev/port)` for the whole family |
+
+        Check the syntax before the restart with `falco --dry-run` (or `falco -V <file>` on older versions). A broken rules
+        file stops the service.
+    - type: references
+      links:
+      - url: https://falco.org/docs/concepts/rules/basic-elements/
+        text: 'Falco: Basic elements of rules'
+      - url: https://falco.org/docs/concepts/rules/conditions/
+        text: 'Falco: Condition syntax'
+- title: From the /dev/mem Alert to the Deployment
+  category: 'Falco: Device Access'
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The new rule fired on `node01`. On this node the container plugin is configured **not** to append Pod fields to the
+      alerts, so you only have what the rule prints.
+  - type: manifest
+    header: $ journalctl -u falco-modern-bpf | grep /dev/mem
+    content: |
+      Nov 24 10:41:07 node01 falco[1893]: 10:41:07.112408775: Critical Process accessed /dev/mem in a container (container_id=4f9c2d81e6ab user=root process=dd file=/dev/mem)
+  - type: question
+    question:
+      questionType: command
+      header: Find the container with that ID on node01, using the container runtime's CLI.
+      hint: The CLI's list command can filter on a container ID.
+      command:
+        executable: crictl
+        subcommands:
+        - name: ps
+        flags:
+        - name: id
+          required: true
+          regex: ^4f9c2d81e6a[0-9a-f]*$
+        - name: all
+          short: a
+          boolean: true
+  - type: manifest
+    header: $ crictl ps --id 4f9c2d81e6ab
+    content: |
+      CONTAINER           IMAGE               CREATED             STATE               NAME                ATTEMPT             POD ID              POD                             NAMESPACE
+      4f9c2d81e6ab1       9be1c3a07f442       2 hours ago         Running             probe               0                   b72e0c4d19a85       kernel-probe-7b9d6f5c84-q2zxm   ops
+  - type: question
+    question:
+      questionType: single-line
+      header: The Pod name follows the pattern of a Deployment. Which Deployment owns it?
+      hint: A Deployment's Pods are named after the Deployment, plus the ReplicaSet hash and a random suffix.
+      correctAnswerInfo: Confirm it before you act. The Pod's ownerReferences name the ReplicaSet kernel-probe-7b9d6f5c84, and
+        that ReplicaSet's ownerReferences name the Deployment.
+      expectedAnswer: kernel-probe
+      cel: answer.trim() in ['kernel-probe', 'deployment/kernel-probe', 'deploy/kernel-probe']
+  - type: question
+    question:
+      questionType: command
+      header: Stop the workload without deleting anything. Scale the Deployment to zero replicas.
+      hint: Deleting the Pod would not help; the ReplicaSet would create a new one.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: scale
+        positionals:
+        - index: 0
+          oneOf:
+          - deployment/kernel-probe
+          - deploy/kernel-probe
+          - deployments/kernel-probe
+          - deployment.apps/kernel-probe
+        flags:
+        - name: namespace
+          short: n
+          required: true
+          value: ops
+        - name: replicas
+          required: true
+          value: '0'
+  - type: manifest
+    header: Output
+    content: |
+      deployment.apps/kernel-probe scaled
+  explanation:
+    elements:
+    - type: context
+      text: |
+        The investigation chain when an alert gives only a container ID:
+
+        1. `crictl ps --id <id>` (or `crictl inspect <id>`) names the Pod and its namespace.
+        2. The Pod's `ownerReferences` lead to the ReplicaSet and from there to the Deployment.
+        3. Contain the workload as the task says: scale to 0 keeps the object for the forensics team, unlike delete.
+
+        Some tasks give the two positionals separately: `kubectl scale deployment kernel-probe --replicas=0 -n ops` is the
+        same command. Afterwards, look at what made the access possible (`privileged: true` or a hostPath `/dev`).
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/reference/kubectl/generated/kubectl_scale/
+        text: kubectl scale
+      - url: https://kubernetes.io/docs/tasks/debug/debug-cluster/crictl/
+        text: Debugging Kubernetes nodes with crictl
+- title: Mutual Authentication for Pods, Plain Access for the Host
+  category: 'Cilium: Mutual Authentication'
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The Pods of Deployment `backend` in namespace `api` carry the label `app=backend`. Write the CiliumNetworkPolicy
+      `backend-ingress` in namespace `api` for them:
+
+      - Pods in namespace **`frontend`** may connect, but only after **mutual authentication**.
+      - The **node itself** (the host the Pods run on) may connect **without** mutual authentication, for example for health
+        checks.
+      - Nothing else may connect.
+  - type: question
+    question:
+      questionType: single-line
+      header: Which Cilium entity stands for the local node the Pod runs on?
+      hint: The other nodes of the cluster are a different entity.
+      correctAnswerInfo: host is the local node, remote-node is any other node of the cluster, cluster is everything inside
+        the cluster, and world is everything outside it.
+      expectedAnswer: host
+      cel: answer.trim().lowerAscii() == 'host'
+  - type: question
+    question:
+      questionType: manifest
+      header: Write the policy.
+      hint: Two ingress rules. Only one of them carries an authentication block.
+      correctAnswerInfo: The authentication requirement belongs to a rule, not to the policy. Put the namespace peers and the
+        host into separate rules so that only the Pod traffic has to pass the handshake.
+      manifestDefinitionId: cnp-v2
+      initialContent: |
+        apiVersion: cilium.io/v2
+        kind: CiliumNetworkPolicy
+        metadata:
+          name: backend-ingress
+          namespace: api
+        spec:
+      expectedFields:
+      - path: metadata.name
+        expectedValue: backend-ingress
+      - path: metadata.namespace
+        expectedValue: api
+      - path: spec.endpointSelector.matchLabels.app
+        expectedValue: backend
+      cel:
+      - name: Authenticated rule for the frontend namespace
+        expression: has(manifest.spec.ingress) && manifest.spec.ingress.exists(r, has(r.fromEndpoints) && r.fromEndpoints.exists(e,
+          has(e.matchLabels) && (('k8s:io.kubernetes.pod.namespace' in e.matchLabels && e.matchLabels['k8s:io.kubernetes.pod.namespace']
+          == 'frontend') || ('io.kubernetes.pod.namespace' in e.matchLabels && e.matchLabels['io.kubernetes.pod.namespace'] ==
+          'frontend'))) && has(r.authentication) && r.authentication.mode == 'required')
+        message: One ingress rule must allow the Pods of namespace frontend and require mutual authentication
+      - name: Pod peers always authenticated
+        expression: manifest.spec.ingress.all(r, !has(r.fromEndpoints) || (has(r.authentication) && r.authentication.mode ==
+          'required'))
+        message: Every rule that allows Pods must require mutual authentication
+      - name: Host without authentication
+        expression: manifest.spec.ingress.exists(r, has(r.fromEntities) && 'host' in r.fromEntities && !has(r.fromEndpoints)
+          && (!has(r.authentication) || r.authentication.mode == 'disabled'))
+        message: A separate rule must allow the host entity without mutual authentication
+      - name: No other entities
+        expression: manifest.spec.ingress.all(r, !has(r.fromEntities) || r.fromEntities.all(x, x == 'host'))
+        message: Only the host entity may be allowed
+  - type: manifest
+    header: Solution
+    content: |
+      apiVersion: cilium.io/v2
+      kind: CiliumNetworkPolicy
+      metadata:
+        name: backend-ingress
+        namespace: api
+      spec:
+        endpointSelector:
+          matchLabels:
+            app: backend
+        ingress:
+        - fromEndpoints:
+          - matchLabels:
+              k8s:io.kubernetes.pod.namespace: frontend
+          authentication:
+            mode: required
+        - fromEntities:
+          - host
+  - type: question
+    question:
+      questionType: single-line
+      header: 'A colleague puts `fromEntities: [host]` into the same rule as the frontend Pods. Does the host then need to authenticate
+        too? (yes/no)'
+      hint: Which parts of a rule does its authentication block apply to?
+      correctAnswerInfo: The authentication mode applies to every peer the rule allows. A host in the same rule is held to
+        the same requirement, which is why it gets a rule of its own.
+      expectedAnswer: 'yes'
+      cel: answer.trim().lowerAscii() in ['yes', 'y']
+  explanation:
+    elements:
+    - type: context
+      text: |
+        A CiliumNetworkPolicy that selects Pods puts them in default-deny for that direction. Each rule then opens one path:
+
+        | Rule | Peers | Authentication |
+        |---|---|---|
+        | 1 | `fromEndpoints` with `k8s:io.kubernetes.pod.namespace: frontend` | `mode: required` |
+        | 2 | `fromEntities: [host]` | none |
+
+        Without a `podSelector`-style label next to the namespace label, the first rule matches every Pod of `frontend`.
+        Mutual authentication only works when Cilium runs with `authentication.mutual.spire.enabled=true`. The handshake
+        proves identity but does not encrypt; combine it with WireGuard or IPsec for confidentiality.
+    - type: references
+      links:
+      - url: https://docs.cilium.io/en/stable/network/servicemesh/mutual-authentication/mutual-authentication/
+        text: 'Cilium: Mutual Authentication'
+      - url: https://docs.cilium.io/en/stable/security/policy/language/#entities-based
+        text: 'Cilium: Entities-based policies'
+- title: USER nobody in the Image
+  category: Image and Pod User
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      The image of the `server` application still runs as root. Fix the Dockerfile so that the process runs as the
+      unprivileged user **`nobody`**. Do not add or remove any other instruction.
+  - type: question
+    question:
+      questionType: dockerfile
+      header: Fix the Dockerfile.
+      hint: One existing instruction is the problem.
+      correctAnswerInfo: The nobody account exists in Alpine and Debian base images, so the name resolves at run time. Kubernetes
+        cannot check a user name against runAsNonRoot; the Deployment in the next scenario sets a numeric ID for that reason.
+      initialContent: |
+        FROM alpine:3.20
+        RUN apk add --no-cache ca-certificates
+        COPY server /usr/local/bin/server
+        USER root
+        ENTRYPOINT ["/usr/local/bin/server"]
+      expected:
+      - from:
+          image: alpine
+          tag: '3.20'
+        instructions:
+        - instruction: RUN
+        - instruction: COPY
+        - instruction: USER
+          args:
+          - nobody
+        - instruction: ENTRYPOINT
+      exactStages: true
+      cel:
+      - name: Runs as nobody
+        expression: dockerfile.stages[0].instructions.filter(i, i.name == 'USER').size() > 0 && dockerfile.stages[0].instructions.filter(i,
+          i.name == 'USER')[dockerfile.stages[0].instructions.filter(i, i.name == 'USER').size() - 1].args[0] == 'nobody'
+        message: The last USER instruction must switch to nobody
+      - name: No root left
+        expression: '!dockerfile.stages[0].instructions.exists(i, i.name == ''USER'' && i.args[0].split('':'')[0] in [''root'',
+          ''0''])'
+        message: Replace USER root instead of adding a second USER line
+      - name: Same number of instructions
+        expression: dockerfile.stages[0].instructions.size() == 4
+        message: Change the existing line; do not add or remove instructions
+  - type: manifest
+    header: Solution
+    content: |
+      FROM alpine:3.20
+      RUN apk add --no-cache ca-certificates
+      COPY server /usr/local/bin/server
+      USER nobody
+      ENTRYPOINT ["/usr/local/bin/server"]
+  - type: question
+    question:
+      questionType: single-line
+      header: Which numeric UID does nobody have in Alpine and Debian images?
+      hint: Two below the 16-bit maximum.
+      expectedAnswer: '65534'
+      cel: answer.trim() == '65534'
+  explanation:
+    elements:
+    - type: context
+      text: |
+        `USER` sets the default user for all following `RUN` instructions and for the container's process. Put it after the
+        steps that need root (package installation) and before `ENTRYPOINT`/`CMD`. A numeric `USER 65534` is the more
+        robust form, because it does not depend on `/etc/passwd`.
+    - type: references
+      links:
+      - url: https://docs.docker.com/reference/dockerfile/#user
+        text: 'Dockerfile reference: USER'
+      - url: https://docs.docker.com/build/building/best-practices/#user
+        text: 'Docker: Building best practices (USER)'
+- title: The Deployment Overrides the Image
+  category: Image and Pod User
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Deployment `server` in namespace `web` (1 replica, label `app=server`, image `registry.local/web/server:2.1`, container
+      `server`) must run with:
+
+      - user ID **65535**
+      - an **immutable** root filesystem
+      - **no privileged mode**
+
+      The application writes nothing but logs to stdout.
+  - type: question
+    question:
+      questionType: manifest
+      header: Write the Deployment.
+      hint: Three fields of the container's securityContext.
+      correctAnswerInfo: privileged false is the default, but a task that asks for it is checked for the explicit field. An
+        application that needs scratch space keeps working with readOnlyRootFilesystem if you mount an emptyDir at its
+        write path.
+      manifestDefinitionId: deployment-v1
+      initialContent: |
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: server
+          namespace: web
+        spec:
+          replicas: 1
+          selector:
+            matchLabels:
+              app: server
+          template:
+            metadata:
+              labels:
+                app: server
+            spec:
+              containers:
+              - name: server
+                image: registry.local/web/server:2.1
+      expectedFields:
+      - path: metadata.name
+        expectedValue: server
+      - path: metadata.namespace
+        expectedValue: web
+      - path: spec.template.spec.containers.0.image
+        expectedValue: registry.local/web/server:2.1
+      cel:
+      - name: User 65535
+        expression: manifest.spec.template.spec.containers.all(c, (has(c.securityContext) && has(c.securityContext.runAsUser)
+          && c.securityContext.runAsUser == 65535) || (!(has(c.securityContext) && has(c.securityContext.runAsUser)) && has(manifest.spec.template.spec.securityContext)
+          && has(manifest.spec.template.spec.securityContext.runAsUser) && manifest.spec.template.spec.securityContext.runAsUser
+          == 65535))
+        message: The container must run as user 65535
+      - name: Read-only root filesystem
+        expression: manifest.spec.template.spec.containers.all(c, has(c.securityContext) && has(c.securityContext.readOnlyRootFilesystem)
+          && c.securityContext.readOnlyRootFilesystem == true)
+        message: The root filesystem must be read-only
+      - name: Not privileged
+        expression: manifest.spec.template.spec.containers.all(c, has(c.securityContext) && has(c.securityContext.privileged)
+          && c.securityContext.privileged == false)
+        message: Set privileged to false explicitly
+      - name: Selector matches labels
+        expression: manifest.spec.selector.matchLabels.app == 'server' && manifest.spec.template.metadata.labels.app == 'server'
+        message: The selector must match the Pod template labels
+  - type: manifest
+    header: Solution
+    content: |
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: server
+        namespace: web
+      spec:
+        replicas: 1
+        selector:
+          matchLabels:
+            app: server
+        template:
+          metadata:
+            labels:
+              app: server
+          spec:
+            containers:
+            - name: server
+              image: registry.local/web/server:2.1
+              securityContext:
+                runAsUser: 65535
+                readOnlyRootFilesystem: true
+                privileged: false
+  - type: question
+    question:
+      questionType: single-line
+      header: The image says USER nobody (65534) and the Pod says runAsUser 65535. With which UID does the process run?
+      hint: Which of the two does the kubelet pass to the runtime last?
+      correctAnswerInfo: runAsUser overrides the image's USER. The image default is used only when the Pod sets nothing.
+      expectedAnswer: '65535'
+      cel: answer.trim() == '65535'
+  - type: question
+    question:
+      questionType: single-line
+      header: 'Does `privileged: false` on its own stop the process from running as root? (yes/no)'
+      hint: Privileged mode and the user ID are separate settings.
+      correctAnswerInfo: 'privileged: false only keeps the default isolation (devices, capabilities bounding set). The user
+        comes from runAsUser or the image; runAsNonRoot is the field that refuses root.'
+      expectedAnswer: 'no'
+      cel: answer.trim().lowerAscii() in ['no', 'n']
+  explanation:
+    elements:
+    - type: context
+      text: |
+        | Field | Level | Effect |
+        |---|---|---|
+        | `runAsUser` | Pod or container (container wins) | UID of the process, overrides the image `USER` |
+        | `readOnlyRootFilesystem` | container only | the image layers cannot be changed at runtime |
+        | `privileged` | container only | `false` keeps devices and capabilities restricted |
+        | `allowPrivilegeEscalation` | container only | `false` blocks setuid binaries from gaining privileges |
+
+        Check the result with `kubectl exec deploy/server -n web -- id` (if the image has `id`) or with
+        `kubectl get pod -o jsonpath='{..securityContext}'`.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/tasks/configure-pod-container/security-context/
+        text: Configure a Security Context for a Pod or Container
+- title: Which Image Ships libcrypto3?
+  category: SBOM
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |
+      Deployment `alpine` in namespace `alpine` runs three containers. Security wants the container whose image contains
+      **`libcrypto3` version `3.1.4-r5`** removed from the Deployment. The other two must stay. SBOMs in SPDX tag-value
+      format are kept in `/root/sboms/`.
+  - type: question
+    question:
+      questionType: command
+      header: Print the name and image of every container in the Deployment's Pod template, one per line.
+      hint: A JSONPath range over the containers of the template.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: get
+        - name: deployment
+          aliases:
+          - deployments
+          - deploy
+        positionals:
+        - index: 0
+          value: alpine
+        flags:
+        - name: namespace
+          short: n
+          required: true
+          value: alpine
+        - name: output
+          short: o
+          required: true
+          regex: ^jsonpath.*range.*containers.*name.*image
+  - type: table
+    style: terminal
+    columns:
+    - NAME
+    - IMAGE
+    rows:
+    - - alpine-a
+      - registry.local/alpine:3.20.0
+    - - alpine-b
+      - registry.local/alpine:3.19.1
+    - - alpine-c
+      - registry.local/alpine:3.16.9
+  - type: manifest
+    header: $ ls /root/sboms
+    content: |
+      alpine-3.16.9.spdx  alpine-3.20.0.spdx
+  - type: question
+    question:
+      questionType: command
+      header: One SBOM is missing. Generate it with bom in SPDX tag-value format as /root/sboms/alpine-3.19.1.spdx.
+      hint: bom generate takes the image as a flag. Set the format explicitly, because the default changed between versions.
+      correctAnswerInfo: Since bom v0.8.0 the default format is JSON. Without --format you would get JSON in a file named
+        .spdx, which grep for tag-value fields would not match.
+      command:
+        executable: bom
+        strictness: permissive
+        subcommands:
+        - name: generate
+        flags:
+        - name: image
+          short: i
+          required: true
+          value: registry.local/alpine:3.19.1
+        - name: format
+          required: true
+          value: tag-value
+        - name: output
+          short: o
+          required: true
+          value: /root/sboms/alpine-3.19.1.spdx
+  - type: question
+    question:
+      questionType: command
+      header: Search all SBOMs in /root/sboms for the libcrypto3 package and show the two lines after each match, so that the
+        version is visible.
+      hint: grep with trailing context, over every file of the directory.
+      command:
+        executable: grep
+        strictness: permissive
+      cel:
+      - name: Shows lines after the match
+        expression: answer.matches('(^|\\s)(-[a-zA-Z]*A\\s*[2-9]|--after-context(=|\\s+)[2-9]|-[a-zA-Z]*C\\s*[2-9]|--context(=|\\s+)[2-9])(\\s|$)')
+        message: Show at least two lines of context after each match
+      - name: Searches for the package
+        expression: positionals.exists(p, p.contains('libcrypto3'))
+        message: Search for libcrypto3
+      - name: In the SBOM directory
+        expression: positionals.exists(p, p.startsWith('/root/sboms'))
+        message: Search the files in /root/sboms
+  - type: manifest
+    header: Output
+    content: |
+      /root/sboms/alpine-3.19.1.spdx:PackageName: libcrypto3
+      /root/sboms/alpine-3.19.1.spdx-SPDXID: SPDXRef-Package-sha256-6457d53f-libcrypto3-a1c7e3f2
+      /root/sboms/alpine-3.19.1.spdx-PackageVersion: 3.1.4-r5
+      --
+      /root/sboms/alpine-3.20.0.spdx:PackageName: libcrypto3
+      /root/sboms/alpine-3.20.0.spdx-SPDXID: SPDXRef-Package-sha256-1d34ffeb-libcrypto3-5be09e71
+      /root/sboms/alpine-3.20.0.spdx-PackageVersion: 3.3.0-r2
+  - type: question
+    question:
+      questionType: single-line
+      header: Which container must be removed?
+      hint: Match the version, then map the image back to the container name.
+      correctAnswerInfo: alpine-3.16.9 does not contain libcrypto3 at all (Alpine 3.16 ships OpenSSL 1.1 as libcrypto1.1),
+        and alpine-3.20.0 has a different version. Read the version, not only the package name.
+      expectedAnswer: alpine-b
+      cel: answer.trim() == 'alpine-b'
+  - type: question
+    question:
+      questionType: manifest
+      header: Write the Deployment `alpine` without that container. Keep everything else as it is.
+      hint: Delete one entry of the containers list.
+      correctAnswerInfo: With kubectl edit deployment alpine -n alpine the change starts a rollout at once. Removing a container
+        from a running Pod is impossible; the Deployment replaces the Pods.
+      manifestDefinitionId: deployment-v1
+      initialContent: |
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: alpine
+          namespace: alpine
+        spec:
+          replicas: 1
+          selector:
+            matchLabels:
+              app: alpine
+          template:
+            metadata:
+              labels:
+                app: alpine
+            spec:
+              containers:
+              - name: alpine-a
+                image: registry.local/alpine:3.20.0
+                command: ["sleep", "infinity"]
+              - name: alpine-b
+                image: registry.local/alpine:3.19.1
+                command: ["sleep", "infinity"]
+              - name: alpine-c
+                image: registry.local/alpine:3.16.9
+                command: ["sleep", "infinity"]
+      expectedFields:
+      - path: metadata.name
+        expectedValue: alpine
+      - path: metadata.namespace
+        expectedValue: alpine
+      cel:
+      - name: Two containers left
+        expression: size(manifest.spec.template.spec.containers) == 2
+        message: Exactly two containers must remain
+      - name: The right one removed
+        expression: '!manifest.spec.template.spec.containers.exists(c, c.name == ''alpine-b'' || c.image == ''registry.local/alpine:3.19.1'')'
+        message: Remove the container whose image has libcrypto3 3.1.4-r5
+      - name: The others kept
+        expression: manifest.spec.template.spec.containers.exists(c, c.name == 'alpine-a' && c.image == 'registry.local/alpine:3.20.0')
+          && manifest.spec.template.spec.containers.exists(c, c.name == 'alpine-c' && c.image == 'registry.local/alpine:3.16.9')
+        message: Keep alpine-a and alpine-c unchanged
+  - type: manifest
+    header: Solution
+    content: |
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: alpine
+        namespace: alpine
+      spec:
+        replicas: 1
+        selector:
+          matchLabels:
+            app: alpine
+        template:
+          metadata:
+            labels:
+              app: alpine
+          spec:
+            containers:
+            - name: alpine-a
+              image: registry.local/alpine:3.20.0
+              command: ["sleep", "infinity"]
+            - name: alpine-c
+              image: registry.local/alpine:3.16.9
+              command: ["sleep", "infinity"]
+  - type: question
+    question:
+      questionType: command
+      header: The ticket also asks for the evidence. Write the SPDX document of the removed image to /root/alpine.spdx with
+        bom, in tag-value format.
+      hint: Same command as before, different output file.
+      command:
+        executable: bom
+        strictness: permissive
+        subcommands:
+        - name: generate
+        flags:
+        - name: image
+          short: i
+          required: true
+          value: registry.local/alpine:3.19.1
+        - name: format
+          required: true
+          value: tag-value
+        - name: output
+          short: o
+          required: true
+          value: /root/alpine.spdx
+  explanation:
+    elements:
+    - type: context
+      text: |
+        The full chain of the task:
+
+        1. List containers and images of the Deployment (`kubectl get deploy -o jsonpath=...`).
+        2. Get an SBOM per image (`bom generate --image ... --format tag-value --output ...`) or reuse existing ones.
+        3. Search the SBOMs for the package and **read the version** (`grep -A2 libcrypto3`).
+        4. Edit the Deployment and remove exactly one entry of `containers`.
+        5. Write the requested evidence file.
+
+        Without SBOMs at hand, `kubectl exec ... -c <container> -- apk info -v` lists the packages of an Alpine container.
+        `trivy image --list-all-pkgs` works too.
+    - type: references
+      links:
+      - url: https://github.com/kubernetes-sigs/bom
+        text: kubernetes-sigs/bom
+      - url: https://spdx.github.io/spdx-spec/v2.3/package-information/
+        text: 'SPDX 2.3: Package information'
