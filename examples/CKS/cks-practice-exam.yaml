@@ -1,0 +1,2557 @@
+apiVersion: v1alpha1
+name: CKS Practice Exam
+k8sVersion: 1.34.0
+timing:
+  enabled: true
+  limitSeconds: 7200
+manifestDefinitions:
+- id: pod-v1
+  kind: Pod
+  apiVersion: v1
+  autoLoad: true
+- id: deployment-v1
+  kind: Deployment
+  apiVersion: apps/v1
+  autoLoad: true
+- id: networkpolicy-v1
+  kind: NetworkPolicy
+  apiVersion: networking.k8s.io/v1
+  autoLoad: true
+- id: ingress-v1
+  kind: Ingress
+  apiVersion: networking.k8s.io/v1
+  autoLoad: true
+- id: serviceaccount-v1
+  kind: ServiceAccount
+  apiVersion: v1
+  autoLoad: true
+- id: kubelet-config
+  kind: KubeletConfiguration
+  apiVersion: kubelet.config.k8s.io/v1beta1
+  schema:
+    type: object
+    additionalProperties: true
+    properties:
+      apiVersion:
+        type: string
+      kind:
+        type: string
+      authentication:
+        type: object
+        additionalProperties: false
+        properties:
+          anonymous:
+            type: object
+            additionalProperties: false
+            properties:
+              enabled:
+                type: boolean
+          webhook:
+            type: object
+            additionalProperties: false
+            properties:
+              enabled:
+                type: boolean
+              cacheTTL:
+                type: string
+          x509:
+            type: object
+            additionalProperties: false
+            properties:
+              clientCAFile:
+                type: string
+      authorization:
+        type: object
+        additionalProperties: false
+        properties:
+          mode:
+            type: string
+            enum:
+            - AlwaysAllow
+            - Webhook
+          webhook:
+            type: object
+            additionalProperties: false
+            properties:
+              cacheAuthorizedTTL:
+                type: string
+              cacheUnauthorizedTTL:
+                type: string
+      readOnlyPort:
+        type: integer
+      protectKernelDefaults:
+        type: boolean
+    required:
+    - apiVersion
+    - kind
+- id: audit-policy-v1
+  kind: Policy
+  apiVersion: audit.k8s.io/v1
+  schema:
+    type: object
+    required:
+    - apiVersion
+    - kind
+    - rules
+    additionalProperties: false
+    properties:
+      apiVersion:
+        type: string
+      kind:
+        type: string
+      metadata:
+        type: object
+      omitStages:
+        type: array
+        items:
+          enum:
+          - RequestReceived
+          - ResponseStarted
+          - ResponseComplete
+          - Panic
+      omitManagedFields:
+        type: boolean
+      rules:
+        type: array
+        minItems: 1
+        items:
+          type: object
+          required:
+          - level
+          additionalProperties: false
+          properties:
+            level:
+              enum:
+              - None
+              - Metadata
+              - Request
+              - RequestResponse
+            users:
+              type: array
+              items:
+                type: string
+            userGroups:
+              type: array
+              items:
+                type: string
+            verbs:
+              type: array
+              items:
+                type: string
+            namespaces:
+              type: array
+              items:
+                type: string
+            nonResourceURLs:
+              type: array
+              items:
+                type: string
+            resources:
+              type: array
+              items:
+                type: object
+                additionalProperties: false
+                properties:
+                  group:
+                    type: string
+                  resources:
+                    type: array
+                    items:
+                      type: string
+                  resourceNames:
+                    type: array
+                    items:
+                      type: string
+            omitStages:
+              type: array
+              items:
+                enum:
+                - RequestReceived
+                - ResponseStarted
+                - ResponseComplete
+                - Panic
+            omitManagedFields:
+              type: boolean
+- id: cnp-v2
+  kind: CiliumNetworkPolicy
+  apiVersion: cilium.io/v2
+  schema:
+    type: object
+    required:
+    - apiVersion
+    - kind
+    - metadata
+    - spec
+    additionalProperties: false
+    properties:
+      apiVersion:
+        type: string
+      kind:
+        type: string
+      metadata:
+        type: object
+      spec:
+        type: object
+        additionalProperties: false
+        properties:
+          description:
+            type: string
+          endpointSelector:
+            type: object
+            additionalProperties: false
+            properties:
+              matchLabels:
+                type: object
+                additionalProperties:
+                  type: string
+              matchExpressions:
+                type: array
+                items:
+                  type: object
+          enableDefaultDeny:
+            type: object
+            additionalProperties: false
+            properties:
+              ingress:
+                type: boolean
+              egress:
+                type: boolean
+          ingress:
+            type: array
+            items:
+              type: object
+              additionalProperties: false
+              properties:
+                description:
+                  type: string
+                toPorts:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: false
+                    properties:
+                      ports:
+                        type: array
+                        items:
+                          type: object
+                          additionalProperties: false
+                          required:
+                          - port
+                          properties:
+                            port:
+                              type: string
+                            endPort:
+                              type: integer
+                            protocol:
+                              type: string
+                              enum:
+                              - TCP
+                              - UDP
+                              - SCTP
+                              - ANY
+                      rules:
+                        type: object
+                fromEndpoints:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: false
+                    properties:
+                      matchLabels:
+                        type: object
+                        additionalProperties:
+                          type: string
+                      matchExpressions:
+                        type: array
+                        items:
+                          type: object
+                fromEntities:
+                  type: array
+                  items:
+                    type: string
+                    enum:
+                    - all
+                    - world
+                    - cluster
+                    - host
+                    - remote-node
+                    - kube-apiserver
+                    - ingress
+                    - init
+                    - health
+                    - unmanaged
+                fromCIDR:
+                  type: array
+                  items:
+                    type: string
+                authentication:
+                  type: object
+                  additionalProperties: false
+                  properties:
+                    mode:
+                      type: string
+                      enum:
+                      - disabled
+                      - required
+                      - test-always-fail
+          ingressDeny:
+            type: array
+            items:
+              type: object
+              additionalProperties: false
+              properties:
+                description:
+                  type: string
+                toPorts:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: false
+                    properties:
+                      ports:
+                        type: array
+                        items:
+                          type: object
+                          additionalProperties: false
+                          required:
+                          - port
+                          properties:
+                            port:
+                              type: string
+                            endPort:
+                              type: integer
+                            protocol:
+                              type: string
+                              enum:
+                              - TCP
+                              - UDP
+                              - SCTP
+                              - ANY
+                      rules:
+                        type: object
+                fromEndpoints:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: false
+                    properties:
+                      matchLabels:
+                        type: object
+                        additionalProperties:
+                          type: string
+                      matchExpressions:
+                        type: array
+                        items:
+                          type: object
+                fromEntities:
+                  type: array
+                  items:
+                    type: string
+                    enum:
+                    - all
+                    - world
+                    - cluster
+                    - host
+                    - remote-node
+                    - kube-apiserver
+                    - ingress
+                    - init
+                    - health
+                    - unmanaged
+                fromCIDR:
+                  type: array
+                  items:
+                    type: string
+          egress:
+            type: array
+            items:
+              type: object
+              additionalProperties: false
+              properties:
+                description:
+                  type: string
+                toPorts:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: false
+                    properties:
+                      ports:
+                        type: array
+                        items:
+                          type: object
+                          additionalProperties: false
+                          required:
+                          - port
+                          properties:
+                            port:
+                              type: string
+                            endPort:
+                              type: integer
+                            protocol:
+                              type: string
+                              enum:
+                              - TCP
+                              - UDP
+                              - SCTP
+                              - ANY
+                      rules:
+                        type: object
+                toEndpoints:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: false
+                    properties:
+                      matchLabels:
+                        type: object
+                        additionalProperties:
+                          type: string
+                      matchExpressions:
+                        type: array
+                        items:
+                          type: object
+                toEntities:
+                  type: array
+                  items:
+                    type: string
+                    enum:
+                    - all
+                    - world
+                    - cluster
+                    - host
+                    - remote-node
+                    - kube-apiserver
+                    - ingress
+                    - init
+                    - health
+                    - unmanaged
+                toCIDR:
+                  type: array
+                  items:
+                    type: string
+                toFQDNs:
+                  type: array
+                  items:
+                    type: object
+                authentication:
+                  type: object
+                  additionalProperties: false
+                  properties:
+                    mode:
+                      type: string
+                      enum:
+                      - disabled
+                      - required
+                      - test-always-fail
+          egressDeny:
+            type: array
+            items:
+              type: object
+              additionalProperties: false
+              properties:
+                description:
+                  type: string
+                toPorts:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: false
+                    properties:
+                      ports:
+                        type: array
+                        items:
+                          type: object
+                          additionalProperties: false
+                          required:
+                          - port
+                          properties:
+                            port:
+                              type: string
+                            endPort:
+                              type: integer
+                            protocol:
+                              type: string
+                              enum:
+                              - TCP
+                              - UDP
+                              - SCTP
+                              - ANY
+                      rules:
+                        type: object
+                toEndpoints:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: false
+                    properties:
+                      matchLabels:
+                        type: object
+                        additionalProperties:
+                          type: string
+                      matchExpressions:
+                        type: array
+                        items:
+                          type: object
+                toEntities:
+                  type: array
+                  items:
+                    type: string
+                    enum:
+                    - all
+                    - world
+                    - cluster
+                    - host
+                    - remote-node
+                    - kube-apiserver
+                    - ingress
+                    - init
+                    - health
+                    - unmanaged
+                toCIDR:
+                  type: array
+                  items:
+                    type: string
+                toFQDNs:
+                  type: array
+                  items:
+                    type: object
+- id: admission-config-v1
+  kind: AdmissionConfiguration
+  apiVersion: apiserver.config.k8s.io/v1
+  schema:
+    type: object
+    additionalProperties: false
+    properties:
+      apiVersion:
+        type: string
+      kind:
+        type: string
+      plugins:
+        type: array
+        items:
+          type: object
+          additionalProperties: false
+          properties:
+            name:
+              type: string
+            path:
+              type: string
+            configuration:
+              type: object
+              additionalProperties: false
+              properties:
+                imagePolicy:
+                  type: object
+                  additionalProperties: false
+                  properties:
+                    kubeConfigFile:
+                      type: string
+                    allowTTL:
+                      type: integer
+                    denyTTL:
+                      type: integer
+                    retryBackoff:
+                      type: integer
+                    defaultAllow:
+                      type: boolean
+                  required:
+                  - kubeConfigFile
+          required:
+          - name
+    required:
+    - apiVersion
+    - kind
+    - plugins
+introduction:
+  elements:
+  - type: context
+    text: |-
+      Sixteen tasks in the style of the CKS exam, covering every domain. Each task describes the situation and the goal, not the steps: you first decide **where to start** (a choice), then name the **file or object** to change, then **make the change**.
+
+      **Lab environment**
+
+      - kubeadm cluster, Kubernetes 1.34, containerd. Control-plane node `controlplane`, workers `node01` and `node02`.
+      - You work as `root` on the control-plane node unless a task says otherwise; `kubectl` uses the admin credentials.
+
+      **How answers are checked**
+
+      - Manifests and configuration files are validated against a schema and then for what they mean, so formatting and field order do not matter.
+      - Paths must be exact; commands are checked structurally (flag order is free).
+
+      The timer is set to the real exam's two hours. Exam content is under NDA: these are common task patterns, not real exam questions.
+  - type: references
+    links:
+    - url: https://training.linuxfoundation.org/certification/certified-kubernetes-security-specialist-cks/
+      text: CKS Domains and Competencies
+    - url: https://kubernetes.io/docs/home/
+      text: Kubernetes documentation (allowed during the exam)
+scenarios:
+- title: 'Task 1: Fix an Insecure Kubelet and etcd'
+  category: Cluster Setup
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |-
+      **Context:** a CIS scan of the control-plane node `controlplane` reported two problems.
+
+      **Task:**
+
+      - The kubelet must not accept anonymous requests (`anonymous-auth=false`) and must authorize requests with `Webhook` instead of allowing everything.
+      - etcd must only accept clients that present a certificate signed by its CA.
+
+      Make sure both components run with the new settings.
+  - type: question
+    question:
+      questionType: multiple-choice
+      header: Where are the kubelet's authentication and authorization settings configured on a kubeadm node?
+      choices:
+      - text: The kubelet configuration file on the node
+        answerType: Solution
+      - text: The kubelet kubeconfig, /etc/kubernetes/kubelet.conf
+        answerType: Invalid
+      - text: The kube-apiserver static Pod manifest
+        answerType: Invalid
+      - text: A kubectl patch of the Node object
+        answerType: Invalid
+      hint: The kubeconfig only tells the kubelet how to reach the API server.
+      correctAnswerInfo: kubeadm starts the kubelet with --config pointing to its KubeletConfiguration file; the kubeconfig
+        only holds API server credentials.
+  - type: question
+    question:
+      questionType: single-line
+      header: Path of that file?
+      expectedAnswer: /var/lib/kubelet/config.yaml
+      cel: answer.trim().replace('//', '/') == '/var/lib/kubelet/config.yaml' || answer.trim().replace('//', '/') == '/var/lib/kubelet/config.yaml/'
+      hint: It sits in the kubelet state directory; the systemd drop-in passes it with --config.
+      correctAnswerInfo: 'Check it with: ps aux | grep kubelet (look for --config) or the drop-in in /usr/lib/systemd/system/kubelet.service.d/.'
+  - type: question
+    question:
+      questionType: manifest
+      header: Edit the file so that anonymous requests are rejected and authorization uses the API server.
+      hint: 'Two fields: one under authentication, one under authorization.'
+      manifestDefinitionId: kubelet-config
+      initialContent: |
+        apiVersion: kubelet.config.k8s.io/v1beta1
+        kind: KubeletConfiguration
+        authentication:
+          anonymous:
+            enabled: true
+          webhook:
+            cacheTTL: 0s
+            enabled: true
+          x509:
+            clientCAFile: /etc/kubernetes/pki/ca.crt
+        authorization:
+          mode: AlwaysAllow
+          webhook:
+            cacheAuthorizedTTL: 0s
+            cacheUnauthorizedTTL: 0s
+        cgroupDriver: systemd
+        clusterDNS:
+        - 10.96.0.10
+        clusterDomain: cluster.local
+        containerRuntimeEndpoint: unix:///var/run/containerd/containerd.sock
+        rotateCertificates: true
+        staticPodPath: /etc/kubernetes/manifests
+      cel:
+      - name: Anonymous off
+        expression: has(manifest.authentication) && has(manifest.authentication.anonymous) && has(manifest.authentication.anonymous.enabled)
+          && manifest.authentication.anonymous.enabled == false
+        message: authentication.anonymous.enabled must be false
+      - name: Webhook authorization
+        expression: has(manifest.authorization) && has(manifest.authorization.mode) && manifest.authorization.mode == 'Webhook'
+        message: authorization.mode must be Webhook
+      - name: Webhook authentication kept
+        expression: has(manifest.authentication.webhook) && manifest.authentication.webhook.enabled == true
+        message: 'Keep webhook authentication enabled: Webhook authorization needs authenticated callers'
+  - type: question
+    question:
+      questionType: multiple-choice
+      header: The file is saved. What makes the kubelet use it?
+      choices:
+      - text: Restart the kubelet service with systemctl
+        answerType: Solution
+      - text: 'Nothing: the kubelet watches the file and reloads it'
+        answerType: Invalid
+      - text: Delete the kube-proxy Pod on the node
+        answerType: Invalid
+      - text: Run kubeadm upgrade node
+        answerType: Invalid
+      hint: The kubelet is a systemd service, not a static Pod.
+  - type: question
+    question:
+      questionType: command
+      header: Restart it.
+      command:
+        executable: systemctl
+        subcommands:
+        - name: restart
+        positionals:
+        - index: 0
+          oneOf:
+          - kubelet
+          - kubelet.service
+  - type: question
+    question:
+      questionType: multiple-choice
+      header: Now etcd. Where do you change its client certificate setting?
+      choices:
+      - text: The etcd static Pod manifest
+        answerType: Solution
+      - text: The etcd ConfigMap in kube-system
+        answerType: Invalid
+      - text: The kube-apiserver static Pod manifest
+        answerType: Invalid
+      - text: /etc/default/etcd
+        answerType: Invalid
+      hint: On kubeadm clusters etcd runs as a static Pod.
+  - type: question
+    question:
+      questionType: single-line
+      header: Path of that manifest?
+      expectedAnswer: /etc/kubernetes/manifests/etcd.yaml
+      cel: answer.trim().replace('//', '/') == '/etc/kubernetes/manifests/etcd.yaml' || answer.trim().replace('//', '/') ==
+        '/etc/kubernetes/manifests/etcd.yaml/'
+  - type: question
+    question:
+      questionType: manifest
+      header: Fix the manifest so that etcd requires client certificates.
+      hint: Look for the flag that turns client certificate authentication off.
+      correctAnswerInfo: The kubelet notices the changed manifest and recreates etcd by itself; there is nothing to restart.
+        The API server already presents a client certificate (--etcd-certfile), so it keeps working.
+      manifestDefinitionId: pod-v1
+      initialContent: |
+        apiVersion: v1
+        kind: Pod
+        metadata:
+          labels:
+            component: etcd
+            tier: control-plane
+          name: etcd
+          namespace: kube-system
+        spec:
+          containers:
+          - command:
+            - etcd
+            - --advertise-client-urls=https://192.168.100.11:2379
+            - --cert-file=/etc/kubernetes/pki/etcd/server.crt
+            - --client-cert-auth=false
+            - --data-dir=/var/lib/etcd
+            - --experimental-initial-corrupt-check=true
+            - --initial-advertise-peer-urls=https://192.168.100.11:2380
+            - --initial-cluster=controlplane=https://192.168.100.11:2380
+            - --key-file=/etc/kubernetes/pki/etcd/server.key
+            - --listen-client-urls=https://127.0.0.1:2379,https://192.168.100.11:2379
+            - --listen-metrics-urls=http://127.0.0.1:2381
+            - --listen-peer-urls=https://192.168.100.11:2380
+            - --name=controlplane
+            - --peer-cert-file=/etc/kubernetes/pki/etcd/peer.crt
+            - --peer-client-cert-auth=true
+            - --peer-key-file=/etc/kubernetes/pki/etcd/peer.key
+            - --peer-trusted-ca-file=/etc/kubernetes/pki/etcd/ca.crt
+            - --snapshot-count=10000
+            - --trusted-ca-file=/etc/kubernetes/pki/etcd/ca.crt
+            image: registry.k8s.io/etcd:3.6.4-0
+            imagePullPolicy: IfNotPresent
+            livenessProbe:
+              failureThreshold: 8
+              httpGet:
+                host: 127.0.0.1
+                path: /livez
+                port: 2381
+                scheme: HTTP
+              initialDelaySeconds: 10
+              periodSeconds: 10
+              timeoutSeconds: 15
+            name: etcd
+            resources:
+              requests:
+                cpu: 250m
+            volumeMounts:
+            - mountPath: /etc/kubernetes/pki/etcd
+              name: etcd-certs
+            - mountPath: /var/lib/etcd
+              name: etcd-data
+          hostNetwork: true
+          priority: 2000001000
+          priorityClassName: system-node-critical
+          securityContext:
+            seccompProfile:
+              type: RuntimeDefault
+          volumes:
+          - hostPath:
+              path: /etc/kubernetes/pki/etcd
+              type: DirectoryOrCreate
+            name: etcd-certs
+          - hostPath:
+              path: /var/lib/etcd
+              type: DirectoryOrCreate
+            name: etcd-data
+      cel:
+      - name: Client certificates required
+        expression: manifest.spec.containers[0].command.exists(a, a == '--client-cert-auth=true') && manifest.spec.containers[0].command.all(a,
+          !a.startsWith('--client-cert-auth=') || a == '--client-cert-auth=true')
+        message: --client-cert-auth must be true
+      - name: Trusted CA
+        expression: manifest.spec.containers[0].command.exists(a, a == '--trusted-ca-file=/etc/kubernetes/pki/etcd/ca.crt')
+        message: 'Keep --trusted-ca-file: it is the CA client certificates are checked against'
+      - name: Peer authentication kept
+        expression: manifest.spec.containers[0].command.exists(a, a == '--peer-client-cert-auth=true') && manifest.spec.containers[0].command.all(a,
+          !a.startsWith('--peer-client-cert-auth=') || a == '--peer-client-cert-auth=true')
+        message: Keep --peer-client-cert-auth=true
+  explanation:
+    elements:
+    - type: context
+      text: 'The kubelet reads `/var/lib/kubelet/config.yaml` (flags in the systemd drop-in override it, so check both when
+        a setting does not stick). Static Pod manifests in `/etc/kubernetes/manifests` are watched by the kubelet: save the
+        file and wait, then verify with `crictl ps` or `kubectl -n kube-system get pods`.'
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/reference/access-authn-authz/kubelet-authn-authz/
+        text: Kubelet authentication/authorization
+      - url: https://etcd.io/docs/v3.6/op-guide/security/
+        text: etcd transport security
+- title: 'Task 2: TLS Secret'
+  category: Cluster Setup
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |-
+      **Context:** the Deployment `web` in namespace `secure` does not start: its Pods wait for a Secret that does not exist yet.
+
+      **Task:** create the Secret `web-tls` in namespace `secure` from the certificate `/root/web.crt` and the key `/root/web.key`.
+  - type: manifest
+    header: Part of the Deployment
+    content: |2
+            volumes:
+              - name: tls
+                secret:
+                  secretName: web-tls
+  - type: question
+    question:
+      questionType: multiple-choice
+      header: Which Secret type holds a certificate and its key?
+      choices:
+      - text: kubernetes.io/tls
+        answerType: Solution
+      - text: Opaque, with the files as generic keys
+        answerType: Invalid
+      - text: kubernetes.io/dockerconfigjson
+        answerType: Invalid
+      - text: kubernetes.io/service-account-token
+        answerType: Invalid
+      correctAnswerInfo: The tls type requires the keys tls.crt and tls.key, which is what Ingress controllers and most images
+        expect.
+  - type: question
+    question:
+      questionType: command
+      header: Create the Secret.
+      hint: kubectl create secret has a subcommand per type.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: create
+        - name: secret
+        - name: tls
+        positionals:
+        - index: 0
+          value: web-tls
+        flags:
+        - name: cert
+          required: true
+          value: /root/web.crt
+        - name: key
+          required: true
+          value: /root/web.key
+        - name: namespace
+          short: n
+          required: true
+          value: secure
+  - type: question
+    question:
+      questionType: multiple-choice
+      header: The Pods were stuck in ContainerCreating. What happens now?
+      choices:
+      - text: The kubelet retries the volume mount and the Pods start without further action
+        answerType: Solution
+      - text: The Deployment must be deleted and recreated
+        answerType: Invalid
+      - text: The Pods stay stuck until the node is rebooted
+        answerType: Invalid
+      - text: A rollout restart is required because Secrets are only read at scheduling time
+        answerType: Invalid
+      hint: Mounting is retried by the kubelet.
+  explanation:
+    elements:
+    - type: context
+      text: A missing Secret shows up as a `FailedMount` event on the Pod (`kubectl describe pod`). Create it in the **same
+        namespace** as the Pod; with `kubectl create secret tls` the key names `tls.crt` and `tls.key` are set for you.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/concepts/configuration/secret/#tls-secrets
+        text: TLS Secrets
+- title: 'Task 3: Dockerfile and Deployment Best Practices'
+  category: Supply Chain Security
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |-
+      **Context:** the image `py-app` and its Deployment were flagged in a review. The files are `/root/py-app/Dockerfile` and `/root/py-app/deployment.yaml`.
+
+      **Task:**
+
+      - The image must run as the user `nobody`.
+      - In the Deployment, the container must run as UID `65535`, with a read-only root filesystem and not privileged.
+
+      Do not change anything else.
+  - type: question
+    question:
+      questionType: dockerfile
+      header: Fix /root/py-app/Dockerfile.
+      hint: Only one instruction is wrong.
+      initialContent: |
+        FROM alpine:3.20
+        RUN apk add --no-cache python3
+        COPY app.py /app/app.py
+        USER root
+        CMD ["python3", "/app/app.py"]
+      expected:
+      - instructions:
+        - instruction: USER
+          args:
+          - nobody
+        - instruction: CMD
+          args:
+          - python3
+          - /app/app.py
+      cel:
+      - name: Nothing else changed
+        expression: size(dockerfile.stages) == 1 && size(dockerfile.stages[0].instructions) == 4 && dockerfile.stages[0].from.raw
+          == 'alpine:3.20'
+        message: 'Only change the user: keep the base image and the other instructions'
+  - type: question
+    question:
+      questionType: multiple-choice
+      header: On which level do readOnlyRootFilesystem and privileged go in the Deployment?
+      choices:
+      - text: The container's securityContext
+        answerType: Solution
+      - text: The Pod's securityContext (spec.template.spec.securityContext)
+        answerType: Invalid
+      - text: The Deployment spec
+        answerType: Invalid
+      - text: An annotation on the Pod template
+        answerType: Invalid
+      correctAnswerInfo: Both fields exist only on the container securityContext. runAsUser exists on both levels; the container
+        value wins.
+  - type: question
+    question:
+      questionType: manifest
+      header: Fix /root/py-app/deployment.yaml.
+      manifestDefinitionId: deployment-v1
+      initialContent: |
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: py-app
+          namespace: apps
+        spec:
+          replicas: 1
+          selector:
+            matchLabels:
+              app: py-app
+          template:
+            metadata:
+              labels:
+                app: py-app
+            spec:
+              containers:
+                - name: app
+                  image: registry.local/apps/py-app:1.4
+                  securityContext:
+                    runAsUser: 0
+                    privileged: true
+      expectedFields:
+      - path: metadata.name
+        expectedValue: py-app
+      - path: spec.template.spec.containers.0.image
+        expectedValue: registry.local/apps/py-app:1.4
+      cel:
+      - name: Runs as 65535
+        expression: manifest.spec.template.spec.containers.all(c, has(c.securityContext) && has(c.securityContext.runAsUser)
+          && c.securityContext.runAsUser == 65535)
+        message: The container must run as UID 65535
+      - name: Read-only root
+        expression: manifest.spec.template.spec.containers.all(c, has(c.securityContext.readOnlyRootFilesystem) && c.securityContext.readOnlyRootFilesystem
+          == true)
+        message: readOnlyRootFilesystem must be true
+      - name: Not privileged
+        expression: manifest.spec.template.spec.containers.all(c, has(c.securityContext.privileged) && c.securityContext.privileged
+          == false)
+        message: privileged must be set to false
+  - type: question
+    question:
+      questionType: command
+      header: Apply the changed Deployment.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: apply
+        flags:
+        - name: filename
+          short: f
+          required: true
+          value: /root/py-app/deployment.yaml
+  explanation:
+    elements:
+    - type: context
+      text: '`USER nobody` in the image is a default; the Deployment can still override it. The exam checks the files *and*
+        the running objects, so apply what you changed. `nobody` has UID 65534 on Alpine; the Deployment overrides it with
+        65535 here as the task demands.'
+    - type: references
+      links:
+      - url: https://docs.docker.com/reference/dockerfile/#user
+        text: Dockerfile USER
+      - url: https://kubernetes.io/docs/tasks/configure-pod-container/security-context/
+        text: Configure a Security Context
+- title: 'Task 4: Detect /dev/mem Access with Falco'
+  category: Runtime Security
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |-
+      **Context:** a Pod reads `/dev/mem`, which gives access to physical memory of the node. Falco runs as a systemd service on the node.
+
+      **Task:**
+
+      - Add a custom Falco rule that detects any process opening `/dev/mem` and logs the Pod name.
+      - Find the Pod and scale its Deployment to `0` replicas. Do not delete it.
+  - type: question
+    question:
+      questionType: multiple-choice
+      header: Where do custom rules go so that a Falco upgrade does not overwrite them? (choose any correct answer)
+      choices:
+      - text: /etc/falco/falco_rules.local.yaml
+        answerType: Solution
+      - text: A new file in /etc/falco/rules.d/
+        answerType: Solution
+      - text: /etc/falco/falco_rules.yaml
+        answerType: Invalid
+      - text: /etc/falco/falco.yaml
+        answerType: Invalid
+      correctAnswerInfo: falco_rules.yaml is the default ruleset and is replaced by package upgrades; falco.yaml is the engine
+        configuration.
+  - type: question
+    question:
+      questionType: multiline
+      header: Write the rule (name it detect_dev_mem). The output must contain the Pod name.
+      hint: A rule needs rule, desc, condition, output and priority. The condition tests the file name of an open event.
+      expectedAnswer: |
+        - rule: detect_dev_mem
+          desc: Detect access to /dev/mem
+          condition: open_read and fd.name = /dev/mem
+          output: "/dev/mem opened (pod=%k8s.pod.name ns=%k8s.ns.name proc=%proc.name)"
+          priority: CRITICAL
+      cel:
+      - name: Rule fields
+        expression: answer.matches('-\\s*rule:\\s*detect_dev_mem') && answer.matches('\\bdesc:') && answer.matches('\\bcondition:')
+          && answer.matches('\\boutput:') && answer.matches('\\bpriority:\\s*\\w+')
+        message: The rule needs rule, desc, condition, output and priority
+      - name: Matches /dev/mem
+        expression: answer.matches('condition:.*fd\\.(name|filename)\\s*(=|in|startswith)\\s*\\(?\\s*/dev/mem')
+        message: The condition must test fd.name (or fd.filename) against /dev/mem
+      - name: Open events
+        expression: answer.matches('condition:.*(open_read|open_write|evt\\.type\\s*(=|in)\\s*\\(?\\s*open|\\bopen\\b)')
+        message: Restrict the condition to open events, for example with the open_read macro
+      - name: Pod name in output
+        expression: answer.matches('output:.*%k8s\\.pod\\.name')
+        message: The output must contain %k8s.pod.name
+  - type: question
+    question:
+      questionType: command
+      header: Show the Falco messages of the last few minutes from the systemd journal.
+      hint: Filter the journal by unit.
+      command:
+        executable: journalctl
+        strictness: permissive
+        flags:
+        - name: unit
+          short: u
+          required: true
+          regex: ^falco
+  - type: table
+    style: terminal
+    columns:
+    - TIME
+    - MESSAGE
+    rows:
+    - - '10:42:07'
+      - Critical /dev/mem opened (pod=mem-scanner-7c9d5f8b6-qk2xz ns=monitoring proc=dd)
+  - type: question
+    question:
+      questionType: single-line
+      header: Which Deployment do you scale? (name only)
+      expectedAnswer: mem-scanner
+      cel: answer.trim() == 'mem-scanner'
+      hint: A Deployment Pod is named <deployment>-<replicaset hash>-<pod suffix>.
+  - type: question
+    question:
+      questionType: command
+      header: Scale it to 0 replicas.
+      hint: kubectl scale takes the resource as type/name.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: scale
+        positionals:
+        - index: 0
+          oneOf:
+          - deployment/mem-scanner
+          - deploy/mem-scanner
+          - deployments/mem-scanner
+        flags:
+        - name: replicas
+          required: true
+          value: '0'
+        - name: namespace
+          short: n
+          required: true
+          value: monitoring
+  explanation:
+    elements:
+    - type: context
+      text: Falco loads `falco_rules.yaml`, then `falco_rules.local.yaml`, then `rules.d/` (see `rules_files` in falco.yaml);
+        restart Falco (`systemctl restart falco`) after adding rules if hot reload is off. The Pod name in the alert leads
+        to the Deployment through the ReplicaSet.
+    - type: references
+      links:
+      - url: https://falco.org/docs/concepts/rules/basic-elements/
+        text: Falco rules
+      - url: https://falco.org/docs/reference/rules/supported-fields/
+        text: Falco supported fields
+- title: 'Task 5: Immutable Containers'
+  category: Microservice Vulnerabilities
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |-
+      **Context:** the Deployment `ledger` in namespace `finance` must be immutable at runtime.
+
+      **Task:** its container must run as UID `30000`, with a read-only root filesystem and without privilege escalation.
+  - type: question
+    question:
+      questionType: multiple-choice
+      header: How do you change the running workload?
+      choices:
+      - text: Edit the Deployment (kubectl edit, or export, edit and apply)
+        answerType: Solution
+      - text: Edit the Pods directly
+        answerType: Invalid
+      - text: Edit the ReplicaSet
+        answerType: Invalid
+      - text: Restart the kubelet with --read-only-port=0
+        answerType: Invalid
+      hint: Pods are recreated from a template.
+      correctAnswerInfo: Changing the Pod template starts a rollout. Pod securityContext fields cannot be changed on running
+        Pods, and ReplicaSet edits are overwritten by the Deployment.
+  - type: question
+    question:
+      questionType: manifest
+      header: Edit the Deployment.
+      hint: readOnlyRootFilesystem and allowPrivilegeEscalation only exist in the container securityContext.
+      manifestDefinitionId: deployment-v1
+      initialContent: |
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: ledger
+          namespace: finance
+        spec:
+          replicas: 2
+          selector:
+            matchLabels:
+              app: ledger
+          template:
+            metadata:
+              labels:
+                app: ledger
+            spec:
+              containers:
+                - name: ledger
+                  image: registry.local/finance/ledger:2.1
+                  ports:
+                    - containerPort: 8080
+      expectedFields:
+      - path: metadata.name
+        expectedValue: ledger
+      - path: metadata.namespace
+        expectedValue: finance
+      - path: spec.replicas
+        expectedValue: 2
+      cel:
+      - name: UID 30000
+        expression: manifest.spec.template.spec.containers.all(c, (has(c.securityContext) && has(c.securityContext.runAsUser)
+          && c.securityContext.runAsUser == 30000) || (!(has(c.securityContext) && has(c.securityContext.runAsUser)) && has(manifest.spec.template.spec.securityContext)
+          && has(manifest.spec.template.spec.securityContext.runAsUser) && manifest.spec.template.spec.securityContext.runAsUser
+          == 30000))
+        message: The container must run as UID 30000
+      - name: Read-only root
+        expression: manifest.spec.template.spec.containers.all(c, has(c.securityContext) && has(c.securityContext.readOnlyRootFilesystem)
+          && c.securityContext.readOnlyRootFilesystem == true)
+        message: readOnlyRootFilesystem must be true on the container
+      - name: No escalation
+        expression: manifest.spec.template.spec.containers.all(c, has(c.securityContext) && has(c.securityContext.allowPrivilegeEscalation)
+          && c.securityContext.allowPrivilegeEscalation == false)
+        message: allowPrivilegeEscalation must be false on the container
+  explanation:
+    elements:
+    - type: context
+      text: 'If the application then fails because it writes to disk (cache, PID files, `/tmp`), mount an `emptyDir` at those
+        paths: the root filesystem stays read-only while the app keeps its scratch space.'
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/tasks/configure-pod-container/security-context/
+        text: Configure a Security Context
+- title: 'Task 6: Audit Logging'
+  category: Monitoring and Logging
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |-
+      **Context:** the cluster has no audit log.
+
+      **Task:**
+
+      - Write a base audit policy to `/etc/kubernetes/audit/policy.yaml` that logs Secrets, ConfigMaps and TokenReviews only at `Metadata` level and everything else at `Request` level.
+      - Configure the API server to use it, writing the log to `/var/log/kubernetes/audit/audit.log`, keeping at most `2` old log files for at most `10` days.
+  - type: question
+    question:
+      questionType: manifest
+      header: Write the audit policy.
+      hint: Rules are evaluated top to bottom; the first match wins.
+      correctAnswerInfo: Secrets at Request level would write their content into the log. Ordering the specific rule first
+        is what keeps them out.
+      manifestDefinitionId: audit-policy-v1
+      initialContent: |
+        apiVersion: audit.k8s.io/v1
+        kind: Policy
+      cel:
+      - name: Sensitive at Metadata
+        expression: size(manifest.rules) >= 2 && manifest.rules[0].level == 'Metadata' && has(manifest.rules[0].resources)
+          && manifest.rules[0].resources.exists(g, (!has(g.group) || g.group == '') && has(g.resources) && 'secrets' in g.resources
+          && 'configmaps' in g.resources) && manifest.rules[0].resources.exists(g, has(g.group) && g.group == 'authentication.k8s.io'
+          && 'tokenreviews' in g.resources)
+        message: The first rule must log secrets, configmaps (core group) and tokenreviews (authentication.k8s.io) at Metadata
+      - name: Catch-all at Request
+        expression: manifest.rules[size(manifest.rules) - 1].level == 'Request' && !has(manifest.rules[size(manifest.rules)
+          - 1].resources) && !has(manifest.rules[size(manifest.rules) - 1].verbs) && !has(manifest.rules[size(manifest.rules)
+          - 1].namespaces)
+        message: The last rule must log everything else at Request, without restrictions
+  - type: question
+    question:
+      questionType: multiple-choice
+      header: Where do you configure auditing for the API server?
+      choices:
+      - text: Flags in the kube-apiserver static Pod manifest
+        answerType: Solution
+      - text: The kubelet configuration file
+        answerType: Invalid
+      - text: A ConfigMap named audit-policy in kube-system
+        answerType: Invalid
+      - text: An AuditSink object
+        answerType: Invalid
+      correctAnswerInfo: The API server has no dynamic audit configuration; the AuditSink API was removed in 1.19.
+  - type: question
+    question:
+      questionType: single-line
+      header: Path of that file?
+      expectedAnswer: /etc/kubernetes/manifests/kube-apiserver.yaml
+      cel: answer.trim().replace('//', '/') == '/etc/kubernetes/manifests/kube-apiserver.yaml' || answer.trim().replace('//',
+        '/') == '/etc/kubernetes/manifests/kube-apiserver.yaml/'
+  - type: question
+    question:
+      questionType: manifest
+      header: 'Edit the manifest: policy, log path, retention, and the mounts that make both paths visible in the container.'
+      hint: Four flags, two volumes, two volumeMounts.
+      manifestDefinitionId: pod-v1
+      initialContent: |
+        apiVersion: v1
+        kind: Pod
+        metadata:
+          labels:
+            component: kube-apiserver
+            tier: control-plane
+          name: kube-apiserver
+          namespace: kube-system
+        spec:
+          containers:
+          - command:
+            - kube-apiserver
+            - --advertise-address=192.168.100.11
+            - --allow-privileged=true
+            - --authorization-mode=Node,RBAC
+            - --client-ca-file=/etc/kubernetes/pki/ca.crt
+            - --enable-admission-plugins=NodeRestriction
+            - --enable-bootstrap-token-auth=true
+            - --etcd-cafile=/etc/kubernetes/pki/etcd/ca.crt
+            - --etcd-certfile=/etc/kubernetes/pki/apiserver-etcd-client.crt
+            - --etcd-keyfile=/etc/kubernetes/pki/apiserver-etcd-client.key
+            - --etcd-servers=https://127.0.0.1:2379
+            - --kubelet-client-certificate=/etc/kubernetes/pki/apiserver-kubelet-client.crt
+            - --kubelet-client-key=/etc/kubernetes/pki/apiserver-kubelet-client.key
+            - --kubelet-preferred-address-types=InternalIP,ExternalIP,Hostname
+            - --proxy-client-cert-file=/etc/kubernetes/pki/front-proxy-client.crt
+            - --proxy-client-key-file=/etc/kubernetes/pki/front-proxy-client.key
+            - --requestheader-allowed-names=front-proxy-client
+            - --requestheader-client-ca-file=/etc/kubernetes/pki/front-proxy-ca.crt
+            - --requestheader-extra-headers-prefix=X-Remote-Extra-
+            - --requestheader-group-headers=X-Remote-Group
+            - --requestheader-username-headers=X-Remote-User
+            - --secure-port=6443
+            - --service-account-issuer=https://kubernetes.default.svc.cluster.local
+            - --service-account-key-file=/etc/kubernetes/pki/sa.pub
+            - --service-account-signing-key-file=/etc/kubernetes/pki/sa.key
+            - --service-cluster-ip-range=10.96.0.0/12
+            - --tls-cert-file=/etc/kubernetes/pki/apiserver.crt
+            - --tls-private-key-file=/etc/kubernetes/pki/apiserver.key
+            image: registry.k8s.io/kube-apiserver:v1.34.2
+            imagePullPolicy: IfNotPresent
+            livenessProbe:
+              failureThreshold: 8
+              httpGet:
+                host: 192.168.100.11
+                path: /livez
+                port: 6443
+                scheme: HTTPS
+              initialDelaySeconds: 10
+              periodSeconds: 10
+              timeoutSeconds: 15
+            name: kube-apiserver
+            resources:
+              requests:
+                cpu: 250m
+            volumeMounts:
+            - mountPath: /etc/ssl/certs
+              name: ca-certs
+              readOnly: true
+            - mountPath: /etc/ca-certificates
+              name: etc-ca-certificates
+              readOnly: true
+            - mountPath: /etc/kubernetes/pki
+              name: k8s-certs
+              readOnly: true
+            - mountPath: /usr/local/share/ca-certificates
+              name: usr-local-share-ca-certificates
+              readOnly: true
+            - mountPath: /usr/share/ca-certificates
+              name: usr-share-ca-certificates
+              readOnly: true
+          hostNetwork: true
+          priority: 2000001000
+          priorityClassName: system-node-critical
+          securityContext:
+            seccompProfile:
+              type: RuntimeDefault
+          volumes:
+          - hostPath:
+              path: /etc/ssl/certs
+              type: DirectoryOrCreate
+            name: ca-certs
+          - hostPath:
+              path: /etc/ca-certificates
+              type: DirectoryOrCreate
+            name: etc-ca-certificates
+          - hostPath:
+              path: /etc/kubernetes/pki
+              type: DirectoryOrCreate
+            name: k8s-certs
+          - hostPath:
+              path: /usr/local/share/ca-certificates
+              type: DirectoryOrCreate
+            name: usr-local-share-ca-certificates
+          - hostPath:
+              path: /usr/share/ca-certificates
+              type: DirectoryOrCreate
+            name: usr-share-ca-certificates
+      cel:
+      - name: Policy file
+        expression: manifest.spec.containers[0].command.exists(a, a == '--audit-policy-file=/etc/kubernetes/audit/policy.yaml')
+        message: --audit-policy-file must point to the policy
+      - name: Log path
+        expression: manifest.spec.containers[0].command.exists(a, a == '--audit-log-path=/var/log/kubernetes/audit/audit.log')
+        message: --audit-log-path must point to the log file
+      - name: Retention
+        expression: manifest.spec.containers[0].command.exists(a, a == '--audit-log-maxbackup=2') && manifest.spec.containers[0].command.exists(a,
+          a == '--audit-log-maxage=10')
+        message: Keep 2 old files (--audit-log-maxbackup) for 10 days (--audit-log-maxage)
+      - name: Policy mounted
+        expression: manifest.spec.volumes.exists(v, has(v.hostPath) && ('/etc/kubernetes/audit/policy.yaml' == v.hostPath.path
+          || '/etc/kubernetes/audit/policy.yaml'.startsWith(v.hostPath.path + '/')) && manifest.spec.containers[0].volumeMounts.exists(m,
+          m.name == v.name && m.mountPath == v.hostPath.path))
+        message: Mount the policy (file or directory) with a hostPath volume at the same path
+      - name: Log directory mounted
+        expression: manifest.spec.volumes.exists(v, has(v.hostPath) && ('/var/log/kubernetes/audit/audit.log' == v.hostPath.path
+          || '/var/log/kubernetes/audit/audit.log'.startsWith(v.hostPath.path + '/')) && manifest.spec.containers[0].volumeMounts.exists(m,
+          m.name == v.name && m.mountPath == v.hostPath.path))
+        message: Mount the log directory with a hostPath volume at the same path
+      - name: Log writable
+        expression: manifest.spec.containers[0].volumeMounts.all(m, !('/var/log/kubernetes/audit/audit.log'.startsWith(m.mountPath))
+          || !has(m.readOnly) || m.readOnly == false)
+        message: The log mount must not be read-only
+  explanation:
+    elements:
+    - type: context
+      text: 'Without the volume mounts the API server cannot see the files and does not start: check `crictl ps -a` and `crictl
+        logs` if it does not come back. `--audit-log-maxsize` (MB) is the third retention knob.'
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/
+        text: Auditing
+- title: 'Task 7: NetworkPolicy'
+  category: Cluster Setup
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |-
+      **Context:** namespace `payments` is open to every Pod in the cluster.
+
+      **Task:**
+
+      - Create `default-deny-ingress` that denies all ingress to all Pods in `payments`.
+      - Create `allow-from-checkout` that allows ingress to all Pods in `payments` only from Pods in the namespace `checkout`.
+  - type: question
+    question:
+      questionType: manifest
+      header: Write default-deny-ingress.
+      manifestDefinitionId: networkpolicy-v1
+      initialContent: |
+        apiVersion: networking.k8s.io/v1
+        kind: NetworkPolicy
+        metadata:
+          name: default-deny-ingress
+          namespace: payments
+        spec:
+      expectedFields:
+      - path: metadata.name
+        expectedValue: default-deny-ingress
+      - path: metadata.namespace
+        expectedValue: payments
+      cel:
+      - name: All Pods
+        expression: has(manifest.spec.podSelector) && (!has(manifest.spec.podSelector.matchLabels) || size(manifest.spec.podSelector.matchLabels)
+          == 0) && !has(manifest.spec.podSelector.matchExpressions)
+        message: The empty podSelector {} selects every Pod in the namespace
+      - name: Ingress denied
+        expression: has(manifest.spec.policyTypes) && 'Ingress' in manifest.spec.policyTypes && (!has(manifest.spec.ingress)
+          || size(manifest.spec.ingress) == 0)
+        message: policyTypes must contain Ingress and there must be no ingress rules
+  - type: question
+    question:
+      questionType: multiple-choice
+      header: How do you select the namespace checkout if it has no custom labels?
+      choices:
+      - text: 'namespaceSelector with the label kubernetes.io/metadata.name: checkout'
+        answerType: Solution
+      - text: 'namespaceSelector with name: checkout'
+        answerType: Invalid
+      - text: 'podSelector with namespace: checkout'
+        answerType: Invalid
+      - text: Add a namespace field to the ingress rule
+        answerType: Invalid
+      correctAnswerInfo: The API server sets kubernetes.io/metadata.name on every namespace.
+  - type: question
+    question:
+      questionType: manifest
+      header: Write allow-from-checkout.
+      manifestDefinitionId: networkpolicy-v1
+      initialContent: |
+        apiVersion: networking.k8s.io/v1
+        kind: NetworkPolicy
+        metadata:
+          name: allow-from-checkout
+          namespace: payments
+        spec:
+      expectedFields:
+      - path: metadata.name
+        expectedValue: allow-from-checkout
+      - path: metadata.namespace
+        expectedValue: payments
+      cel:
+      - name: All Pods
+        expression: has(manifest.spec.podSelector) && (!has(manifest.spec.podSelector.matchLabels) || size(manifest.spec.podSelector.matchLabels)
+          == 0)
+        message: The policy applies to all Pods in payments
+      - name: From checkout only
+        expression: has(manifest.spec.ingress) && size(manifest.spec.ingress) == 1 && size(manifest.spec.ingress[0].from)
+          == 1 && has(manifest.spec.ingress[0].from[0].namespaceSelector) && !has(manifest.spec.ingress[0].from[0].podSelector)
+          && has(manifest.spec.ingress[0].from[0].namespaceSelector.matchLabels) && manifest.spec.ingress[0].from[0].namespaceSelector.matchLabels['kubernetes.io/metadata.name']
+          == 'checkout'
+        message: One ingress rule with a single namespaceSelector for checkout
+      - name: Any port
+        expression: '!has(manifest.spec.ingress[0].ports)'
+        message: The task does not restrict ports
+  explanation:
+    elements:
+    - type: context
+      text: 'Policies are additive: the deny-all selects every Pod, the allow policy opens one path. A `podSelector` next
+        to the `namespaceSelector` in the same `from` entry would mean AND; as separate list entries it would mean OR.'
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/concepts/services-networking/network-policies/
+        text: Network Policies
+- title: 'Task 8: Expose HTTPS with an Ingress'
+  category: Cluster Setup
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |-
+      **Context:** the Service `shop-svc` (port `80`) in namespace `shop` must be reachable over HTTPS at `shop.example.com`. The certificate is already stored in the TLS Secret `shop-cert` in the same namespace. The cluster runs ingress-nginx with the IngressClass `nginx`.
+
+      **Task:** create the Ingress `shop` that terminates TLS and redirects HTTP requests to HTTPS.
+  - type: question
+    question:
+      questionType: manifest
+      header: Write the Ingress.
+      hint: tls, rules and an annotation. Annotation values are strings.
+      correctAnswerInfo: 'Annotation values must be strings: an unquoted true is a YAML boolean and the API server rejects
+        the object.'
+      manifestDefinitionId: ingress-v1
+      initialContent: |
+        apiVersion: networking.k8s.io/v1
+        kind: Ingress
+        metadata:
+          name: shop
+          namespace: shop
+      expectedFields:
+      - path: metadata.name
+        expectedValue: shop
+      - path: metadata.namespace
+        expectedValue: shop
+      - path: spec.ingressClassName
+        expectedValue: nginx
+      cel:
+      - name: TLS
+        expression: has(manifest.spec.tls) && manifest.spec.tls.exists(t, t.secretName == 'shop-cert' && has(t.hosts) && 'shop.example.com'
+          in t.hosts)
+        message: spec.tls must list shop.example.com with the Secret shop-cert
+      - name: Rule
+        expression: manifest.spec.rules.exists(r, r.host == 'shop.example.com' && r.http.paths.exists(p, p.path == '/' &&
+          p.backend.service.name == 'shop-svc' && p.backend.service.port.number == 80))
+        message: A rule for shop.example.com must send / to shop-svc port 80
+      - name: Redirect
+        expression: has(manifest.metadata.annotations) && 'nginx.ingress.kubernetes.io/ssl-redirect' in manifest.metadata.annotations
+          && manifest.metadata.annotations['nginx.ingress.kubernetes.io/ssl-redirect'] == 'true'
+        message: 'Add the annotation nginx.ingress.kubernetes.io/ssl-redirect: "true" (a quoted string)'
+  - type: question
+    question:
+      questionType: multiple-choice
+      header: Which curl option skips certificate verification when you test with a self-signed certificate?
+      choices:
+      - text: -k
+        answerType: Solution
+      - text: -L
+        answerType: Invalid
+      - text: -v
+        answerType: Invalid
+      - text: -s
+        answerType: Invalid
+      correctAnswerInfo: curl -k https://shop.example.com (use --resolve or /etc/hosts to point the name at the controller).
+  explanation:
+    elements:
+    - type: context
+      text: ingress-nginx already redirects to HTTPS by default when `tls` is set; the annotation makes it explicit and is
+        what the exam checks. Each `tls.hosts` entry must match a rule host for the certificate to be used.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/concepts/services-networking/ingress/#tls
+        text: Ingress TLS
+      - url: https://kubernetes.github.io/ingress-nginx/user-guide/nginx-configuration/annotations/#server-side-https-enforcement-through-redirect
+        text: 'ingress-nginx: ssl-redirect'
+- title: 'Task 9: Disable API Credential Automounting'
+  category: Cluster Hardening
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |-
+      **Context:** the ServiceAccount `reporter` in namespace `reports` is used by the Pod `reporter`. Only that Pod needs an API token.
+
+      **Task:**
+
+      - Disable token automounting on the ServiceAccount.
+      - Mount a token into the Pod manually with a projected volume named `token`, read-only, at `/var/run/secrets/tokens`, in the file `token`, valid for `3600` seconds.
+  - type: question
+    question:
+      questionType: manifest
+      header: Update the ServiceAccount.
+      manifestDefinitionId: serviceaccount-v1
+      initialContent: |
+        apiVersion: v1
+        kind: ServiceAccount
+        metadata:
+          name: reporter
+          namespace: reports
+      expectedFields:
+      - path: metadata.name
+        expectedValue: reporter
+      - path: metadata.namespace
+        expectedValue: reports
+      - path: automountServiceAccountToken
+        expectedValue: false
+  - type: question
+    question:
+      questionType: multiple-choice
+      header: The Pod spec has its own automountServiceAccountToken field. Which value wins when Pod and ServiceAccount disagree?
+      choices:
+      - text: The Pod value
+        answerType: Solution
+      - text: The ServiceAccount value
+        answerType: Invalid
+      - text: false always wins
+        answerType: Invalid
+      - text: The namespace default
+        answerType: Invalid
+      correctAnswerInfo: The Pod field overrides the ServiceAccount; setting it on the ServiceAccount covers every Pod that
+        does not say otherwise.
+  - type: question
+    question:
+      questionType: manifest
+      header: Recreate the Pod with the projected token.
+      hint: volumes.projected.sources[].serviceAccountToken, plus a volumeMount.
+      manifestDefinitionId: pod-v1
+      initialContent: |
+        apiVersion: v1
+        kind: Pod
+        metadata:
+          name: reporter
+          namespace: reports
+        spec:
+          serviceAccountName: reporter
+          containers:
+            - name: reporter
+              image: registry.local/reports/reporter:1.0
+      expectedFields:
+      - path: metadata.name
+        expectedValue: reporter
+      - path: metadata.namespace
+        expectedValue: reports
+      - path: spec.serviceAccountName
+        expectedValue: reporter
+      cel:
+      - name: Projected token
+        expression: has(manifest.spec.volumes) && manifest.spec.volumes.exists(v, v.name == 'token' && has(v.projected) &&
+          v.projected.sources.exists(s, has(s.serviceAccountToken) && s.serviceAccountToken.path == 'token' && has(s.serviceAccountToken.expirationSeconds)
+          && s.serviceAccountToken.expirationSeconds == 3600))
+        message: A volume named token must project a serviceAccountToken with path token and expirationSeconds 3600
+      - name: Mounted read-only
+        expression: manifest.spec.containers.exists(c, has(c.volumeMounts) && c.volumeMounts.exists(m, m.name == 'token' &&
+          m.mountPath == '/var/run/secrets/tokens' && has(m.readOnly) && m.readOnly == true))
+        message: Mount the volume read-only at /var/run/secrets/tokens
+      - name: No automount
+        expression: '!has(manifest.spec.automountServiceAccountToken) || manifest.spec.automountServiceAccountToken == false'
+        message: Do not re-enable automounting on the Pod
+  explanation:
+    elements:
+    - type: context
+      text: 'A projected token is short-lived, audience-bound and rotated by the kubelet. Pod volumes cannot be added to a
+        running Pod: `kubectl get pod -o yaml > p.yaml`, edit, `kubectl replace --force -f p.yaml`.'
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/tasks/configure-pod-container/configure-service-account/
+        text: Configure Service Accounts for Pods
+      - url: https://kubernetes.io/docs/concepts/storage/projected-volumes/#serviceaccounttoken
+        text: Projected serviceAccountToken
+- title: 'Task 10: Upgrade a Worker Node'
+  category: Cluster Hardening
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |-
+      **Context:** the control plane runs `v1.34.2`. The worker `node01` still runs `v1.34.1`.
+
+      **Task:** upgrade `node01` to `v1.34.2`. The package version is `1.34.2-1.1`. Workloads must be moved off the node first and it must be schedulable again at the end.
+  - type: question
+    question:
+      questionType: multiple-choice
+      header: What do you do first?
+      choices:
+      - text: Drain node01 from the control plane
+        answerType: Solution
+      - text: ssh to node01 and upgrade kubelet
+        answerType: Invalid
+      - text: Run kubeadm upgrade apply on node01
+        answerType: Invalid
+      - text: Cordon the control-plane node
+        answerType: Invalid
+  - type: question
+    question:
+      questionType: command
+      header: Drain the node (it runs DaemonSet Pods and Pods with emptyDir volumes).
+      hint: Two flags for the two kinds of Pods that block a drain.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: drain
+        positionals:
+        - index: 0
+          value: node01
+        flags:
+        - name: ignore-daemonsets
+          required: true
+          boolean: true
+        - name: delete-emptydir-data
+          required: true
+          boolean: true
+        - name: force
+          boolean: true
+  - type: question
+    question:
+      questionType: ordering
+      header: On node01, put the steps in order.
+      items:
+      - id: unhold-kubeadm
+        text: apt-mark unhold kubeadm, install kubeadm=1.34.2-1.1, apt-mark hold kubeadm
+      - id: upgrade-node
+        text: kubeadm upgrade node
+      - id: kubelet
+        text: apt-mark unhold kubelet kubectl, install both at 1.34.2-1.1, hold them again
+      - id: restart
+        text: systemctl daemon-reload and systemctl restart kubelet
+      correctOrder:
+      - unhold-kubeadm
+      - upgrade-node
+      - kubelet
+      - restart
+  - type: question
+    question:
+      questionType: command
+      header: Install the new kubeadm with apt-get (after apt-mark unhold kubeadm).
+      command:
+        executable: apt-get
+        subcommands:
+        - name: install
+        strictness: permissive
+        flags:
+        - name: 'yes'
+          short: y
+          boolean: true
+      cel:
+      - name: Pinned versions
+        expression: answer.matches('kubeadm=1\\.34\\.2-1\\.1')
+        message: Install the exact package version shown by apt-cache madison
+  - type: question
+    question:
+      questionType: command
+      header: Upgrade the node configuration with kubeadm.
+      correctAnswerInfo: upgrade node refreshes the kubelet configuration on workers; upgrade apply is only for the first
+        control-plane node.
+      command:
+        executable: kubeadm
+        subcommands:
+        - name: upgrade
+        - name: node
+  - type: question
+    question:
+      questionType: command
+      header: Install the new kubelet and kubectl in one apt-get command.
+      command:
+        executable: apt-get
+        subcommands:
+        - name: install
+        strictness: permissive
+        flags:
+        - name: 'yes'
+          short: y
+          boolean: true
+      cel:
+      - name: Pinned versions
+        expression: answer.matches('kubelet=1\\.34\\.2-1\\.1') && answer.matches('kubectl=1\\.34\\.2-1\\.1')
+        message: Install kubelet and kubectl at 1.34.2-1.1
+  - type: question
+    question:
+      questionType: command
+      header: After systemctl daemon-reload and restarting the kubelet, exit node01. Make the node schedulable again.
+      command:
+        executable: kubectl
+        subcommands:
+        - name: uncordon
+        positionals:
+        - index: 0
+          value: node01
+  explanation:
+    elements:
+    - type: context
+      text: 'Run `kubectl get nodes` at the end: VERSION shows the kubelet version. Forgetting `apt-mark hold` lets a later
+        `apt upgrade` move the packages past the control plane, which breaks the version skew policy.'
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/upgrading-linux-nodes/
+        text: Upgrading Linux nodes
+- title: 'Task 11: Find a Package with an SBOM'
+  category: Supply Chain Security
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |-
+      **Context:** the Deployment `alpine` in namespace `sbom` runs three Alpine containers. One of the images ships `libcrypto3` in version `3.1.4-r5`, which is affected by a vulnerability.
+
+      **Task:**
+
+      - Generate an SPDX document for the image `registry.local/alpine:3.19.1` with `bom` and store it at `/root/alpine.spdx`.
+      - Remove the container that uses the affected image from the Deployment. Keep the others.
+  - type: question
+    question:
+      questionType: command
+      header: Generate the SPDX document.
+      hint: bom generate has a flag for an image reference and one for the output file.
+      command:
+        executable: bom
+        subcommands:
+        - name: generate
+        flags:
+        - name: image
+          short: i
+          required: true
+          value: registry.local/alpine:3.19.1
+        - name: output
+          short: o
+          required: true
+          value: /root/alpine.spdx
+  - type: question
+    question:
+      questionType: command
+      header: Search the document for the package.
+      command:
+        executable: grep
+        strictness: permissive
+        positionals:
+        - index: 0
+          regex: libcrypto3
+        - index: 1
+          value: /root/alpine.spdx
+        flags:
+        - name: ignore-case
+          short: i
+          boolean: true
+        - name: count
+          short: c
+          boolean: true
+        - name: line-number
+          short: n
+          boolean: true
+        - name: word-regexp
+          short: w
+          boolean: true
+  - type: manifest
+    header: Output
+    content: |
+      PackageName: libcrypto3
+      SPDXID: SPDXRef-Package-libcrypto3-3.1.4-r5
+      PackageVersion: 3.1.4-r5
+  - type: question
+    question:
+      questionType: multiple-choice
+      header: Which container uses the affected image?
+      choices:
+      - text: alpine-b
+        answerType: Solution
+      - text: alpine-a
+        answerType: Invalid
+      - text: alpine-c
+        answerType: Invalid
+      correctAnswerInfo: You checked 3.19.1 here; in the exam, generate an SBOM for each image until you find the version
+        asked for.
+  - type: question
+    question:
+      questionType: manifest
+      header: Edit the Deployment.
+      manifestDefinitionId: deployment-v1
+      initialContent: |
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: alpine
+          namespace: sbom
+        spec:
+          replicas: 1
+          selector:
+            matchLabels:
+              app: alpine
+          template:
+            metadata:
+              labels:
+                app: alpine
+            spec:
+              containers:
+                - name: alpine-a
+                  image: registry.local/alpine:3.20.3
+                  command: ["sleep", "infinity"]
+                - name: alpine-b
+                  image: registry.local/alpine:3.19.1
+                  command: ["sleep", "infinity"]
+                - name: alpine-c
+                  image: registry.local/alpine:3.16.9
+                  command: ["sleep", "infinity"]
+      expectedFields:
+      - path: metadata.name
+        expectedValue: alpine
+      - path: metadata.namespace
+        expectedValue: sbom
+      cel:
+      - name: Container removed
+        expression: manifest.spec.template.spec.containers.all(c, c.name != 'alpine-b' && c.image != 'registry.local/alpine:3.19.1')
+        message: Remove the container that runs alpine:3.19.1
+      - name: Others kept
+        expression: size(manifest.spec.template.spec.containers) == 2 && manifest.spec.template.spec.containers.exists(c,
+          c.name == 'alpine-a') && manifest.spec.template.spec.containers.exists(c, c.name == 'alpine-c')
+        message: Keep alpine-a and alpine-c
+  explanation:
+    elements:
+    - type: context
+      text: 'SPDX tag-value lines are easy to grep: `PackageName`, `PackageVersion`, `SPDXID`. `bom document outline <file>`
+        prints the package tree.'
+    - type: references
+      links:
+      - url: https://github.com/kubernetes-sigs/bom
+        text: kubernetes-sigs/bom
+- title: 'Task 12: Comply with the Restricted Pod Security Standard'
+  category: Microservice Vulnerabilities
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |-
+      **Context:** namespace `restricted` enforces the `restricted` Pod Security Standard. The Deployment `api` has no running Pods.
+
+      **Task:** fix the Deployment so that its Pods are admitted. The application does not need the host directory.
+  - type: question
+    question:
+      questionType: multiple-choice
+      header: Where do you find out why no Pods exist?
+      choices:
+      - text: The events of the Deployment's ReplicaSet (kubectl describe rs, or kubectl get events)
+        answerType: Solution
+      - text: The logs of the Pods
+        answerType: Invalid
+      - text: The kubelet journal on the node
+        answerType: Invalid
+      - text: The Deployment status only
+        answerType: Invalid
+      hint: Pod Security rejects the Pods at admission, so there is nothing to take logs from.
+      correctAnswerInfo: The ReplicaSet tries to create the Pods; the rejection shows up as a FailedCreate event listing the
+        violations.
+  - type: manifest
+    header: Event
+    content: |
+      Warning  FailedCreate  replicaset/api-6b9f7d5c4  Error creating: pods "api-6b9f7d5c4-x7k2p" is forbidden: violates PodSecurity "restricted:latest": privileged (container "api" must not set securityContext.privileged=true), allowPrivilegeEscalation != false, unrestricted capabilities, restricted volume types (volume "host" uses restricted volume type "hostPath"), runAsNonRoot != true, seccompProfile
+  - type: question
+    question:
+      questionType: manifest
+      header: Fix the Deployment.
+      hint: The event lists six violations.
+      manifestDefinitionId: deployment-v1
+      initialContent: |
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: api
+          namespace: restricted
+        spec:
+          replicas: 1
+          selector:
+            matchLabels:
+              app: api
+          template:
+            metadata:
+              labels:
+                app: api
+            spec:
+              containers:
+                - name: api
+                  image: registry.local/restricted/api:2.0
+                  securityContext:
+                    privileged: true
+                  volumeMounts:
+                    - name: host
+                      mountPath: /host
+              volumes:
+                - name: host
+                  hostPath:
+                    path: /var/log
+      expectedFields:
+      - path: metadata.name
+        expectedValue: api
+      - path: metadata.namespace
+        expectedValue: restricted
+      - path: spec.template.spec.containers.0.image
+        expectedValue: registry.local/restricted/api:2.0
+      cel:
+      - name: Not privileged
+        expression: manifest.spec.template.spec.containers.all(c, !has(c.securityContext) || !has(c.securityContext.privileged)
+          || c.securityContext.privileged == false)
+        message: 'Remove privileged: true'
+      - name: No escalation
+        expression: manifest.spec.template.spec.containers.all(c, has(c.securityContext) && has(c.securityContext.allowPrivilegeEscalation)
+          && c.securityContext.allowPrivilegeEscalation == false)
+        message: allowPrivilegeEscalation must be false
+      - name: Capabilities dropped
+        expression: manifest.spec.template.spec.containers.all(c, has(c.securityContext) && has(c.securityContext.capabilities)
+          && has(c.securityContext.capabilities.drop) && 'ALL' in c.securityContext.capabilities.drop)
+        message: Drop ALL capabilities
+      - name: Non-root
+        expression: manifest.spec.template.spec.containers.all(c, (has(c.securityContext) && has(c.securityContext.runAsNonRoot)
+          && c.securityContext.runAsNonRoot == true) || (has(manifest.spec.template.spec.securityContext) && has(manifest.spec.template.spec.securityContext.runAsNonRoot)
+          && manifest.spec.template.spec.securityContext.runAsNonRoot == true))
+        message: runAsNonRoot must be true (Pod or container level)
+      - name: Seccomp
+        expression: (has(manifest.spec.template.spec.securityContext) && has(manifest.spec.template.spec.securityContext.seccompProfile)
+          && manifest.spec.template.spec.securityContext.seccompProfile.type in ['RuntimeDefault', 'Localhost']) || manifest.spec.template.spec.containers.all(c,
+          has(c.securityContext) && has(c.securityContext.seccompProfile) && c.securityContext.seccompProfile.type in ['RuntimeDefault',
+          'Localhost'])
+        message: Set seccompProfile type RuntimeDefault
+      - name: No hostPath
+        expression: '!has(manifest.spec.template.spec.volumes) || manifest.spec.template.spec.volumes.all(v, !has(v.hostPath))'
+        message: Remove the hostPath volume
+      - name: No dangling mount
+        expression: manifest.spec.template.spec.containers.all(c, !has(c.volumeMounts) || c.volumeMounts.all(m, has(manifest.spec.template.spec.volumes)
+          && manifest.spec.template.spec.volumes.exists(v, v.name == m.name)))
+        message: Remove the volumeMount of the deleted volume too
+  explanation:
+    elements:
+    - type: context
+      text: The event names every violation; fix them all in one edit. After the change the Deployment creates a new ReplicaSet
+        and its Pods are admitted. `kubectl label --dry-run=server --overwrite ns restricted pod-security.kubernetes.io/enforce=restricted`
+        warns about existing Pods.
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/concepts/security/pod-security-standards/
+        text: Pod Security Standards
+- title: 'Task 13: Secure the Docker Daemon'
+  category: System Hardening
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |-
+      **Context:** on node `node02`, Docker runs next to containerd. The user `developer` is a member of the `docker` group, and the socket `/var/run/docker.sock` is owned by `developer`.
+
+      **Task:**
+
+      - Remove `developer` from the `docker` group.
+      - Make sure the socket is owned by `root`.
+  - type: question
+    question:
+      questionType: multiple-choice
+      header: Why is membership in the docker group a problem?
+      choices:
+      - text: 'It grants root on the node: the member can start a privileged container that mounts the host filesystem'
+        answerType: Solution
+      - text: It only allows reading container logs
+        answerType: Invalid
+      - text: It lets the user change Kubernetes RBAC
+        answerType: Invalid
+      - text: It has no security impact
+        answerType: Invalid
+  - type: question
+    question:
+      questionType: single-line
+      header: Remove the user from the group (one command).
+      expectedAnswer: gpasswd -d developer docker
+      cel: answer.trim().matches('^(sudo\\s+)?(gpasswd\\s+(-d|--delete)\\s+developer\\s+docker|deluser\\s+developer\\s+docker)$')
+      hint: gpasswd has a delete option; deluser takes the user and the group.
+      correctAnswerInfo: 'Group membership applies at login: sessions of developer that are already open keep the group until
+        they log out.'
+  - type: question
+    question:
+      questionType: single-line
+      header: Change the owner of the socket to root (owner and group root).
+      expectedAnswer: chown root:root /var/run/docker.sock
+      cel: answer.trim().matches('^(sudo\\s+)?chown\\s+root(:root)?\\s+/(var/)?run/docker\\.sock$')
+  - type: question
+    question:
+      questionType: multiple-choice
+      header: chown on the socket is lost when Docker restarts. Where do you make the ownership permanent?
+      choices:
+      - text: SocketUser and SocketGroup in the docker.socket systemd unit
+        answerType: Solution
+      - text: /etc/docker/daemon.json, key "owner"
+        answerType: Invalid
+      - text: /etc/group
+        answerType: Invalid
+      - text: The kubelet configuration
+        answerType: Invalid
+      correctAnswerInfo: systemd creates the socket from docker.socket; set SocketUser=root (and SocketGroup=root if no group
+        should have access) with systemctl edit docker.socket.
+  explanation:
+    elements:
+    - type: context
+      text: 'The Docker socket is root-equivalent: whoever can write to it controls the daemon. Also check that the daemon
+        does not listen on TCP (`-H tcp://...` in the service or `hosts` in `/etc/docker/daemon.json`).'
+    - type: references
+      links:
+      - url: https://docs.docker.com/engine/security/#docker-daemon-attack-surface
+        text: Docker daemon attack surface
+- title: 'Task 14: CiliumNetworkPolicy with Mutual Authentication'
+  category: Cluster Setup
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |-
+      **Context:** Cilium is the CNI and mutual authentication is enabled. The Deployment `stock` in namespace `inventory` has Pods with the label `app=stock`.
+
+      **Task:**
+
+      - Create `allow-warehouse`: Pods in namespace `warehouse` may reach the `stock` Pods, and the connection must be mutually authenticated.
+      - Create `allow-host`: the node (host) may reach the `stock` Pods without mutual authentication.
+  - type: question
+    question:
+      questionType: multiple-choice
+      header: How do you select all Pods of namespace warehouse in fromEndpoints?
+      choices:
+      - text: 'matchLabels with k8s:io.kubernetes.pod.namespace: warehouse'
+        answerType: Solution
+      - text: 'namespaceSelector with kubernetes.io/metadata.name: warehouse'
+        answerType: Invalid
+      - text: 'fromEntities: [warehouse]'
+        answerType: Invalid
+      - text: 'matchLabels with namespace: warehouse'
+        answerType: Invalid
+      correctAnswerInfo: 'Cilium adds the Pod namespace as the label io.kubernetes.pod.namespace (with the k8s: source prefix).
+        namespaceSelector is the Kubernetes NetworkPolicy syntax.'
+  - type: question
+    question:
+      questionType: manifest
+      header: Write allow-warehouse.
+      manifestDefinitionId: cnp-v2
+      initialContent: |
+        apiVersion: cilium.io/v2
+        kind: CiliumNetworkPolicy
+        metadata:
+          name: allow-warehouse
+          namespace: inventory
+        spec:
+      expectedFields:
+      - path: metadata.name
+        expectedValue: allow-warehouse
+      - path: metadata.namespace
+        expectedValue: inventory
+      - path: spec.endpointSelector.matchLabels.app
+        expectedValue: stock
+      cel:
+      - name: From warehouse
+        expression: manifest.spec.ingress.exists(r, has(r.fromEndpoints) && r.fromEndpoints.exists(e, has(e.matchLabels) &&
+          ('k8s:io.kubernetes.pod.namespace' in e.matchLabels && e.matchLabels['k8s:io.kubernetes.pod.namespace'] == 'warehouse'
+          || 'io.kubernetes.pod.namespace' in e.matchLabels && e.matchLabels['io.kubernetes.pod.namespace'] == 'warehouse')))
+        message: An ingress rule must allow endpoints of namespace warehouse
+      - name: Mutual auth
+        expression: manifest.spec.ingress.all(r, has(r.authentication) && r.authentication.mode == 'required')
+        message: 'The rule must require authentication (authentication.mode: required)'
+  - type: question
+    question:
+      questionType: manifest
+      header: Write allow-host.
+      manifestDefinitionId: cnp-v2
+      initialContent: |
+        apiVersion: cilium.io/v2
+        kind: CiliumNetworkPolicy
+        metadata:
+          name: allow-host
+          namespace: inventory
+        spec:
+      expectedFields:
+      - path: metadata.name
+        expectedValue: allow-host
+      - path: metadata.namespace
+        expectedValue: inventory
+      - path: spec.endpointSelector.matchLabels.app
+        expectedValue: stock
+      cel:
+      - name: From host
+        expression: manifest.spec.ingress.exists(r, has(r.fromEntities) && 'host' in r.fromEntities)
+        message: An ingress rule must allow the host entity
+      - name: No mutual auth
+        expression: manifest.spec.ingress.all(r, !has(r.authentication) || r.authentication.mode == 'disabled')
+        message: 'The host cannot authenticate: leave authentication out (or disabled)'
+  explanation:
+    elements:
+    - type: context
+      text: Authentication is set per rule, so the host rule lives in its own policy (or its own rule). The node is the `host`
+        entity; `remote-node` would be the other nodes.
+    - type: references
+      links:
+      - url: https://docs.cilium.io/en/stable/network/servicemesh/mutual-authentication/mutual-authentication/
+        text: Cilium mutual authentication
+      - url: https://docs.cilium.io/en/stable/security/policy/language/#entities-based
+        text: Cilium entities
+- title: 'Task 15: ImagePolicyWebhook'
+  category: Supply Chain Security
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |-
+      **Context:** an image policy service is running. Its configuration was prepared in `/etc/kubernetes/policywebhook/`: the admission configuration `admission_config.yaml` and the kubeconfig `kubeconf`.
+
+      **Task:**
+
+      - Images must be denied when the service is unavailable.
+      - Enable the `ImagePolicyWebhook` admission plugin in the API server with the provided admission configuration.
+  - type: question
+    question:
+      questionType: single-line
+      header: Which file do you change for the first requirement? (full path)
+      expectedAnswer: /etc/kubernetes/policywebhook/admission_config.yaml
+      cel: answer.trim().replace('//', '/') == '/etc/kubernetes/policywebhook/admission_config.yaml' || answer.trim().replace('//',
+        '/') == '/etc/kubernetes/policywebhook/admission_config.yaml/'
+  - type: question
+    question:
+      questionType: manifest
+      header: Fix it.
+      manifestDefinitionId: admission-config-v1
+      initialContent: |
+        apiVersion: apiserver.config.k8s.io/v1
+        kind: AdmissionConfiguration
+        plugins:
+          - name: ImagePolicyWebhook
+            configuration:
+              imagePolicy:
+                kubeConfigFile: /etc/kubernetes/policywebhook/kubeconf
+                allowTTL: 100
+                denyTTL: 50
+                retryBackoff: 500
+                defaultAllow: true
+      cel:
+      - name: Fail closed
+        expression: manifest.plugins.exists(p, p.name == 'ImagePolicyWebhook' && p.configuration.imagePolicy.defaultAllow
+          == false)
+        message: defaultAllow must be false
+      - name: Rest kept
+        expression: manifest.plugins.exists(p, p.name == 'ImagePolicyWebhook' && p.configuration.imagePolicy.kubeConfigFile
+          == '/etc/kubernetes/policywebhook/kubeconf' && p.configuration.imagePolicy.allowTTL == 100 && p.configuration.imagePolicy.denyTTL
+          == 50)
+        message: Keep the other settings
+  - type: question
+    question:
+      questionType: multiple-choice
+      header: Where do you enable the plugin?
+      choices:
+      - text: 'kube-apiserver static Pod manifest: --enable-admission-plugins and --admission-control-config-file'
+        answerType: Solution
+      - text: The kubelet configuration file
+        answerType: Invalid
+      - text: A ValidatingWebhookConfiguration object
+        answerType: Invalid
+      - text: The kube-controller-manager manifest
+        answerType: Invalid
+      correctAnswerInfo: ImagePolicyWebhook is a compiled-in admission plugin configured by file, not a dynamic webhook object.
+  - type: question
+    question:
+      questionType: manifest
+      header: Edit /etc/kubernetes/manifests/kube-apiserver.yaml.
+      hint: 'Two flags and a volume: the container must see the directory.'
+      manifestDefinitionId: pod-v1
+      initialContent: |
+        apiVersion: v1
+        kind: Pod
+        metadata:
+          labels:
+            component: kube-apiserver
+            tier: control-plane
+          name: kube-apiserver
+          namespace: kube-system
+        spec:
+          containers:
+          - command:
+            - kube-apiserver
+            - --advertise-address=192.168.100.11
+            - --allow-privileged=true
+            - --authorization-mode=Node,RBAC
+            - --client-ca-file=/etc/kubernetes/pki/ca.crt
+            - --enable-admission-plugins=NodeRestriction
+            - --enable-bootstrap-token-auth=true
+            - --etcd-cafile=/etc/kubernetes/pki/etcd/ca.crt
+            - --etcd-certfile=/etc/kubernetes/pki/apiserver-etcd-client.crt
+            - --etcd-keyfile=/etc/kubernetes/pki/apiserver-etcd-client.key
+            - --etcd-servers=https://127.0.0.1:2379
+            - --kubelet-client-certificate=/etc/kubernetes/pki/apiserver-kubelet-client.crt
+            - --kubelet-client-key=/etc/kubernetes/pki/apiserver-kubelet-client.key
+            - --kubelet-preferred-address-types=InternalIP,ExternalIP,Hostname
+            - --proxy-client-cert-file=/etc/kubernetes/pki/front-proxy-client.crt
+            - --proxy-client-key-file=/etc/kubernetes/pki/front-proxy-client.key
+            - --requestheader-allowed-names=front-proxy-client
+            - --requestheader-client-ca-file=/etc/kubernetes/pki/front-proxy-ca.crt
+            - --requestheader-extra-headers-prefix=X-Remote-Extra-
+            - --requestheader-group-headers=X-Remote-Group
+            - --requestheader-username-headers=X-Remote-User
+            - --secure-port=6443
+            - --service-account-issuer=https://kubernetes.default.svc.cluster.local
+            - --service-account-key-file=/etc/kubernetes/pki/sa.pub
+            - --service-account-signing-key-file=/etc/kubernetes/pki/sa.key
+            - --service-cluster-ip-range=10.96.0.0/12
+            - --tls-cert-file=/etc/kubernetes/pki/apiserver.crt
+            - --tls-private-key-file=/etc/kubernetes/pki/apiserver.key
+            image: registry.k8s.io/kube-apiserver:v1.34.2
+            imagePullPolicy: IfNotPresent
+            livenessProbe:
+              failureThreshold: 8
+              httpGet:
+                host: 192.168.100.11
+                path: /livez
+                port: 6443
+                scheme: HTTPS
+              initialDelaySeconds: 10
+              periodSeconds: 10
+              timeoutSeconds: 15
+            name: kube-apiserver
+            resources:
+              requests:
+                cpu: 250m
+            volumeMounts:
+            - mountPath: /etc/ssl/certs
+              name: ca-certs
+              readOnly: true
+            - mountPath: /etc/ca-certificates
+              name: etc-ca-certificates
+              readOnly: true
+            - mountPath: /etc/kubernetes/pki
+              name: k8s-certs
+              readOnly: true
+            - mountPath: /usr/local/share/ca-certificates
+              name: usr-local-share-ca-certificates
+              readOnly: true
+            - mountPath: /usr/share/ca-certificates
+              name: usr-share-ca-certificates
+              readOnly: true
+          hostNetwork: true
+          priority: 2000001000
+          priorityClassName: system-node-critical
+          securityContext:
+            seccompProfile:
+              type: RuntimeDefault
+          volumes:
+          - hostPath:
+              path: /etc/ssl/certs
+              type: DirectoryOrCreate
+            name: ca-certs
+          - hostPath:
+              path: /etc/ca-certificates
+              type: DirectoryOrCreate
+            name: etc-ca-certificates
+          - hostPath:
+              path: /etc/kubernetes/pki
+              type: DirectoryOrCreate
+            name: k8s-certs
+          - hostPath:
+              path: /usr/local/share/ca-certificates
+              type: DirectoryOrCreate
+            name: usr-local-share-ca-certificates
+          - hostPath:
+              path: /usr/share/ca-certificates
+              type: DirectoryOrCreate
+            name: usr-share-ca-certificates
+      cel:
+      - name: Plugin enabled
+        expression: manifest.spec.containers[0].command.exists(a, a.startsWith('--enable-admission-plugins=') && 'ImagePolicyWebhook'
+          in a.substring(27).split(',')) && manifest.spec.containers[0].command.exists(a, a.startsWith('--enable-admission-plugins=')
+          && 'NodeRestriction' in a.substring(27).split(','))
+        message: Add ImagePolicyWebhook to --enable-admission-plugins and keep NodeRestriction
+      - name: Config file
+        expression: manifest.spec.containers[0].command.exists(a, a == '--admission-control-config-file=/etc/kubernetes/policywebhook/admission_config.yaml')
+        message: --admission-control-config-file must point to the admission configuration
+      - name: Directory mounted
+        expression: manifest.spec.volumes.exists(v, has(v.hostPath) && ('/etc/kubernetes/policywebhook/admission_config.yaml'
+          == v.hostPath.path || '/etc/kubernetes/policywebhook/admission_config.yaml'.startsWith(v.hostPath.path + '/')) &&
+          manifest.spec.containers[0].volumeMounts.exists(m, m.name == v.name && m.mountPath == v.hostPath.path))
+        message: Mount /etc/kubernetes/policywebhook into the container with a hostPath volume
+  explanation:
+    elements:
+    - type: context
+      text: 'Test with `kubectl run test --image=nginx`: with the service down, the request is denied. If the API server does
+        not come back, `crictl ps -a` and `crictl logs` show the error (often a path that is not mounted).'
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/reference/access-authn-authz/admission-controllers/#imagepolicywebhook
+        text: ImagePolicyWebhook
+- title: 'Task 16: API Server Authentication and Authorization'
+  category: Cluster Hardening
+  hintsEnabled: true
+  elements:
+  - type: context
+    text: |-
+      **Context:** the API server of this cluster was set up insecurely: anonymous requests are accepted, every request is authorized and admission control is bypassed.
+
+      **Task:**
+
+      - Disable anonymous access.
+      - Use the authorization modes `Node` and `RBAC`.
+      - Enable the `NodeRestriction` admission plugin.
+
+      The kubeconfig `/etc/kubernetes/admin.conf` must keep working.
+  - type: question
+    question:
+      questionType: multiple-choice
+      header: Where do you start?
+      choices:
+      - text: The kube-apiserver static Pod manifest
+        answerType: Solution
+      - text: The kubelet configuration file
+        answerType: Invalid
+      - text: /etc/kubernetes/admin.conf
+        answerType: Invalid
+      - text: A ClusterRoleBinding for system:anonymous
+        answerType: Invalid
+  - type: question
+    question:
+      questionType: single-line
+      header: Path of that file?
+      expectedAnswer: /etc/kubernetes/manifests/kube-apiserver.yaml
+      cel: answer.trim().replace('//', '/') == '/etc/kubernetes/manifests/kube-apiserver.yaml' || answer.trim().replace('//',
+        '/') == '/etc/kubernetes/manifests/kube-apiserver.yaml/'
+  - type: question
+    question:
+      questionType: manifest
+      header: Fix the manifest.
+      hint: Three flags.
+      manifestDefinitionId: pod-v1
+      initialContent: |
+        apiVersion: v1
+        kind: Pod
+        metadata:
+          labels:
+            component: kube-apiserver
+            tier: control-plane
+          name: kube-apiserver
+          namespace: kube-system
+        spec:
+          containers:
+          - command:
+            - kube-apiserver
+            - --advertise-address=192.168.100.11
+            - --allow-privileged=true
+            - --anonymous-auth=true
+            - --authorization-mode=AlwaysAllow
+            - --client-ca-file=/etc/kubernetes/pki/ca.crt
+            - --enable-admission-plugins=AlwaysAdmit
+            - --enable-bootstrap-token-auth=true
+            - --etcd-cafile=/etc/kubernetes/pki/etcd/ca.crt
+            - --etcd-certfile=/etc/kubernetes/pki/apiserver-etcd-client.crt
+            - --etcd-keyfile=/etc/kubernetes/pki/apiserver-etcd-client.key
+            - --etcd-servers=https://127.0.0.1:2379
+            - --kubelet-client-certificate=/etc/kubernetes/pki/apiserver-kubelet-client.crt
+            - --kubelet-client-key=/etc/kubernetes/pki/apiserver-kubelet-client.key
+            - --kubelet-preferred-address-types=InternalIP,ExternalIP,Hostname
+            - --proxy-client-cert-file=/etc/kubernetes/pki/front-proxy-client.crt
+            - --proxy-client-key-file=/etc/kubernetes/pki/front-proxy-client.key
+            - --requestheader-allowed-names=front-proxy-client
+            - --requestheader-client-ca-file=/etc/kubernetes/pki/front-proxy-ca.crt
+            - --requestheader-extra-headers-prefix=X-Remote-Extra-
+            - --requestheader-group-headers=X-Remote-Group
+            - --requestheader-username-headers=X-Remote-User
+            - --secure-port=6443
+            - --service-account-issuer=https://kubernetes.default.svc.cluster.local
+            - --service-account-key-file=/etc/kubernetes/pki/sa.pub
+            - --service-account-signing-key-file=/etc/kubernetes/pki/sa.key
+            - --service-cluster-ip-range=10.96.0.0/12
+            - --tls-cert-file=/etc/kubernetes/pki/apiserver.crt
+            - --tls-private-key-file=/etc/kubernetes/pki/apiserver.key
+            image: registry.k8s.io/kube-apiserver:v1.34.2
+            imagePullPolicy: IfNotPresent
+            livenessProbe:
+              failureThreshold: 8
+              httpGet:
+                host: 192.168.100.11
+                path: /livez
+                port: 6443
+                scheme: HTTPS
+              initialDelaySeconds: 10
+              periodSeconds: 10
+              timeoutSeconds: 15
+            name: kube-apiserver
+            resources:
+              requests:
+                cpu: 250m
+            volumeMounts:
+            - mountPath: /etc/ssl/certs
+              name: ca-certs
+              readOnly: true
+            - mountPath: /etc/ca-certificates
+              name: etc-ca-certificates
+              readOnly: true
+            - mountPath: /etc/kubernetes/pki
+              name: k8s-certs
+              readOnly: true
+            - mountPath: /usr/local/share/ca-certificates
+              name: usr-local-share-ca-certificates
+              readOnly: true
+            - mountPath: /usr/share/ca-certificates
+              name: usr-share-ca-certificates
+              readOnly: true
+          hostNetwork: true
+          priority: 2000001000
+          priorityClassName: system-node-critical
+          securityContext:
+            seccompProfile:
+              type: RuntimeDefault
+          volumes:
+          - hostPath:
+              path: /etc/ssl/certs
+              type: DirectoryOrCreate
+            name: ca-certs
+          - hostPath:
+              path: /etc/ca-certificates
+              type: DirectoryOrCreate
+            name: etc-ca-certificates
+          - hostPath:
+              path: /etc/kubernetes/pki
+              type: DirectoryOrCreate
+            name: k8s-certs
+          - hostPath:
+              path: /usr/local/share/ca-certificates
+              type: DirectoryOrCreate
+            name: usr-local-share-ca-certificates
+          - hostPath:
+              path: /usr/share/ca-certificates
+              type: DirectoryOrCreate
+            name: usr-share-ca-certificates
+      cel:
+      - name: No anonymous
+        expression: manifest.spec.containers[0].command.exists(a, a == '--anonymous-auth=false') && manifest.spec.containers[0].command.all(a,
+          !a.startsWith('--anonymous-auth=') || a == '--anonymous-auth=false')
+        message: --anonymous-auth must be false
+      - name: Node and RBAC
+        expression: manifest.spec.containers[0].command.exists(a, a == '--authorization-mode=Node,RBAC' || a == '--authorization-mode=RBAC,Node')
+          && manifest.spec.containers[0].command.all(a, !a.startsWith('--authorization-mode=') || a == '--authorization-mode=Node,RBAC'
+          || a == '--authorization-mode=RBAC,Node')
+        message: --authorization-mode must be Node,RBAC
+      - name: NodeRestriction
+        expression: manifest.spec.containers[0].command.exists(a, a.startsWith('--enable-admission-plugins=') && 'NodeRestriction'
+          in a.substring(27).split(',')) && manifest.spec.containers[0].command.all(a, !a.startsWith('--enable-admission-plugins=')
+          || !('AlwaysAdmit' in a.substring(27).split(',')))
+        message: Enable NodeRestriction and remove AlwaysAdmit
+  - type: question
+    question:
+      questionType: command
+      header: 'After the API server is back, check that an anonymous request is rejected: list the namespaces as the anonymous
+        user through impersonation.'
+      correctAnswerInfo: With anonymous access disabled, real anonymous requests get 401 Unauthorized; impersonation shows
+        the RBAC answer (403).
+      command:
+        executable: kubectl
+        subcommands:
+        - name: get
+        - name: namespaces
+          aliases:
+          - namespace
+          - ns
+        flags:
+        - name: as
+          required: true
+          value: system:anonymous
+  explanation:
+    elements:
+    - type: context
+      text: 'Order the authorizers `Node,RBAC`: Node handles kubelet requests first. If the API server does not restart, compare
+        the manifest with a backup and read `crictl logs` of the exited container.'
+    - type: references
+      links:
+      - url: https://kubernetes.io/docs/reference/access-authn-authz/authentication/#anonymous-requests
+        text: Anonymous requests
+      - url: https://kubernetes.io/docs/reference/access-authn-authz/admission-controllers/#noderestriction
+        text: NodeRestriction

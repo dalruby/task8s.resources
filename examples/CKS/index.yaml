@@ -277,3 +277,11 @@ sets:
       - Supply Chain Security
       - Hands-On
       - Hard
+  - name: "CKS Practice Exam"
+    filename: cks-practice-exam.yaml
+    description: "Sixteen exam-style tasks across all CKS domains, timed at two hours. Each task states the goal, not the steps: choose where to start, name the file or object, then make the fix. Kubelet and etcd hardening, TLS Secret, Dockerfile and securityContext, Falco /dev/mem rule, audit logging, NetworkPolicy, Ingress TLS, projected tokens, worker upgrade, bom, restricted PSS, Docker socket, Cilium mutual auth, ImagePolicyWebhook and API server authentication."
+    tags:
+      - Practice Exam
+      - Hands-On
+      - Timed
+      - Hard
